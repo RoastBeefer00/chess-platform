@@ -1,11 +1,17 @@
 use shakmaty::{Chess, Color, Move, Outcome, PlayError, Position};
 use uuid::Uuid;
 
+pub enum GameStatus {
+    Ongoing,
+    Finished(Outcome),
+    WaitingForOpponent,
+}
+
 pub struct Game {
-    id: Uuid,
-    position: Chess,
-    white_player: Uuid,
-    black_player: Uuid,
+    pub id: Uuid,
+    pub position: Chess,
+    pub white_player: Uuid,
+    pub black_player: Uuid,
 }
 
 impl Game {

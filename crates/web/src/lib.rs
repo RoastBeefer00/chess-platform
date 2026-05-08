@@ -2,6 +2,11 @@ pub mod app;
 pub mod components;
 pub mod pages;
 
+#[cfg(feature = "ssr")]
+pub mod game_room;
+#[cfg(feature = "ssr")]
+pub mod state;
+
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn hydrate() {

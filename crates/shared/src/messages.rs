@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
 use shakmaty::Move;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerMessage {
     Welcome { username: String },
     UserLeft { username: String },
