@@ -1,0 +1,14 @@
+/Users/roastbeefer/projects/chess-rs/target/debug/deps/serde-dd5b743162ad9d82.d: /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/roastbeefer/projects/chess-rs/target/debug/build/serde-be427b17195bb4b3/out/private.rs
+
+/Users/roastbeefer/projects/chess-rs/target/debug/deps/libserde-dd5b743162ad9d82.rlib: /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/roastbeefer/projects/chess-rs/target/debug/build/serde-be427b17195bb4b3/out/private.rs
+
+/Users/roastbeefer/projects/chess-rs/target/debug/deps/libserde-dd5b743162ad9d82.rmeta: /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/roastbeefer/projects/chess-rs/target/debug/build/serde-be427b17195bb4b3/out/private.rs
+
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/roastbeefer/projects/chess-rs/target/debug/build/serde-be427b17195bb4b3/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/roastbeefer/projects/chess-rs/target/debug/build/serde-be427b17195bb4b3/out

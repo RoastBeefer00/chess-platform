@@ -1,0 +1,10 @@
+/Users/roastbeefer/projects/chess-rs/target/debug/deps/serde_qs-904e1d1be46a769c.d: /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/lib.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/de/mod.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/de/parse.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/error.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/ser.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/utils.rs
+
+/Users/roastbeefer/projects/chess-rs/target/debug/deps/libserde_qs-904e1d1be46a769c.rmeta: /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/lib.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/de/mod.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/de/parse.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/error.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/ser.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/utils.rs
+
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/lib.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/de/mod.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/de/parse.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/error.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/ser.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_qs-0.15.0/src/utils.rs:

@@ -1,0 +1,10 @@
+/Users/roastbeefer/projects/chess-rs/target/front/wasm32-unknown-unknown/debug/deps/js_sys-1aa65ed3808a9b42.d: /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/lib.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/mod.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/queue.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/task/singlethread.rs
+
+/Users/roastbeefer/projects/chess-rs/target/front/wasm32-unknown-unknown/debug/deps/libjs_sys-1aa65ed3808a9b42.rlib: /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/lib.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/mod.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/queue.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/task/singlethread.rs
+
+/Users/roastbeefer/projects/chess-rs/target/front/wasm32-unknown-unknown/debug/deps/libjs_sys-1aa65ed3808a9b42.rmeta: /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/lib.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/mod.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/queue.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/task/singlethread.rs
+
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/lib.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/mod.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/queue.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.94/src/futures/task/singlethread.rs:

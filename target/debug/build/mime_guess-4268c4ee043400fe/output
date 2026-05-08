@@ -1,0 +1,1 @@
+cargo:rustc-env=MIME_TYPES_GENERATED_PATH=/Users/roastbeefer/projects/chess-rs/target/debug/build/mime_guess-4268c4ee043400fe/out/mime_types_generated.rs

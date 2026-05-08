@@ -1,0 +1,10 @@
+/Users/roastbeefer/projects/chess-rs/target/front/wasm32-unknown-unknown/debug/deps/leptos_dom-fd4115cf8fee30dd.d: /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/lib.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/helpers.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/macro_helpers/mod.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/logging.rs
+
+/Users/roastbeefer/projects/chess-rs/target/front/wasm32-unknown-unknown/debug/deps/libleptos_dom-fd4115cf8fee30dd.rlib: /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/lib.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/helpers.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/macro_helpers/mod.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/logging.rs
+
+/Users/roastbeefer/projects/chess-rs/target/front/wasm32-unknown-unknown/debug/deps/libleptos_dom-fd4115cf8fee30dd.rmeta: /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/lib.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/helpers.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/macro_helpers/mod.rs /Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/logging.rs
+
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/lib.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/helpers.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/macro_helpers/mod.rs:
+/Users/roastbeefer/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/leptos_dom-0.8.8/src/logging.rs:
