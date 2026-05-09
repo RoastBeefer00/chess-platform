@@ -16,7 +16,10 @@ async fn main() {
     let routes = generate_route_list(App);
 
     let app = Router::new()
-        .leptos_routes(&app_state, routes, {
+        .leptos_routes_with_context(&app_state, routes, {
+            let games = app_state.games.clone();
+            move || provide_context(games.clone())
+        }, {
             let leptos_options = leptos_options.clone();
             move || shell(leptos_options.clone())
         })

@@ -34,7 +34,7 @@
   };
 
   scripts = {
-    dev.exec = "cargo leptos watch --project web";
+    dev.exec = "cargo leptos watch --project web --split";
     migrate.exec = "sqlx migrate run";
     flutter-dev.exec = "cd mobile && flutter run";
     check-all.exec = ''

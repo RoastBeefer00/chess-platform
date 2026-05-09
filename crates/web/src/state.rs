@@ -9,18 +9,12 @@ use uuid::Uuid;
 use crate::game_room::GameRoom;
 
 pub type GameId = Uuid;
-pub type GameRooms = Arc<Mutex<HashMap<GameId, GameRoom>>>;
+pub type GameRooms = Arc<Mutex<HashMap<GameId, Arc<Mutex<GameRoom>>>>>;
 
-#[derive(Clone)]
+#[derive(FromRef, Clone, Debug)]
 pub struct AppState {
     pub leptos_options: LeptosOptions,
     pub games: GameRooms,
-}
-
-impl FromRef<AppState> for LeptosOptions {
-    fn from_ref(state: &AppState) -> Self {
-        state.leptos_options.clone()
-    }
 }
 
 impl AppState {
@@ -35,12 +29,12 @@ impl AppState {
         let game = GameRoom::new(Game::new(white_player, black_player));
         let game_id = game.game.id;
         let mut games = self.games.blocking_lock();
-        games.insert(game_id, game);
+        games.insert(game_id, Arc::new(Mutex::new(game)));
         game_id
     }
 
-    pub fn player_count(&self) -> usize {
-        let games = self.games.blocking_lock();
-        games.values().map(|room| room.player_count()).sum()
+    pub async fn get_game_room(&self, game_id: &GameId) -> Option<Arc<Mutex<GameRoom>>> {
+        let games = self.games.lock().await;
+        games.get(game_id).cloned()
     }
 }
