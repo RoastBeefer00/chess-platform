@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use uuid::Uuid;
 
-use crate::components::board::Board;
+use crate::components::board::{Board, BoardPerspective};
 
 #[component]
 pub fn PlayPage() -> impl IntoView {
@@ -16,7 +16,7 @@ pub fn PlayPage() -> impl IntoView {
 
     view! {
         <div>
-            {move || game_id().map(|id| view! { <Board game_id=id /> })}
+            {move || game_id().map(|id| view! { <Board game_id=id perspective=BoardPerspective::White /> })}
         </div>
     }
 }

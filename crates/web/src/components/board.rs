@@ -3,10 +3,15 @@ use crate::state::GameId;
 #[cfg(feature = "ssr")]
 use crate::state::GameRooms;
 
+use leptos::html::Div;
+use leptos::html::Img;
 use leptos::{prelude::*, server};
+use leptos_use::use_draggable;
+use leptos_use::UseDraggableReturn;
 use server_fn::{codec::JsonEncoding, BoxedStream, ServerFnError, Websocket};
 use shakmaty::Board;
 use shakmaty::Color;
+use shakmaty::Move;
 use shakmaty::Piece;
 use shakmaty::Square;
 use shared::{ClientMessage, ServerMessage};
@@ -127,7 +132,12 @@ async fn game_websocket(
 }
 
 #[component]
-pub fn Square(rank: usize, file: usize, piece: Option<Piece>) -> impl IntoView {
+pub fn Square(
+    rank: usize,
+    file: usize,
+    piece: Option<Piece>,
+    perspective: BoardPerspective,
+) -> impl IntoView {
     let image_path = piece.map(|piece| {
         let color = match piece.color {
             Color::White => "w",
@@ -144,19 +154,93 @@ pub fn Square(rank: usize, file: usize, piece: Option<Piece>) -> impl IntoView {
         format!("/piece/alpha/{}{}.svg", color, role)
     });
 
+    let el = NodeRef::<Img>::new();
+
+    #[cfg(feature = "hydrate")]
+    let UseDraggableReturn {
+        is_dragging, style, ..
+    } = {
+        use leptos_use::core::Position;
+        use leptos_use::{
+            use_draggable_with_options, UseDraggableCallbackArgs, UseDraggableOptions,
+        };
+
+        let pos = RwSignal::new(Position { x: 0.0, y: 0.0 });
+
+        use_draggable_with_options(
+            el,
+            UseDraggableOptions::default().initial_value(pos).on_start(
+                move |_: UseDraggableCallbackArgs| {
+                    if let Some(element) = el.get_untracked() {
+                        let rect = element.get_bounding_client_rect();
+                        pos.set(Position {
+                            x: rect.left(),
+                            y: rect.top(),
+                        });
+                    }
+                    true
+                },
+            ),
+        )
+    };
+
+    fn rank_to_char(rank: usize) -> char {
+        std::char::from_digit((rank + 1) as u32, 10).unwrap()
+    }
+
+    fn file_to_char(file: usize) -> char {
+        (b'a' + file as u8) as char
+    }
+
+    #[cfg(not(feature = "hydrate"))]
+    let (is_dragging, style) = (Signal::derive(|| false), Signal::derive(|| String::new()));
+
     view! {
         <div
-            class="w-full h-full"
+            class="relative w-full h-full"
             class:bg-white=move || (rank + file) % 2 == 0
             class:bg-green-800=move || (rank + file) % 2 != 0
         >
-            {image_path.map(|src| view! { <img src={src} class="w-full h-full"/> })}
+            {image_path.map(|src| view! {
+                <img
+                    src={src}
+                    node_ref=el
+                    class="w-full h-full cursor-grab"
+                    class:cursor-grabbing=move || is_dragging.get()
+                    class:opacity-50=move || is_dragging.get()
+                    style=move || if is_dragging.get() {
+                        format!("position: fixed; {} pointer-events: none; width: 80px; height: 80px; z-index: 50;", style.get())
+                    } else {
+                        String::new()
+                    }
+                />
+            })}
+            <Show when=move || perspective == BoardPerspective::White && rank == 0 || perspective == BoardPerspective::Black && rank == 7>
+                <span
+                    class="absolute bottom-0 left-0.5 font-bold text-sm"
+                    class:text-white=move || (rank + file) % 2 != 0
+                    class:text-green-800=move || (rank + file) % 2 == 0
+                >{file_to_char(file)}</span>
+            </Show>
+            <Show when=move || perspective == BoardPerspective::White && file == 7 || perspective == BoardPerspective::Black && file == 0>
+                <span
+                    class="absolute top-0 right-0.5 font-bold text-sm"
+                    class:text-white=move || (rank + file) % 2 != 0
+                    class:text-green-800=move || (rank + file) % 2 == 0
+                >{rank_to_char(rank)}</span>
+            </Show>
         </div>
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BoardPerspective {
+    White,
+    Black,
+}
+
 #[component]
-pub fn Board(game_id: Uuid) -> impl IntoView {
+pub fn Board(game_id: Uuid, perspective: BoardPerspective) -> impl IntoView {
     use futures::channel::mpsc;
     use futures::StreamExt;
     use leptos::task::spawn_local;
@@ -167,6 +251,8 @@ pub fn Board(game_id: Uuid) -> impl IntoView {
     let (board, set_board) = signal(Board::default());
     let (selected_square, set_selected_square) = signal(None::<shakmaty::Square>);
     let (player_role, set_player_role) = signal(None::<PlayerRole>);
+    let (grabbed_square, set_grabbed_square) = signal(None::<Square>);
+    let (legal_moves, set_legal_moves) = signal(Vec::<Move>::new());
 
     leptos::logging::log!("Board mounted, hydrate={}", cfg!(feature = "hydrate"));
     if cfg!(feature = "hydrate") {
@@ -215,7 +301,16 @@ pub fn Board(game_id: Uuid) -> impl IntoView {
         <div class="flex items-center justify-center w-full h-[calc(100vh-3.5rem)]">
             <div class="grid grid-cols-8 grid-rows-8 w-[min(100vw,calc(100vh-11.5rem))] aspect-square">
                 <For
-                    each={move || shakmaty::Square::ALL.into_iter().collect::<Vec<_>>()}
+                    each={move || {
+                        match perspective {
+                            BoardPerspective::White => (0..8usize).rev()
+                                .flat_map(|rank| (0..8usize).map(move |file| shakmaty::Square::new((rank * 8 + file) as u32)))
+                                .collect::<Vec<_>>(),
+                            BoardPerspective::Black => (0..8usize)
+                                .flat_map(|rank| (0..8usize).rev().map(move |file| shakmaty::Square::new((rank * 8 + file) as u32)))
+                                .collect::<Vec<_>>(),
+                        }
+                    }}
                     key=|sq: &shakmaty::Square| *sq as u8
                     let(sq)
                 >
@@ -226,7 +321,7 @@ pub fn Board(game_id: Uuid) -> impl IntoView {
                         let piece = move || board.get().piece_at(sq);
 
                         view! {
-                            <Square rank={rank} file={file} piece={piece()}/>
+                            <Square rank={rank} file={file} piece={piece()} perspective={perspective} />
                         }
                     }
                 </For>
