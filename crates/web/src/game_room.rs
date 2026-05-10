@@ -55,7 +55,7 @@ impl GameRoom {
                 Color::Black => room.black_player = Some(player_id),
             }
             room.status = status;
-            PlayerRole::Player(color)
+            PlayerRole::Player(color.into())
         }
 
         if self.white_player.is_none() && self.black_player.is_none() {

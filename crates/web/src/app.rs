@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
 use leptos_router::{
     components::{Route, Router, Routes},
-    StaticSegment,
+    ParamSegment, StaticSegment,
 };
 
 use crate::pages::{play::PlayPage, NotFoundPage};
@@ -40,7 +40,7 @@ pub fn App() -> impl IntoView {
             <main class="pt-14 min-h-screen bg-zinc-950">
                 <Routes fallback=NotFoundPage>
                     <Route path=StaticSegment("") view=HomePage/>
-                    <Route path=StaticSegment("play") view=PlayPage/>
+                    <Route path=(StaticSegment("play"), ParamSegment("game_id")) view=PlayPage/>
                 </Routes>
             </main>
         </Router>
