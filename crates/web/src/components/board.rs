@@ -3,11 +3,14 @@ use crate::state::GameId;
 #[cfg(feature = "ssr")]
 use crate::state::GameRooms;
 
+use leptos::attr::Allowfullscreen;
 use leptos::html::Div;
 use leptos::html::Img;
 use leptos::{prelude::*, server};
 use leptos_use::use_draggable;
 use leptos_use::UseDraggableReturn;
+use serde::Deserialize;
+use serde::Serialize;
 use server_fn::{codec::JsonEncoding, BoxedStream, ServerFnError, Websocket};
 use shakmaty::Board;
 use shakmaty::Color;
@@ -84,9 +87,11 @@ async fn game_websocket(
             .clone();
 
         let (player_role, position_fen) = {
+            use shakmaty::fen::Fen;
             let mut gr = game_room.lock().await;
             let role = gr.add_player(uuid);
-            let fen = gr.get_position().board().board_fen().to_string();
+            let fen =
+                Fen::from_position(&gr.get_position(), shakmaty::EnPassantMode::Legal).to_string();
             (role, fen)
         };
 
@@ -113,10 +118,14 @@ async fn game_websocket(
                 let mut gr = game_room.lock().await;
                 match msg {
                     ClientMessage::UserJoined { uuid, game_id: _ } => {
+                        use shakmaty::fen::Fen;
                         let player_role = gr.add_player(uuid);
+                        let fen =
+                            Fen::from_position(&gr.get_position(), shakmaty::EnPassantMode::Legal)
+                                .to_string();
                         gr.broadcast(ServerMessage::UserJoined {
                             uuid,
-                            position_fen: gr.get_position().board().board_fen().to_string(),
+                            position_fen: fen,
                             player_role,
                         });
                     }
@@ -138,6 +147,9 @@ pub fn Square(
     piece: Option<Piece>,
     perspective: BoardPerspective,
 ) -> impl IntoView {
+    let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
+    let valid_move_targets = expect_context::<Signal<Vec<shakmaty::Square>>>();
+
     let image_path = piece.map(|piece| {
         let color = match piece.color {
             Color::White => "w",
@@ -169,8 +181,10 @@ pub fn Square(
 
         use_draggable_with_options(
             el,
-            UseDraggableOptions::default().initial_value(pos).on_start(
-                move |_: UseDraggableCallbackArgs| {
+            UseDraggableOptions::default()
+                .initial_value(pos)
+                .on_start(move |_: UseDraggableCallbackArgs| {
+                    selected_square.set(Some(Square::new((rank * 8 + file) as u32)));
                     if let Some(element) = el.get_untracked() {
                         let rect = element.get_bounding_client_rect();
                         pos.set(Position {
@@ -179,8 +193,32 @@ pub fn Square(
                         });
                     }
                     true
-                },
-            ),
+                })
+                .on_end(move |args: UseDraggableCallbackArgs| {
+                    // TODO: Get target square from drop position
+                    let (x, y) = (args.event.client_x() as f32, args.event.client_y() as f32);
+                    let dom_element = web_sys::window()
+                        .unwrap()
+                        .document()
+                        .unwrap()
+                        .element_from_point(x, y)
+                        .unwrap();
+
+                    let data = dom_element.closest("[data-square]").unwrap();
+                    if let Some(el) = data {
+                        let attr = el.get_attribute("data-square").unwrap();
+                        leptos::logging::log!("dropped on square {}", attr);
+                    } else {
+                        leptos::logging::log!("dropped outside of board");
+                    }
+
+                    // TODO: Check if move is legal
+                    // TODO: Replace square with target square if legal
+
+                    // Unset selected square
+                    selected_square.set(None);
+                    // TODO: Send move to server
+                }),
         )
     };
 
@@ -200,7 +238,23 @@ pub fn Square(
             class="relative w-full h-full"
             class:bg-white=move || (rank + file) % 2 == 0
             class:bg-green-800=move || (rank + file) % 2 != 0
+            data-square=format!("{}{}", file_to_char(file), rank_to_char(rank))
         >
+            <Show
+                when=move || valid_move_targets.get().contains(&Square::new((rank * 8 + file) as u32))
+            >
+                {if piece.is_some() {
+                    view! {
+                        <div class="absolute inset-0 rounded-full ring-[6px] ring-inset ring-black opacity-20 pointer-events-none z-10"></div>
+                    }.into_any()
+                } else {
+                    view! {
+                        <div class="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+                            <div class="w-1/3 h-1/3 rounded-full bg-black opacity-20"></div>
+                        </div>
+                    }.into_any()
+                }}
+            </Show>
             {image_path.map(|src| view! {
                 <img
                     src={src}
@@ -233,13 +287,13 @@ pub fn Square(
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BoardPerspective {
     White,
     Black,
 }
 
-#[component]
+#[island]
 pub fn Board(game_id: Uuid, perspective: BoardPerspective) -> impl IntoView {
     use futures::channel::mpsc;
     use futures::StreamExt;
@@ -248,11 +302,26 @@ pub fn Board(game_id: Uuid, perspective: BoardPerspective) -> impl IntoView {
     use shared::PlayerRole;
 
     let (mut tx, rx) = mpsc::channel(1);
-    let (board, set_board) = signal(Board::default());
-    let (selected_square, set_selected_square) = signal(None::<shakmaty::Square>);
+    let (position, set_position) = signal(shakmaty::Chess::default());
+    let selected_square = RwSignal::new(None::<shakmaty::Square>);
+    provide_context(selected_square);
     let (player_role, set_player_role) = signal(None::<PlayerRole>);
-    let (grabbed_square, set_grabbed_square) = signal(None::<Square>);
-    let (legal_moves, set_legal_moves) = signal(Vec::<Move>::new());
+    let (grabbed_square, set_grabbed_square) = signal(None::<shakmaty::Square>);
+
+    let legal_move_targets = Signal::derive(move || -> Vec<shakmaty::Square> {
+        use shakmaty::Position;
+        let Some(selected) = selected_square.get() else {
+            return vec![];
+        };
+        position
+            .get()
+            .legal_moves()
+            .into_iter()
+            .filter(|m| m.from() == Some(selected))
+            .map(|m| m.to())
+            .collect()
+    });
+    provide_context(legal_move_targets);
 
     leptos::logging::log!("Board mounted, hydrate={}", cfg!(feature = "hydrate"));
     if cfg!(feature = "hydrate") {
@@ -275,9 +344,14 @@ pub fn Board(game_id: Uuid, perspective: BoardPerspective) -> impl IntoView {
                                         position_fen,
                                         player_role
                                     );
-                                    let fen = position_fen.parse::<Fen>().unwrap();
-                                    let setup = fen.as_setup();
-                                    set_board.set(setup.board.clone());
+                                    let chess = position_fen
+                                        .parse::<Fen>()
+                                        .unwrap()
+                                        .into_position::<shakmaty::Chess>(
+                                            shakmaty::CastlingMode::Standard,
+                                        )
+                                        .unwrap();
+                                    set_position.set(chess);
                                 }
                                 ServerMessage::UserLeft { username } => todo!(),
                                 ServerMessage::MoveMade { uci } => todo!(),
@@ -318,7 +392,7 @@ pub fn Board(game_id: Uuid, perspective: BoardPerspective) -> impl IntoView {
                         let rank = sq.rank().to_usize();
                         let file = sq.file().to_usize();
 
-                        let piece = move || board.get().piece_at(sq);
+                        let piece = move || { use shakmaty::Position; position.get().board().piece_at(sq) };
 
                         view! {
                             <Square rank={rank} file={file} piece={piece()} perspective={perspective} />

@@ -24,6 +24,7 @@ tokio-stream = { workspace = true, optional = true }
 uuid = { workspace = true }
 shakmaty = { workspace = true }
 rand = { workspace = true, optional = true }
+web-sys = { workspace = true }
 
 [features]
 hydrate = [
