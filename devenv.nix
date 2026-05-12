@@ -9,6 +9,7 @@
     dart
     tailwindcss_4
     wasm-bindgen-cli
+    binaryen
   ];
 
   languages.rust = {
@@ -34,7 +35,7 @@
   };
 
   scripts = {
-    dev.exec = "cargo leptos watch --project web --split";
+    dev.exec = "cargo leptos watch --release -P --project web --split";
     migrate.exec = "sqlx migrate run";
     flutter-dev.exec = "cd mobile && flutter run";
     check-all.exec = ''
