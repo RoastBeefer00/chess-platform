@@ -3,18 +3,13 @@ use crate::state::GameId;
 #[cfg(feature = "ssr")]
 use crate::state::GameRooms;
 
-use leptos::attr::Allowfullscreen;
-use leptos::html::Div;
 use leptos::html::Img;
 use leptos::{prelude::*, server};
-use leptos_use::use_draggable;
+#[cfg(feature = "hydrate")]
 use leptos_use::UseDraggableReturn;
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use server_fn::{codec::JsonEncoding, BoxedStream, ServerFnError, Websocket};
-use shakmaty::Board;
 use shakmaty::Color;
-use shakmaty::Move;
 use shakmaty::Piece;
 use shakmaty::Square;
 use shared::{ClientMessage, ServerMessage};
@@ -293,7 +288,7 @@ pub enum BoardPerspective {
     Black,
 }
 
-#[island]
+#[component]
 pub fn Board(game_id: Uuid, perspective: BoardPerspective) -> impl IntoView {
     use futures::channel::mpsc;
     use futures::StreamExt;
