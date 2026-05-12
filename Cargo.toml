@@ -12,7 +12,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shakmaty = { version = "0.30", features = ["variant"] }
-leptos = { version = "0.8", features = ["serde"] }
+leptos = { version = "0.8", features = ["islands"] }
 leptos-use = { version = "0.18.3", features = ["use_draggable"] }
 axum = { version = "0.8", features = ["ws", "macros"] }
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "uuid", "time"] }
