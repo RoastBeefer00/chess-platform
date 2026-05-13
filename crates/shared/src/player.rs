@@ -25,6 +25,12 @@ impl From<Side> for Color {
     }
 }
 
+impl From<Color> for PlayerRole {
+    fn from(color: Color) -> Self {
+        PlayerRole::Player(color.into())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlayerRole {
     Player(Side),

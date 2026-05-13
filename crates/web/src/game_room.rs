@@ -1,4 +1,4 @@
-use shakmaty::{Chess, Color, Position};
+use shakmaty::{Chess, Color, Move, Position};
 use tokio::sync::broadcast::{self, Receiver, Sender};
 
 use shared::{Game, GameStatus, PlayerRole, ServerMessage};
@@ -81,6 +81,24 @@ impl GameRoom {
             assign_player(self, GameStatus::Ongoing, player_id, Color::Black)
         } else {
             PlayerRole::Spectator
+        }
+    }
+
+    pub fn current_player(&self) -> Option<Uuid> {
+        match self.game.position.turn() {
+            Color::White => self.white_player,
+            Color::Black => self.black_player,
+        }
+    }
+
+    pub fn make_move(&mut self, mv: Move) -> Result<(), String> {
+        let chess = self.get_position();
+        match chess.play(mv) {
+            Ok(pos) => {
+                self.game.position = pos;
+                Ok(())
+            }
+            Err(_) => Err("Illegal move".to_string()),
         }
     }
 }

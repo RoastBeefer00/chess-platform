@@ -36,6 +36,7 @@
 
   scripts = {
     dev.exec = "cargo leptos watch --release -P --project web --split";
+    kill-dev.exec = "lsof -ti :3000 | xargs kill -9 2>/dev/null; echo 'done'";
     migrate.exec = "sqlx migrate run";
     flutter-dev.exec = "cd mobile && flutter run";
     check-all.exec = ''

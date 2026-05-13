@@ -3,6 +3,7 @@
 pub mod app;
 pub mod components;
 pub mod pages;
+pub mod websocket;
 
 #[cfg(feature = "ssr")]
 pub mod game_room;
