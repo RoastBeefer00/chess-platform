@@ -1,16 +1,31 @@
-use shakmaty::Move;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::PlayerRole;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerMessage {
-    Welcome { username: String },
-    UserLeft { username: String },
-    MoveMade { r#move: Move },
-    Chat { user: Uuid, text: String },
+    UserJoined {
+        uuid: Uuid,
+        position_fen: String,
+        player_role: PlayerRole,
+    },
+    UserLeft {
+        username: String,
+    },
+    MoveMade {
+        uci: String,
+    },
+    Chat {
+        user: Uuid,
+        text: String,
+    },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMessage {
-    UserJoined { uuid: Uuid },
+    UserJoined { uuid: Uuid, game_id: Uuid },
     UserLeft { uuid: Uuid },
-    MoveMade { r#move: Move },
+    MoveMade { uci: String },
     Chat { user: Uuid, text: String },
 }

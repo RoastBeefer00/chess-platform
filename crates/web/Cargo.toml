@@ -9,16 +9,22 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 leptos = { workspace = true }
 leptos_router = { version = "0.8.0" }
+leptos-use = {workspace = true }
 axum = { workspace = true, optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 leptos_axum = { version = "0.8.0", optional = true }
 leptos_meta = { version = "0.8.0" }
 tokio = { workspace = true, optional = true }
 wasm-bindgen = { version = "=0.2.117", optional = true }
-shared = { workspace = true, optional = true }
+shared = { workspace = true }
 server_fn = { workspace = true, optional = true }
 serde = { workspace = true }
 futures = { workspace = true }
+tokio-stream = { workspace = true, optional = true }
+uuid = { workspace = true }
+shakmaty = { workspace = true }
+rand = { workspace = true, optional = true }
+web-sys = { workspace = true }
 
 [features]
 hydrate = [
@@ -30,21 +36,15 @@ ssr = [
     "dep:axum",
     "dep:tokio",
     "dep:server_fn",
-    "dep:shared",
+    "dep:rand",
     "dep:leptos_axum",
+    "dep:tokio-stream",
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",
 ]
 csr = ["leptos/csr"]
 
-# Defines a size-optimized profile for the WASM bundle in release mode
-[profile.wasm-release]
-inherits = "release"
-opt-level = 'z'
-lto = true
-codegen-units = 1
-panic = "abort"
 
 [package.metadata.leptos]
 # The name used by wasm-bindgen/cargo-leptos for the JS/WASM bundle. Defaults to the crate name
@@ -107,3 +107,6 @@ lib-default-features = false
 #
 # Optional. Defaults to "release".
 lib-profile-release = "wasm-release"
+
+# Runs wasm-opt on release WASM output. 'z' = optimize for size.
+wasm-opt = 'z'

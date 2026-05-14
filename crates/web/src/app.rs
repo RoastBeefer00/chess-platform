@@ -2,10 +2,10 @@ use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
 use leptos_router::{
     components::{Route, Router, Routes},
-    StaticSegment,
+    Lazy, ParamSegment, StaticSegment,
 };
 
-use crate::pages::NotFoundPage;
+use crate::pages::{play::PlayPage, NotFoundPage};
 use crate::{components::Nav, pages::HomePage};
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
@@ -16,7 +16,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <AutoReload options=options.clone() />
-                <HydrationScripts options/>
+                <HydrationScripts options islands=true/>
                 <MetaTags/>
             </head>
             <body class="bg-zinc-950 text-white min-h-screen">
@@ -39,7 +39,8 @@ pub fn App() -> impl IntoView {
             <Nav/>
             <main class="pt-14 min-h-screen bg-zinc-950">
                 <Routes fallback=NotFoundPage>
-                    <Route path=StaticSegment("") view=HomePage/>
+                    <Route path=StaticSegment("") view={Lazy::<HomePage>::new()}/>
+                    <Route path=(StaticSegment("play"), ParamSegment("game_id")) view={Lazy::<PlayPage>::new()}/>
                 </Routes>
             </main>
         </Router>
