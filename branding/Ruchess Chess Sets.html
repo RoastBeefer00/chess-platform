@@ -1,0 +1,2150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ruchess — Chess Sets</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Fraunces:opsz,wght@9..144,400;9..144,600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bone: #f4efe4;
+    --paper: #ffffff;
+    --ink: #1c1a17;
+    --slate-soft: #6a7280;
+    --hair: #d9d1bd;
+    --rust: #c0623a;
+
+    --board-light: #e6ddc9;
+    --board-dark: #4d5762;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bone); color: var(--ink); font-family: "Space Grotesk", system-ui, sans-serif; }
+  body { padding: 56px 48px 96px; }
+  .wrap { max-width: 1280px; margin: 0 auto; }
+
+  /* ============ HEADER / WORDMARK ============ */
+  header.brand {
+    border-top: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    padding: 28px 0 26px;
+    margin-bottom: 56px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: end;
+    gap: 36px;
+  }
+  .wordmark {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    font-family: "Space Grotesk", sans-serif;
+    font-weight: 700;
+    font-size: 84px;
+    line-height: 0.85;
+    letter-spacing: -0.04em;
+    color: var(--ink);
+  }
+  .wordmark .glyph-r {
+    display: inline-grid;
+    place-items: center;
+    width: 88px;
+    height: 88px;
+    background: var(--ink);
+    color: var(--bone);
+    margin-right: 6px;
+    position: relative;
+  }
+  .wordmark .glyph-r svg { width: 64px; height: 64px; }
+  .wordmark .tail { color: var(--rust); }
+  .brand-meta {
+    align-self: center;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: var(--slate-soft);
+  }
+  .brand-meta strong { color: var(--ink); font-weight: 500; letter-spacing: 0.16em; }
+  .brand-tag {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    color: var(--ink);
+    text-align: right;
+    max-width: 320px;
+    line-height: 1.4;
+  }
+  .brand-tag em { color: var(--rust); font-style: normal; font-weight: 500; }
+
+  .intro {
+    max-width: 760px;
+    font-family: "Fraunces", serif;
+    font-size: 22px;
+    line-height: 1.45;
+    margin-bottom: 64px;
+    color: var(--ink);
+  }
+  .intro em { color: var(--rust); font-style: italic; }
+  .intro .small {
+    display: block;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--slate-soft);
+    margin-top: 16px;
+  }
+
+  /* ============ SET CARDS ============ */
+  .set {
+    background: var(--paper);
+    border: 1px solid var(--hair);
+    border-radius: 4px;
+    padding: 36px 40px 40px;
+    margin-bottom: 40px;
+    box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+  }
+  .set-head {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 24px;
+    padding-bottom: 24px;
+    border-bottom: 1px dashed var(--hair);
+    margin-bottom: 32px;
+  }
+  .set-num {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--slate-soft);
+  }
+  .set-name {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .set-name h2 {
+    margin: 0;
+    font-family: "Space Grotesk", sans-serif;
+    font-weight: 600;
+    font-size: 36px;
+    letter-spacing: -0.02em;
+  }
+  .set-name .style {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    color: var(--slate-soft);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .set-desc {
+    grid-column: 2 / 3;
+    margin: 0;
+    font-family: "Space Grotesk", sans-serif;
+    font-size: 14px;
+    color: #4a4640;
+    max-width: 540px;
+    line-height: 1.5;
+  }
+  .swatches {
+    display: flex;
+    gap: 10px;
+  }
+  .swatch {
+    width: 36px;
+    height: 56px;
+    border-radius: 2px;
+    position: relative;
+    border: 1px solid var(--hair);
+  }
+  .swatch::after {
+    content: attr(data-hex);
+    position: absolute;
+    bottom: -18px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 9px;
+    color: var(--slate-soft);
+    letter-spacing: 0.04em;
+  }
+
+  /* ============ SHEET & BOARD GRID ============ */
+  .set-body {
+    display: grid;
+    grid-template-columns: 1.05fr 1fr;
+    gap: 36px;
+    margin-top: 12px;
+  }
+  .panel-label {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--slate-soft);
+    margin: 0 0 14px;
+  }
+
+  .sheet {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    grid-template-rows: 1fr 1fr;
+    gap: 4px;
+    background: var(--board-dark);
+    padding: 4px;
+    border-radius: 2px;
+  }
+  .sheet .cell {
+    aspect-ratio: 1 / 1;
+    display: grid;
+    place-items: center;
+    position: relative;
+  }
+  .sheet .cell.light { background: var(--board-light); }
+  .sheet .cell.dark { background: var(--board-dark); }
+  .sheet .cell svg.piece { width: 80%; height: 80%; }
+  .sheet .cell .pl {
+    position: absolute;
+    bottom: 4px;
+    left: 6px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    opacity: 0.55;
+    text-transform: uppercase;
+  }
+  .sheet .cell.light .pl { color: #5c5a55; }
+  .sheet .cell.dark .pl { color: #c5c2bb; }
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    background: var(--board-dark);
+    border-radius: 2px;
+    overflow: hidden;
+    aspect-ratio: 1 / 1;
+    width: 100%;
+  }
+  .board .sq {
+    position: relative;
+    display: grid;
+    place-items: center;
+  }
+  .board .sq.l { background: var(--board-light); }
+  .board .sq.d { background: var(--board-dark); }
+  .board .sq svg.piece { width: 84%; height: 84%; }
+  .board .file-label, .board .rank-label {
+    position: absolute;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 9px;
+    opacity: 0.6;
+  }
+  .board .sq.l .file-label, .board .sq.l .rank-label { color: #5c5a55; }
+  .board .sq.d .file-label, .board .sq.d .rank-label { color: #c5c2bb; }
+  .board .file-label { bottom: 2px; right: 4px; }
+  .board .rank-label { top: 2px; left: 4px; }
+
+  .board-meta {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 10px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    color: var(--slate-soft);
+    letter-spacing: 0.06em;
+  }
+
+  /* ============ FOOTER ============ */
+  footer.foot {
+    margin-top: 64px;
+    padding-top: 24px;
+    border-top: 1px solid var(--ink);
+    display: flex;
+    justify-content: space-between;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--slate-soft);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* Responsive */
+  @media (max-width: 980px) {
+    .set-body { grid-template-columns: 1fr; }
+    .set-head { grid-template-columns: 1fr; }
+    .swatches { grid-column: auto; }
+    .wordmark { font-size: 64px; }
+    .wordmark .glyph-r { width: 68px; height: 68px; }
+    .wordmark .glyph-r svg { width: 50px; height: 50px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============ WORDMARK ============ -->
+  <header class="brand">
+    <div class="wordmark">
+      <span class="glyph-r" aria-hidden="true">
+        <!-- a stylized rook-as-R -->
+        <svg viewBox="0 0 64 64">
+          <g fill="#f4efe4">
+            <rect x="8" y="8" width="6" height="8"/>
+            <rect x="18" y="8" width="6" height="8"/>
+            <rect x="28" y="8" width="6" height="8"/>
+            <rect x="38" y="8" width="6" height="8"/>
+            <rect x="48" y="8" width="6" height="8"/>
+            <rect x="8" y="16" width="46" height="8"/>
+            <rect x="8" y="24" width="14" height="24"/>
+            <rect x="22" y="24" width="20" height="10"/>
+            <rect x="30" y="34" width="12" height="6"/>
+            <rect x="38" y="40" width="8" height="8"/>
+            <rect x="8" y="48" width="46" height="8"/>
+          </g>
+        </svg>
+      </span><span>UCHESS</span>
+    </div>
+
+    <div class="brand-meta">
+      <strong>RUCHESS</strong>
+      <span>roo · chess</span>
+      <span>Rust · Universal · Chess</span>
+    </div>
+
+    <div class="brand-tag">
+      Runs <em>everywhere</em> — from datacenter racks to a Raspberry Pi in the corner of a café. The piece system follows: six sets, one universal silhouette grammar.
+    </div>
+  </header>
+
+  <p class="intro">
+    Six original chess sets for the Ruchess platform — drawn as SVG so they ship over the wire at the size of a thought and render crisp on every screen we deploy to.
+    Each set carries its own material story, its own palette, and its own answer to the question <em>what does chess look like here?</em>
+    <span class="small">// piece-system.svg  ·  v1.0  ·  may 2026</span>
+  </p>
+
+  <!-- ============================================================
+       SET 01 — CINDER (Modern Staunton)
+       ============================================================ -->
+  <section class="set">
+    <div class="set-head">
+      <div class="set-num">SET 01 / 06</div>
+      <div>
+        <div class="set-name">
+          <h2>Cinder</h2>
+          <span class="style">Modernized Staunton</span>
+        </div>
+        <p class="set-desc">The default set. Turned-wood Staunton silhouettes redrawn with a flatter, more architectural hand. The shape every regular player recognizes, simplified to the bone.</p>
+      </div>
+      <div class="swatches">
+        <div class="swatch" data-hex="#F3EAD8" style="background:#F3EAD8"></div>
+        <div class="swatch" data-hex="#2A2622" style="background:#2A2622"></div>
+      </div>
+    </div>
+
+    <div class="set-body">
+      <div>
+        <p class="panel-label">Piece sheet · 6 types × 2 sides</p>
+        <div class="sheet" id="sheet-cinder"></div>
+      </div>
+      <div>
+        <p class="panel-label">Starting position</p>
+        <div class="board" id="board-cinder"></div>
+        <div class="board-meta"><span>cinder.svg</span><span>Light: #F3EAD8 · Dark: #2A2622</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SET 02 — FOUNDRY (Industrial Brutalist)
+       ============================================================ -->
+  <section class="set">
+    <div class="set-head">
+      <div class="set-num">SET 02 / 06</div>
+      <div>
+        <div class="set-name">
+          <h2>Foundry</h2>
+          <span class="style">Industrial · brutalist</span>
+        </div>
+        <p class="set-desc">Pieces as machined parts. Plates, rivets, hex bolts, gear teeth — the literal interpretation of "Rust": forged steel that has been outside long enough to mean something.</p>
+      </div>
+      <div class="swatches">
+        <div class="swatch" data-hex="#D27145" style="background:#D27145"></div>
+        <div class="swatch" data-hex="#2E3138" style="background:#2E3138"></div>
+      </div>
+    </div>
+
+    <div class="set-body">
+      <div>
+        <p class="panel-label">Piece sheet · 6 types × 2 sides</p>
+        <div class="sheet" id="sheet-foundry"></div>
+      </div>
+      <div>
+        <p class="panel-label">Starting position</p>
+        <div class="board" id="board-foundry"></div>
+        <div class="board-meta"><span>foundry.svg</span><span>Oxide: #D27145 · Slate: #2E3138</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SET 03 — PHOSPHOR (Pixel / 8-bit)
+       ============================================================ -->
+  <section class="set">
+    <div class="set-head">
+      <div class="set-num">SET 03 / 06</div>
+      <div>
+        <div class="set-name">
+          <h2>Phosphor</h2>
+          <span class="style">Pixel · CRT</span>
+        </div>
+        <p class="set-desc">Each piece is a 14×14 sprite. Rendered crisp on every zoom level because SVG <code>shape-rendering:crispEdges</code>. For the edge-hardware deployments, the low-power dashboards, the love letters to old phosphor.</p>
+      </div>
+      <div class="swatches">
+        <div class="swatch" data-hex="#6FD17A" style="background:#6FD17A"></div>
+        <div class="swatch" data-hex="#0E1A2B" style="background:#0E1A2B"></div>
+      </div>
+    </div>
+
+    <div class="set-body">
+      <div>
+        <p class="panel-label">Piece sheet · 6 types × 2 sides</p>
+        <div class="sheet" id="sheet-phosphor"></div>
+      </div>
+      <div>
+        <p class="panel-label">Starting position</p>
+        <div class="board" id="board-phosphor"></div>
+        <div class="board-meta"><span>phosphor.svg</span><span>Phosphor: #6FD17A · Navy: #0E1A2B</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SET 04 — CONSOLE (Terminal / ASCII)
+       ============================================================ -->
+  <section class="set">
+    <div class="set-head">
+      <div class="set-num">SET 04 / 06</div>
+      <div>
+        <div class="set-name">
+          <h2>Console</h2>
+          <span class="style">Terminal · ASCII</span>
+        </div>
+        <p class="set-desc">Single-letter pieces in a heavy monospace, framed like a tile in a TUI. The universal fallback: if the renderer can draw a letter, it can play chess.</p>
+      </div>
+      <div class="swatches">
+        <div class="swatch" data-hex="#F0A740" style="background:#F0A740"></div>
+        <div class="swatch" data-hex="#161312" style="background:#161312"></div>
+      </div>
+    </div>
+
+    <div class="set-body">
+      <div>
+        <p class="panel-label">Piece sheet · 6 types × 2 sides</p>
+        <div class="sheet" id="sheet-console"></div>
+      </div>
+      <div>
+        <p class="panel-label">Starting position</p>
+        <div class="board" id="board-console"></div>
+        <div class="board-meta"><span>console.svg</span><span>Amber: #F0A740 · Char: #161312</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SET 05 — SUMI (Calligraphic / Brush)
+       ============================================================ -->
+  <section class="set">
+    <div class="set-head">
+      <div class="set-num">SET 05 / 06</div>
+      <div>
+        <div class="set-name">
+          <h2>Sumi</h2>
+          <span class="style">Calligraphic · brush</span>
+        </div>
+        <p class="set-desc">Pieces reduced to two or three brush strokes. Tapered ends, ink-on-paper rhythm. Variable stroke widths because every SVG renderer respects a Bézier curve.</p>
+      </div>
+      <div class="swatches">
+        <div class="swatch" data-hex="#E5D6B7" style="background:#E5D6B7"></div>
+        <div class="swatch" data-hex="#1A1410" style="background:#1A1410"></div>
+      </div>
+    </div>
+
+    <div class="set-body">
+      <div>
+        <p class="panel-label">Piece sheet · 6 types × 2 sides</p>
+        <div class="sheet" id="sheet-sumi"></div>
+      </div>
+      <div>
+        <p class="panel-label">Starting position</p>
+        <div class="board" id="board-sumi"></div>
+        <div class="board-meta"><span>sumi.svg</span><span>Parchment: #E5D6B7 · Ink: #1A1410</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SET 06 — SCHEMATIC (Wireframe / Blueprint)
+       ============================================================ -->
+  <section class="set">
+    <div class="set-head">
+      <div class="set-num">SET 06 / 06</div>
+      <div>
+        <div class="set-name">
+          <h2>Schematic</h2>
+          <span class="style">Wireframe · blueprint</span>
+        </div>
+        <p class="set-desc">Pieces drawn as if from an engineering elevation: stroke-only contours, centerlines, hatch fills. Pure paths — bytes-per-piece in the double digits.</p>
+      </div>
+      <div class="swatches">
+        <div class="swatch" data-hex="#F0EBDB" style="background:#F0EBDB"></div>
+        <div class="swatch" data-hex="#2D6E8A" style="background:#2D6E8A"></div>
+      </div>
+    </div>
+
+    <div class="set-body">
+      <div>
+        <p class="panel-label">Piece sheet · 6 types × 2 sides</p>
+        <div class="sheet" id="sheet-schematic"></div>
+      </div>
+      <div>
+        <p class="panel-label">Starting position</p>
+        <div class="board" id="board-schematic"></div>
+        <div class="board-meta"><span>schematic.svg</span><span>Paper: #F0EBDB · Line: #2D6E8A</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SET 07 — BASTION (Fantasy Westeros — weapons, dragons, war)
+       ============================================================ -->
+  <section class="set">
+    <div class="set-head">
+      <div class="set-num">SET 07 / 10</div>
+      <div>
+        <div class="set-name">
+          <h2>Bastion</h2>
+          <span class="style">Fantasy · houses & war</span>
+        </div>
+        <p class="set-desc">Pieces drawn as the weapons, sigils, and architecture of a great-houses fantasy: a sword in a pedestal, a battered keep, a dragon's profile, a spiked war-horse, a flame-banner, a throne run through with steel.</p>
+      </div>
+      <div class="swatches">
+        <div class="swatch" data-hex="#C45A3F" style="background:#C45A3F"></div>
+        <div class="swatch" data-hex="#1F1F23" style="background:#1F1F23"></div>
+      </div>
+    </div>
+
+    <div class="set-body">
+      <div>
+        <p class="panel-label">Piece sheet · 6 types × 2 sides</p>
+        <div class="sheet" id="sheet-bastion"></div>
+      </div>
+      <div>
+        <p class="panel-label">Starting position</p>
+        <div class="board" id="board-bastion"></div>
+        <div class="board-meta"><span>bastion.svg</span><span>Ember: #C45A3F · Iron: #1F1F23</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SET 08 — NORSE (Viking — shields, longships, runes)
+       ============================================================ -->
+  <section class="set">
+    <div class="set-head">
+      <div class="set-num">SET 08 / 10</div>
+      <div>
+        <div class="set-name">
+          <h2>Norse</h2>
+          <span class="style">Viking · runes & sea</span>
+        </div>
+        <p class="set-desc">A piece is a round shield, a longship prow, a wolf's head, a drinking horn, a tree of branches, a horned helm. The grammar of a winter-going people, carved in two metals.</p>
+      </div>
+      <div class="swatches">
+        <div class="swatch" data-hex="#C89C4A" style="background:#C89C4A"></div>
+        <div class="swatch" data-hex="#1F4258" style="background:#1F4258"></div>
+      </div>
+    </div>
+
+    <div class="set-body">
+      <div>
+        <p class="panel-label">Piece sheet · 6 types × 2 sides</p>
+        <div class="sheet" id="sheet-norse"></div>
+      </div>
+      <div>
+        <p class="panel-label">Starting position</p>
+        <div class="board" id="board-norse"></div>
+        <div class="board-meta"><span>norse.svg</span><span>Brass: #C89C4A · Fjord: #1F4258</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SET 09 — MARBLE (Classical Greco-Roman — closer to traditional)
+       ============================================================ -->
+  <section class="set">
+    <div class="set-head">
+      <div class="set-num">SET 09 / 10</div>
+      <div>
+        <div class="set-name">
+          <h2>Marble</h2>
+          <span class="style">Classical · sculptural</span>
+        </div>
+        <p class="set-desc">A traditional Staunton silhouette redrawn with Greco-Roman proportions: amphora pawns, fluted column rooks, laurel crowns, classical horse heads. The classroom-set you remember, refined.</p>
+      </div>
+      <div class="swatches">
+        <div class="swatch" data-hex="#F0E8D4" style="background:#F0E8D4"></div>
+        <div class="swatch" data-hex="#8A4A26" style="background:#8A4A26"></div>
+      </div>
+    </div>
+
+    <div class="set-body">
+      <div>
+        <p class="panel-label">Piece sheet · 6 types × 2 sides</p>
+        <div class="sheet" id="sheet-marble"></div>
+      </div>
+      <div>
+        <p class="panel-label">Starting position</p>
+        <div class="board" id="board-marble"></div>
+        <div class="board-meta"><span>marble.svg</span><span>Ivory: #F0E8D4 · Sienna: #8A4A26</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SET 10 — CATHEDRAL (Gothic architecture)
+       ============================================================ -->
+  <section class="set">
+    <div class="set-head">
+      <div class="set-num">SET 10 / 10</div>
+      <div>
+        <div class="set-name">
+          <h2>Cathedral</h2>
+          <span class="style">Gothic · architecture</span>
+        </div>
+        <p class="set-desc">Pieces drawn as elements of a great cathedral: lancet pawns, flying-buttress rooks, gargoyle knights, pointed-arch bishops, a rose-window queen, a tall cross-tipped spire for the king.</p>
+      </div>
+      <div class="swatches">
+        <div class="swatch" data-hex="#2C4A8A" style="background:#2C4A8A"></div>
+        <div class="swatch" data-hex="#C89A3A" style="background:#C89A3A"></div>
+      </div>
+    </div>
+
+    <div class="set-body">
+      <div>
+        <p class="panel-label">Piece sheet · 6 types × 2 sides</p>
+        <div class="sheet" id="sheet-cathedral"></div>
+      </div>
+      <div>
+        <p class="panel-label">Starting position</p>
+        <div class="board" id="board-cathedral"></div>
+        <div class="board-meta"><span>cathedral.svg</span><span>Cobalt: #2C4A8A · Ochre: #C89A3A</span></div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span>// ruchess design — piece system v1.1</span>
+    <span>60 silhouettes · 10 sets · all SVG</span>
+  </footer>
+</div>
+
+<!-- ====================================================================
+     SVG SYMBOL DEFINITIONS
+     Every piece is authored once and reused via <use>. Each <symbol>
+     is monochrome (currentColor) so sides differ only in fill color.
+     ==================================================================== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<defs>
+
+  <!-- ============ SET 01 — CINDER (filled Staunton silhouettes) ============ -->
+  <!-- viewBox 100×120, single fill, classical Staunton proportions -->
+
+  <symbol id="cinder-P" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <circle cx="50" cy="28" r="14"/>
+      <path d="M40 41 h20 l-3 6 h-14 z"/>
+      <path d="M38 50 q12 14 6 30 h12 q-6 -16 6 -30 z"/>
+      <path d="M30 84 q4 -6 14 -6 h12 q10 0 14 6 v6 h-40 z"/>
+      <path d="M24 94 h52 v6 q0 4 -4 4 h-44 q-4 0 -4 -4 z"/>
+    </g>
+  </symbol>
+
+  <symbol id="cinder-R" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- battlements -->
+      <rect x="22" y="14" width="10" height="14"/>
+      <rect x="36" y="14" width="10" height="14"/>
+      <rect x="50" y="14" width="10" height="14"/>
+      <rect x="64" y="14" width="10" height="14"/>
+      <rect x="22" y="26" width="56" height="10"/>
+      <!-- belt -->
+      <rect x="26" y="36" width="48" height="6"/>
+      <!-- shaft -->
+      <path d="M30 42 q-2 18 0 38 h40 q2 -20 0 -38 z"/>
+      <!-- base flare -->
+      <path d="M22 80 q4 -4 10 -4 h36 q6 0 10 4 v8 h-56 z"/>
+      <rect x="20" y="90" width="60" height="6"/>
+      <rect x="18" y="98" width="64" height="8" rx="1"/>
+    </g>
+  </symbol>
+
+  <symbol id="cinder-N" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- horse head silhouette, left-facing -->
+      <path d="M58 8
+               C 44 8, 32 14, 28 26
+               C 24 38, 30 42, 26 48
+               L 20 56
+               C 16 62, 16 68, 22 70
+               L 30 70
+               C 26 76, 28 84, 36 84
+               L 70 84
+               C 76 84, 78 76, 76 68
+               C 74 56, 76 44, 74 32
+               C 72 18, 66 8, 58 8 Z"/>
+      <!-- eye dot (subtle darker notch) -->
+      <circle cx="58" cy="32" r="2.5" fill="#000" opacity="0.45"/>
+      <!-- base -->
+      <path d="M24 84 h52 q6 0 8 6 v4 h-68 v-4 q2 -6 8 -6 z"/>
+      <rect x="20" y="96" width="60" height="8" rx="1"/>
+      <!-- mouth notch -->
+      <path d="M22 60 q6 -2 10 0 l -2 6 q -6 0 -10 -2 z"/>
+    </g>
+  </symbol>
+
+  <symbol id="cinder-B" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- mitre top -->
+      <circle cx="50" cy="14" r="5"/>
+      <path d="M38 22 q12 -10 24 0
+               q4 6 0 14
+               q -6 8 -12 8
+               q -6 0 -12 -8
+               q -4 -8 0 -14 Z"/>
+      <!-- mitre slit (darker notch, reads on both light & dark piece colors) -->
+      <path d="M50 22 l 8 12 l -16 0 z" fill="#000" opacity="0.32"/>
+      <!-- collar -->
+      <rect x="36" y="48" width="28" height="6"/>
+      <!-- body -->
+      <path d="M34 54 q12 16 4 34 h24 q -8 -18 4 -34 z"/>
+      <!-- base -->
+      <path d="M28 88 q2 -6 10 -6 h24 q8 0 10 6 v6 h-44 z"/>
+      <rect x="22" y="96" width="56" height="8" rx="1"/>
+    </g>
+  </symbol>
+
+  <symbol id="cinder-Q" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- 5 pearled points -->
+      <circle cx="20" cy="10" r="4"/>
+      <circle cx="35" cy="6" r="4"/>
+      <circle cx="50" cy="4" r="4"/>
+      <circle cx="65" cy="6" r="4"/>
+      <circle cx="80" cy="10" r="4"/>
+      <!-- crown band -->
+      <path d="M20 14 L26 26 L35 10 L42 28 L50 8 L58 28 L65 10 L74 26 L80 14
+               L82 32 L18 32 Z"/>
+      <!-- collar -->
+      <rect x="22" y="34" width="56" height="6"/>
+      <!-- body -->
+      <path d="M28 40 q12 18 4 36 h36 q -8 -18 4 -36 z"/>
+      <!-- base -->
+      <path d="M22 86 q4 -6 12 -6 h32 q8 0 12 6 v6 h-56 z"/>
+      <rect x="18" y="94" width="64" height="8" rx="1"/>
+    </g>
+  </symbol>
+
+  <symbol id="cinder-K" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- cross -->
+      <rect x="47" y="2" width="6" height="22"/>
+      <rect x="40" y="9" width="20" height="6"/>
+      <!-- crown ball -->
+      <circle cx="50" cy="30" r="6"/>
+      <!-- crown -->
+      <path d="M26 38 q24 -8 48 0 v10 h-48 z"/>
+      <!-- collar -->
+      <rect x="24" y="48" width="52" height="6"/>
+      <!-- body -->
+      <path d="M30 54 q14 18 6 34 h28 q -8 -16 6 -34 z"/>
+      <!-- base -->
+      <path d="M22 88 q4 -6 12 -6 h32 q8 0 12 6 v6 h-56 z"/>
+      <rect x="18" y="96" width="64" height="8" rx="1"/>
+    </g>
+  </symbol>
+
+  <!-- ============ SET 02 — FOUNDRY (industrial brutalist, rivets + plates) ============ -->
+  <!-- 100×120 viewBox. Hard-edged. Inner rivets in negative space using bg color trick:
+       we draw the body in currentColor and place rivets in a contrasting tint via opacity. -->
+
+  <symbol id="foundry-P" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- hex bolt head -->
+      <polygon points="50,10 70,22 70,46 50,58 30,46 30,22"/>
+      <!-- bolt shaft -->
+      <rect x="42" y="58" width="16" height="22"/>
+      <!-- base plate -->
+      <rect x="22" y="80" width="56" height="12"/>
+      <rect x="18" y="92" width="64" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.28">
+      <!-- screw slot -->
+      <rect x="36" y="32" width="28" height="4"/>
+      <!-- bolt seam -->
+      <rect x="42" y="68" width="16" height="2"/>
+      <!-- corner rivets in base -->
+      <circle cx="26" cy="98" r="2"/>
+      <circle cx="74" cy="98" r="2"/>
+      <circle cx="26" cy="86" r="1.5"/>
+      <circle cx="74" cy="86" r="1.5"/>
+    </g>
+  </symbol>
+
+  <symbol id="foundry-R" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- smokestack with rivet bands -->
+      <rect x="18" y="6" width="64" height="10"/>
+      <rect x="22" y="16" width="56" height="6"/>
+      <rect x="28" y="22" width="44" height="62"/>
+      <rect x="22" y="84" width="56" height="8"/>
+      <rect x="18" y="92" width="64" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.28">
+      <!-- chimney slits -->
+      <rect x="26" y="9" width="6" height="4"/>
+      <rect x="40" y="9" width="6" height="4"/>
+      <rect x="54" y="9" width="6" height="4"/>
+      <rect x="68" y="9" width="6" height="4"/>
+      <!-- vertical rivet rows -->
+      <circle cx="34" cy="32" r="2"/>
+      <circle cx="34" cy="44" r="2"/>
+      <circle cx="34" cy="56" r="2"/>
+      <circle cx="34" cy="68" r="2"/>
+      <circle cx="66" cy="32" r="2"/>
+      <circle cx="66" cy="44" r="2"/>
+      <circle cx="66" cy="56" r="2"/>
+      <circle cx="66" cy="68" r="2"/>
+      <!-- base rivets -->
+      <circle cx="26" cy="99" r="2"/>
+      <circle cx="50" cy="99" r="2"/>
+      <circle cx="74" cy="99" r="2"/>
+    </g>
+  </symbol>
+
+  <symbol id="foundry-N" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- robotic horse head: angular plates -->
+      <polygon points="62,8 78,22 78,40 70,50 76,58 76,80 24,80 24,68 36,60 30,52 36,46 36,30 50,12"/>
+      <!-- base plate -->
+      <rect x="22" y="80" width="56" height="12"/>
+      <rect x="18" y="92" width="64" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.28">
+      <!-- eye slot -->
+      <rect x="56" y="28" width="12" height="4"/>
+      <!-- mane vents -->
+      <rect x="38" y="20" width="2" height="10"/>
+      <rect x="42" y="18" width="2" height="12"/>
+      <rect x="46" y="16" width="2" height="14"/>
+      <!-- jaw bolt -->
+      <circle cx="32" cy="64" r="2"/>
+      <!-- base rivets -->
+      <circle cx="26" cy="99" r="2"/>
+      <circle cx="50" cy="99" r="2"/>
+      <circle cx="74" cy="99" r="2"/>
+    </g>
+  </symbol>
+
+  <symbol id="foundry-B" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- wedge/spike head -->
+      <polygon points="50,4 64,28 50,32 36,28"/>
+      <!-- I-beam body -->
+      <rect x="30" y="32" width="40" height="10"/>
+      <rect x="42" y="42" width="16" height="40"/>
+      <rect x="30" y="82" width="40" height="10"/>
+      <!-- base -->
+      <rect x="18" y="92" width="64" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.28">
+      <!-- slot in spike -->
+      <rect x="48" y="14" width="4" height="14"/>
+      <!-- I-beam bolts -->
+      <circle cx="36" cy="37" r="2"/>
+      <circle cx="64" cy="37" r="2"/>
+      <circle cx="36" cy="87" r="2"/>
+      <circle cx="64" cy="87" r="2"/>
+      <!-- base rivets -->
+      <circle cx="26" cy="99" r="2"/>
+      <circle cx="74" cy="99" r="2"/>
+    </g>
+  </symbol>
+
+  <symbol id="foundry-Q" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- turbine fan crown -->
+      <polygon points="50,4 56,16 70,8 64,22 80,22 66,30 78,42 62,38 62,52 50,42 38,52 38,38 22,42 34,30 20,22 36,22 30,8 44,16"/>
+      <!-- column -->
+      <rect x="36" y="50" width="28" height="32"/>
+      <!-- base plate -->
+      <rect x="22" y="82" width="56" height="10"/>
+      <rect x="18" y="92" width="64" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.28">
+      <!-- column rivets -->
+      <circle cx="42" cy="58" r="2"/>
+      <circle cx="58" cy="58" r="2"/>
+      <circle cx="42" cy="72" r="2"/>
+      <circle cx="58" cy="72" r="2"/>
+      <!-- center hub -->
+      <circle cx="50" cy="28" r="3"/>
+      <!-- base rivets -->
+      <circle cx="26" cy="99" r="2"/>
+      <circle cx="50" cy="99" r="2"/>
+      <circle cx="74" cy="99" r="2"/>
+    </g>
+  </symbol>
+
+  <symbol id="foundry-K" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- gear crown with cross -->
+      <rect x="46" y="2" width="8" height="14"/>
+      <rect x="38" y="6" width="24" height="6"/>
+      <!-- gear teeth ring -->
+      <g>
+        <circle cx="50" cy="32" r="20"/>
+        <rect x="46" y="8" width="8" height="6"/>
+        <rect x="46" y="50" width="8" height="6"/>
+        <rect x="22" y="28" width="6" height="8"/>
+        <rect x="72" y="28" width="6" height="8"/>
+        <rect x="29" y="13" width="8" height="6" transform="rotate(-45 33 16)"/>
+        <rect x="63" y="13" width="8" height="6" transform="rotate(45 67 16)"/>
+        <rect x="29" y="45" width="8" height="6" transform="rotate(45 33 48)"/>
+        <rect x="63" y="45" width="8" height="6" transform="rotate(-45 67 48)"/>
+      </g>
+      <!-- riveted body -->
+      <rect x="32" y="52" width="36" height="30"/>
+      <!-- base -->
+      <rect x="22" y="82" width="56" height="10"/>
+      <rect x="18" y="92" width="64" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.28">
+      <!-- gear hub -->
+      <circle cx="50" cy="32" r="6"/>
+      <!-- body rivets -->
+      <circle cx="38" cy="60" r="2"/>
+      <circle cx="50" cy="60" r="2"/>
+      <circle cx="62" cy="60" r="2"/>
+      <circle cx="38" cy="74" r="2"/>
+      <circle cx="50" cy="74" r="2"/>
+      <circle cx="62" cy="74" r="2"/>
+      <!-- base rivets -->
+      <circle cx="26" cy="99" r="2"/>
+      <circle cx="50" cy="99" r="2"/>
+      <circle cx="74" cy="99" r="2"/>
+    </g>
+  </symbol>
+
+  <!-- ============ SET 03 — PHOSPHOR (pixel art) ============ -->
+  <!-- 14×14 grids. shape-rendering:crispEdges. Each filled pixel is a 1×1 rect. -->
+  <!-- viewBox 0 0 14 14 -->
+
+  <symbol id="phosphor-P" viewBox="0 0 14 14">
+    <g fill="currentColor" shape-rendering="crispEdges">
+      <!-- row 2 -->
+      <rect x="6" y="2" width="2" height="2"/>
+      <!-- row 4 -->
+      <rect x="5" y="4" width="4" height="3"/>
+      <!-- neck -->
+      <rect x="6" y="7" width="2" height="1"/>
+      <!-- body -->
+      <rect x="5" y="8" width="4" height="3"/>
+      <!-- base -->
+      <rect x="3" y="11" width="8" height="2"/>
+    </g>
+  </symbol>
+
+  <symbol id="phosphor-R" viewBox="0 0 14 14">
+    <g fill="currentColor" shape-rendering="crispEdges">
+      <!-- battlements -->
+      <rect x="2" y="2" width="2" height="2"/>
+      <rect x="6" y="2" width="2" height="2"/>
+      <rect x="10" y="2" width="2" height="2"/>
+      <rect x="2" y="4" width="10" height="1"/>
+      <!-- shaft -->
+      <rect x="3" y="5" width="8" height="6"/>
+      <!-- base -->
+      <rect x="2" y="11" width="10" height="2"/>
+    </g>
+  </symbol>
+
+  <symbol id="phosphor-N" viewBox="0 0 14 14">
+    <g fill="currentColor" shape-rendering="crispEdges">
+      <!-- horse head -->
+      <rect x="6" y="1" width="5" height="1"/>
+      <rect x="5" y="2" width="7" height="1"/>
+      <rect x="4" y="3" width="8" height="1"/>
+      <rect x="3" y="4" width="9" height="2"/>
+      <rect x="2" y="6" width="3" height="1"/>
+      <rect x="5" y="6" width="7" height="1"/>
+      <rect x="3" y="7" width="9" height="1"/>
+      <rect x="4" y="8" width="7" height="3"/>
+      <!-- base -->
+      <rect x="2" y="11" width="10" height="2"/>
+    </g>
+    <g fill="#000" opacity="0.5" shape-rendering="crispEdges">
+      <!-- eye -->
+      <rect x="8" y="4" width="1" height="1"/>
+    </g>
+  </symbol>
+
+  <symbol id="phosphor-B" viewBox="0 0 14 14">
+    <g fill="currentColor" shape-rendering="crispEdges">
+      <!-- ball -->
+      <rect x="6" y="1" width="2" height="1"/>
+      <!-- mitre -->
+      <rect x="5" y="2" width="4" height="1"/>
+      <rect x="4" y="3" width="6" height="3"/>
+      <!-- collar -->
+      <rect x="4" y="6" width="6" height="1"/>
+      <!-- body -->
+      <rect x="5" y="7" width="4" height="4"/>
+      <!-- base -->
+      <rect x="2" y="11" width="10" height="2"/>
+    </g>
+    <g fill="#000" opacity="0.5" shape-rendering="crispEdges">
+      <!-- slit -->
+      <rect x="6" y="3" width="2" height="2"/>
+    </g>
+  </symbol>
+
+  <symbol id="phosphor-Q" viewBox="0 0 14 14">
+    <g fill="currentColor" shape-rendering="crispEdges">
+      <!-- pearls -->
+      <rect x="2" y="1" width="1" height="1"/>
+      <rect x="5" y="1" width="1" height="1"/>
+      <rect x="8" y="1" width="1" height="1"/>
+      <rect x="11" y="1" width="1" height="1"/>
+      <!-- crown -->
+      <rect x="2" y="2" width="10" height="1"/>
+      <rect x="3" y="3" width="8" height="2"/>
+      <!-- collar -->
+      <rect x="3" y="5" width="8" height="1"/>
+      <!-- body -->
+      <rect x="4" y="6" width="6" height="5"/>
+      <!-- base -->
+      <rect x="2" y="11" width="10" height="2"/>
+    </g>
+  </symbol>
+
+  <symbol id="phosphor-K" viewBox="0 0 14 14">
+    <g fill="currentColor" shape-rendering="crispEdges">
+      <!-- cross -->
+      <rect x="6" y="0" width="2" height="4"/>
+      <rect x="5" y="1" width="4" height="2"/>
+      <!-- crown -->
+      <rect x="3" y="4" width="8" height="2"/>
+      <!-- collar -->
+      <rect x="3" y="6" width="8" height="1"/>
+      <!-- body -->
+      <rect x="4" y="7" width="6" height="4"/>
+      <!-- base -->
+      <rect x="2" y="11" width="10" height="2"/>
+    </g>
+  </symbol>
+
+  <!-- ============ SET 04 — CONSOLE (terminal/ASCII tiles) ============ -->
+  <!-- viewBox 0 0 100 120: terminal-style frame + single big monospace letter -->
+  <!-- For two-color use: the LIGHT side uses light bg + dark glyph; the DARK side
+       uses dark bg + light glyph. We'll handle the bg via a fill on the rect using
+       currentColor and the glyph via a contrasting fill provided per-element. To keep
+       it monochrome-via-currentColor we just stroke a frame and use currentColor for
+       both frame and glyph, on the transparent square background. -->
+
+  <symbol id="console-P" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="4">
+      <rect x="10" y="12" width="80" height="96" rx="2"/>
+      <line x1="10" y1="28" x2="90" y2="28"/>
+    </g>
+    <g fill="currentColor">
+      <circle cx="18" cy="20" r="2"/>
+      <circle cx="26" cy="20" r="2"/>
+      <circle cx="34" cy="20" r="2"/>
+    </g>
+    <text x="50" y="82" text-anchor="middle"
+          font-family="JetBrains Mono, monospace" font-size="48" font-weight="700"
+          fill="currentColor">P</text>
+  </symbol>
+
+  <symbol id="console-R" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="4">
+      <rect x="10" y="12" width="80" height="96" rx="2"/>
+      <line x1="10" y1="28" x2="90" y2="28"/>
+    </g>
+    <g fill="currentColor">
+      <circle cx="18" cy="20" r="2"/>
+      <circle cx="26" cy="20" r="2"/>
+      <circle cx="34" cy="20" r="2"/>
+    </g>
+    <text x="50" y="82" text-anchor="middle"
+          font-family="JetBrains Mono, monospace" font-size="48" font-weight="700"
+          fill="currentColor">R</text>
+  </symbol>
+
+  <symbol id="console-N" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="4">
+      <rect x="10" y="12" width="80" height="96" rx="2"/>
+      <line x1="10" y1="28" x2="90" y2="28"/>
+    </g>
+    <g fill="currentColor">
+      <circle cx="18" cy="20" r="2"/>
+      <circle cx="26" cy="20" r="2"/>
+      <circle cx="34" cy="20" r="2"/>
+    </g>
+    <text x="50" y="82" text-anchor="middle"
+          font-family="JetBrains Mono, monospace" font-size="48" font-weight="700"
+          fill="currentColor">N</text>
+  </symbol>
+
+  <symbol id="console-B" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="4">
+      <rect x="10" y="12" width="80" height="96" rx="2"/>
+      <line x1="10" y1="28" x2="90" y2="28"/>
+    </g>
+    <g fill="currentColor">
+      <circle cx="18" cy="20" r="2"/>
+      <circle cx="26" cy="20" r="2"/>
+      <circle cx="34" cy="20" r="2"/>
+    </g>
+    <text x="50" y="82" text-anchor="middle"
+          font-family="JetBrains Mono, monospace" font-size="48" font-weight="700"
+          fill="currentColor">B</text>
+  </symbol>
+
+  <symbol id="console-Q" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="4">
+      <rect x="10" y="12" width="80" height="96" rx="2"/>
+      <line x1="10" y1="28" x2="90" y2="28"/>
+    </g>
+    <g fill="currentColor">
+      <circle cx="18" cy="20" r="2"/>
+      <circle cx="26" cy="20" r="2"/>
+      <circle cx="34" cy="20" r="2"/>
+    </g>
+    <text x="50" y="82" text-anchor="middle"
+          font-family="JetBrains Mono, monospace" font-size="48" font-weight="700"
+          fill="currentColor">Q</text>
+  </symbol>
+
+  <symbol id="console-K" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="4">
+      <rect x="10" y="12" width="80" height="96" rx="2"/>
+      <line x1="10" y1="28" x2="90" y2="28"/>
+    </g>
+    <g fill="currentColor">
+      <circle cx="18" cy="20" r="2"/>
+      <circle cx="26" cy="20" r="2"/>
+      <circle cx="34" cy="20" r="2"/>
+    </g>
+    <text x="50" y="82" text-anchor="middle"
+          font-family="JetBrains Mono, monospace" font-size="48" font-weight="700"
+          fill="currentColor">K</text>
+  </symbol>
+
+  <!-- ============ SET 05 — SUMI (brush strokes) ============ -->
+  <!-- Calligraphic strokes. Use fill with single path that has tapering via geometry.
+       Each piece composed of 2-3 organic shapes. -->
+
+  <symbol id="sumi-P" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- head dot (a brushed circle, slightly squished) -->
+      <ellipse cx="50" cy="30" rx="14" ry="11"/>
+      <!-- body sweep -->
+      <path d="M 32 56
+               C 30 70, 36 84, 22 100
+               L 78 100
+               C 64 84, 70 70, 68 56
+               C 62 58, 56 60, 50 60
+               C 44 60, 38 58, 32 56 Z"/>
+    </g>
+  </symbol>
+
+  <symbol id="sumi-R" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- battlement strokes -->
+      <path d="M 22 18
+               L 30 14 L 38 18 L 38 26
+               L 46 22 L 54 26
+               L 62 22 L 70 26
+               L 78 22 L 78 32
+               L 22 32 Z"/>
+      <!-- body wedge -->
+      <path d="M 28 36
+               C 32 50, 30 66, 24 96
+               L 76 96
+               C 70 66, 68 50, 72 36
+               C 60 40, 40 40, 28 36 Z"/>
+    </g>
+  </symbol>
+
+  <symbol id="sumi-N" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- horse head as one swept brush stroke, left-facing -->
+      <path d="M 68 14
+               C 56 8, 40 14, 32 26
+               C 28 32, 30 38, 26 44
+               C 22 50, 16 54, 18 64
+               C 20 70, 26 68, 32 66
+               C 28 76, 30 88, 38 92
+               L 76 92
+               C 80 84, 80 70, 78 56
+               C 76 38, 76 22, 68 14 Z"/>
+      <!-- eye (small darker dot) -->
+      <circle cx="60" cy="34" r="2.4" fill="#000" opacity="0.45"/>
+    </g>
+  </symbol>
+
+  <symbol id="sumi-B" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- mitre point with brush taper -->
+      <path d="M 50 8
+               C 44 18, 36 26, 36 38
+               C 36 46, 44 50, 50 50
+               C 56 50, 64 46, 64 38
+               C 64 26, 56 18, 50 8 Z"/>
+      <!-- body -->
+      <path d="M 38 56
+               C 36 72, 30 86, 24 100
+               L 76 100
+               C 70 86, 64 72, 62 56
+               C 56 60, 44 60, 38 56 Z"/>
+    </g>
+  </symbol>
+
+  <symbol id="sumi-Q" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- crown as 3 tapered strokes -->
+      <path d="M 18 14 L 24 8 L 30 24 Z"/>
+      <path d="M 36 22 L 44 6 L 50 24 Z"/>
+      <path d="M 50 24 L 56 6 L 64 22 Z"/>
+      <path d="M 70 24 L 76 8 L 82 14 Z"/>
+      <!-- band -->
+      <path d="M 22 28 L 78 28 L 76 36 L 24 36 Z"/>
+      <!-- body -->
+      <path d="M 30 40
+               C 32 56, 28 74, 22 100
+               L 78 100
+               C 72 74, 68 56, 70 40
+               C 60 44, 40 44, 30 40 Z"/>
+    </g>
+  </symbol>
+
+  <symbol id="sumi-K" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- brushed cross -->
+      <path d="M 46 4 L 54 4 L 54 16 L 64 16 L 64 22 L 54 22 L 54 36 L 46 36 L 46 22 L 36 22 L 36 16 L 46 16 Z"/>
+      <!-- crown band -->
+      <path d="M 22 40 C 40 32, 60 32, 78 40 L 78 50 L 22 50 Z"/>
+      <!-- body -->
+      <path d="M 28 54
+               C 32 70, 28 86, 22 100
+               L 78 100
+               C 72 86, 68 70, 72 54
+               C 60 58, 40 58, 28 54 Z"/>
+    </g>
+  </symbol>
+
+  <!-- ============ SET 06 — SCHEMATIC (blueprint wireframe) ============ -->
+  <!-- Stroke-only. Centerlines, hatching, dimension marks.
+       Uses currentColor for stroke. Hatching done with diagonal lines clipped to body. -->
+
+  <symbol id="schematic-P" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+      <circle cx="50" cy="28" r="13"/>
+      <path d="M40 41 h20 l-3 6 h-14 z"/>
+      <path d="M38 50 q12 14 6 30 h12 q-6 -16 6 -30"/>
+      <path d="M30 84 q4 -6 14 -6 h12 q10 0 14 6 v6 h-40 z"/>
+      <rect x="24" y="94" width="52" height="10" rx="1"/>
+      <!-- centerline -->
+      <line x1="50" y1="6" x2="50" y2="110" stroke-dasharray="2 4" stroke-width="0.8" opacity="0.6"/>
+      <!-- hatch lines -->
+      <line x1="34" y1="96" x2="46" y2="96"/>
+      <line x1="54" y1="96" x2="66" y2="96"/>
+    </g>
+  </symbol>
+
+  <symbol id="schematic-R" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+      <rect x="22" y="14" width="10" height="14"/>
+      <rect x="36" y="14" width="10" height="14"/>
+      <rect x="50" y="14" width="10" height="14"/>
+      <rect x="64" y="14" width="10" height="14"/>
+      <rect x="22" y="26" width="56" height="10"/>
+      <rect x="26" y="36" width="48" height="6"/>
+      <path d="M30 42 q-2 18 0 38 h40 q2 -20 0 -38"/>
+      <path d="M22 80 q4 -4 10 -4 h36 q6 0 10 4 v8 h-56 z"/>
+      <rect x="18" y="92" width="64" height="14" rx="1"/>
+      <line x1="50" y1="6" x2="50" y2="110" stroke-dasharray="2 4" stroke-width="0.8" opacity="0.6"/>
+      <!-- dim marks -->
+      <line x1="6" y1="14" x2="14" y2="14" stroke-width="1"/>
+      <line x1="6" y1="106" x2="14" y2="106" stroke-width="1"/>
+      <line x1="10" y1="14" x2="10" y2="106" stroke-width="0.8" opacity="0.6"/>
+    </g>
+  </symbol>
+
+  <symbol id="schematic-N" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M58 8
+               C 44 8, 32 14, 28 26
+               C 24 38, 30 42, 26 48
+               L 20 56
+               C 16 62, 16 68, 22 70
+               L 30 70
+               C 26 76, 28 84, 36 84
+               L 70 84
+               C 76 84, 78 76, 76 68
+               C 74 56, 76 44, 74 32
+               C 72 18, 66 8, 58 8 Z"/>
+      <circle cx="58" cy="32" r="2.5"/>
+      <path d="M22 60 q6 -2 10 0 l -2 6 q -6 0 -10 -2 z"/>
+      <path d="M24 84 h52 q6 0 8 6 v4 h-68 v-4 q2 -6 8 -6 z"/>
+      <rect x="20" y="94" width="60" height="10" rx="1"/>
+      <line x1="50" y1="6" x2="50" y2="110" stroke-dasharray="2 4" stroke-width="0.8" opacity="0.6"/>
+    </g>
+  </symbol>
+
+  <symbol id="schematic-B" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+      <circle cx="50" cy="14" r="5"/>
+      <path d="M38 22 q12 -10 24 0 q4 6 0 14 q -6 8 -12 8 q -6 0 -12 -8 q -4 -8 0 -14 Z"/>
+      <path d="M50 22 l 8 12 l -16 0 z"/>
+      <rect x="36" y="48" width="28" height="6"/>
+      <path d="M34 54 q12 16 4 34 h24 q -8 -18 4 -34"/>
+      <path d="M28 88 q2 -6 10 -6 h24 q8 0 10 6 v6 h-44 z"/>
+      <rect x="22" y="96" width="56" height="8" rx="1"/>
+      <line x1="50" y1="6" x2="50" y2="110" stroke-dasharray="2 4" stroke-width="0.8" opacity="0.6"/>
+    </g>
+  </symbol>
+
+  <symbol id="schematic-Q" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+      <circle cx="20" cy="10" r="4"/>
+      <circle cx="35" cy="6" r="4"/>
+      <circle cx="50" cy="4" r="4"/>
+      <circle cx="65" cy="6" r="4"/>
+      <circle cx="80" cy="10" r="4"/>
+      <path d="M20 14 L26 26 L35 10 L42 28 L50 8 L58 28 L65 10 L74 26 L80 14 L82 32 L18 32 Z"/>
+      <rect x="22" y="34" width="56" height="6"/>
+      <path d="M28 40 q12 18 4 36 h36 q -8 -18 4 -36"/>
+      <path d="M22 86 q4 -6 12 -6 h32 q8 0 12 6 v6 h-56 z"/>
+      <rect x="18" y="94" width="64" height="10" rx="1"/>
+      <line x1="50" y1="2" x2="50" y2="110" stroke-dasharray="2 4" stroke-width="0.8" opacity="0.6"/>
+    </g>
+  </symbol>
+
+  <symbol id="schematic-K" viewBox="0 0 100 120">
+    <g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+      <rect x="47" y="2" width="6" height="22"/>
+      <rect x="40" y="9" width="20" height="6"/>
+      <circle cx="50" cy="30" r="6"/>
+      <path d="M26 38 q24 -8 48 0 v10 h-48 z"/>
+      <rect x="24" y="48" width="52" height="6"/>
+      <path d="M30 54 q14 18 6 34 h28 q -8 -16 6 -34"/>
+      <path d="M22 88 q4 -6 12 -6 h32 q8 0 12 6 v6 h-56 z"/>
+      <rect x="18" y="96" width="64" height="8" rx="1"/>
+      <line x1="50" y1="0" x2="50" y2="110" stroke-dasharray="2 4" stroke-width="0.8" opacity="0.6"/>
+    </g>
+  </symbol>
+  <!-- ============ SET 07 — BASTION (fantasy weapons, dragons, throne) ============ -->
+
+  <symbol id="bastion-P" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- pommel -->
+      <circle cx="50" cy="10" r="5"/>
+      <!-- grip -->
+      <rect x="47" y="14" width="6" height="8"/>
+      <!-- crossguard -->
+      <path d="M28 22 h44 l-3 6 h-38 z"/>
+      <!-- blade -->
+      <path d="M42 28 h16 l-2 48 l-6 8 l-6 -8 z"/>
+      <!-- pedestal -->
+      <path d="M26 84 q2 -4 8 -4 h32 q6 0 8 4 v8 h-48 z"/>
+      <rect x="20" y="92" width="60" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.32">
+      <!-- blade fuller -->
+      <rect x="49" y="30" width="2" height="42"/>
+    </g>
+  </symbol>
+
+  <symbol id="bastion-R" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- broken jagged battlement -->
+      <path d="M20 22 L 26 12 L 30 22 L 36 10 L 42 22 L 50 8 L 58 22 L 64 10 L 70 22 L 74 12 L 80 22 L 80 30 L 20 30 Z"/>
+      <!-- keep body -->
+      <rect x="24" y="30" width="52" height="50"/>
+      <!-- base -->
+      <path d="M22 80 q2 -4 8 -4 h40 q6 0 8 4 v8 h-56 z"/>
+      <rect x="18" y="90" width="64" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.34">
+      <!-- arrow slits -->
+      <rect x="47" y="40" width="6" height="20"/>
+      <rect x="33" y="46" width="4" height="14"/>
+      <rect x="63" y="46" width="4" height="14"/>
+      <!-- mortar bands -->
+      <rect x="24" y="44" width="52" height="1"/>
+      <rect x="24" y="64" width="52" height="1"/>
+    </g>
+  </symbol>
+
+  <symbol id="bastion-N" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- armored war-horse, left-facing -->
+      <path d="M62 8
+               C 48 8, 36 16, 32 26
+               L 28 38
+               L 22 50
+               C 18 56, 20 64, 28 66
+               L 32 66
+               C 28 74, 30 84, 38 84
+               L 72 84
+               C 78 84, 80 78, 78 68
+               C 76 54, 76 30, 70 16
+               C 68 12, 66 8, 62 8 Z"/>
+      <!-- spike crest -->
+      <path d="M44 8 L 48 0 L 52 8 L 56 0 L 60 8 Z"/>
+      <!-- base -->
+      <path d="M26 84 h48 q6 0 8 4 v6 h-64 v-6 q2 -4 8 -4 z"/>
+      <rect x="20" y="94" width="60" height="12"/>
+    </g>
+    <g fill="#000" opacity="0.4">
+      <!-- eye slit -->
+      <rect x="54" y="32" width="10" height="3"/>
+      <!-- cheek plate seam -->
+      <path d="M36 50 q10 -2 22 0 v2 q -12 -2 -22 0 z"/>
+    </g>
+  </symbol>
+
+  <symbol id="bastion-B" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- flame banner mitre -->
+      <path d="M50 4 C 42 14, 36 22, 38 32 C 40 40, 50 42, 50 42 C 50 42, 60 40, 62 32 C 64 22, 58 14, 50 4 Z"/>
+      <!-- pole/body -->
+      <path d="M42 44 q 4 16, 2 32 q -2 12, -8 26 L 64 102 q -6 -14, -8 -26 q -2 -16, 2 -32 z"/>
+      <!-- base -->
+      <path d="M28 102 q2 -4 8 -4 h28 q6 0 8 4 v6 h-44 z"/>
+      <rect x="24" y="108" width="52" height="6"/>
+    </g>
+    <g fill="#000" opacity="0.32">
+      <!-- inner flame -->
+      <path d="M48 14 C 44 22, 44 30, 50 30 C 56 30, 56 22, 52 14 Z"/>
+    </g>
+  </symbol>
+
+  <symbol id="bastion-Q" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- dragon helm (front-facing) with two curling horns -->
+      <!-- left horn -->
+      <path d="M18 14 C 6 8, 4 20, 12 30 L 24 28 C 22 22, 20 16, 18 14 Z"/>
+      <!-- right horn -->
+      <path d="M82 14 C 94 8, 96 20, 88 30 L 76 28 C 78 22, 80 16, 82 14 Z"/>
+      <!-- helm dome -->
+      <path d="M22 30
+               C 22 18, 36 12, 50 12
+               C 64 12, 78 18, 78 30
+               L 78 52
+               C 76 58, 70 64, 50 66
+               C 30 64, 24 58, 22 52 Z"/>
+      <!-- snout / lower jaw -->
+      <path d="M30 64 L 70 64 L 64 78 L 36 78 Z"/>
+      <!-- collar -->
+      <rect x="26" y="78" width="48" height="6"/>
+      <!-- base -->
+      <path d="M22 84 q 4 -2 8 -2 h 40 q 4 0 8 2 v 8 h -56 z"/>
+      <rect x="18" y="92" width="64" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.46">
+      <!-- eye slits -->
+      <path d="M28 36 L 42 32 L 42 36 L 28 40 Z"/>
+      <path d="M72 36 L 58 32 L 58 36 L 72 40 Z"/>
+      <!-- nostrils -->
+      <circle cx="44" cy="60" r="1.6"/>
+      <circle cx="56" cy="60" r="1.6"/>
+      <!-- center ridge -->
+      <rect x="49" y="22" width="2" height="38"/>
+    </g>
+  </symbol>
+
+  <symbol id="bastion-K" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- iron crown: 3 large points with jewels -->
+      <path d="M22 22 L 30 6 L 36 22 L 50 0 L 64 22 L 70 6 L 78 22 L 80 30 L 20 30 Z"/>
+      <!-- throne back -->
+      <rect x="24" y="30" width="52" height="36"/>
+      <!-- sword embedded vertically through throne -->
+      <rect x="48" y="22" width="4" height="50"/>
+      <rect x="36" y="32" width="28" height="4"/>
+      <circle cx="50" cy="22" r="3"/>
+      <!-- base -->
+      <path d="M22 72 q4 -2 8 -2 h40 q4 0 8 2 v8 h-56 z"/>
+      <rect x="18" y="80" width="64" height="14"/>
+      <rect x="14" y="94" width="72" height="12"/>
+    </g>
+    <g fill="#000" opacity="0.36">
+      <!-- crown jewels -->
+      <circle cx="30" cy="14" r="2"/>
+      <circle cx="50" cy="8" r="2"/>
+      <circle cx="70" cy="14" r="2"/>
+      <!-- throne ornament panels -->
+      <rect x="30" y="42" width="3" height="18"/>
+      <rect x="67" y="42" width="3" height="18"/>
+    </g>
+  </symbol>
+
+  <!-- ============ SET 08 — NORSE (Viking — shields, ships, wolves) ============ -->
+
+  <symbol id="norse-P" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- round shield -->
+      <circle cx="50" cy="42" r="26"/>
+      <!-- mount column -->
+      <rect x="46" y="68" width="8" height="14"/>
+      <!-- base -->
+      <path d="M28 82 q2 -4 8 -4 h28 q6 0 8 4 v8 h-44 z"/>
+      <rect x="22" y="90" width="56" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.36">
+      <!-- sun-cross: vertical + horizontal bars -->
+      <rect x="24" y="40" width="52" height="4"/>
+      <rect x="48" y="16" width="4" height="52"/>
+      <!-- center boss -->
+      <circle cx="50" cy="42" r="5"/>
+      <!-- rim ring -->
+      <circle cx="50" cy="42" r="24" fill="none" stroke="#000" stroke-width="1.2" opacity="0.6"/>
+    </g>
+  </symbol>
+
+  <symbol id="norse-R" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- mast -->
+      <rect x="48" y="14" width="4" height="32"/>
+      <!-- square sail -->
+      <path d="M26 18 L 74 18 L 74 46 L 26 46 Z"/>
+      <!-- ship hull (boat with up-curving ends) -->
+      <path d="M50 54
+               C 30 54, 12 58, 8 70
+               L 14 80
+               L 86 80
+               L 92 70
+               C 88 58, 70 54, 50 54 Z"/>
+      <!-- dragon prow curl (right end, up) -->
+      <path d="M88 64 C 96 58, 96 48, 90 46 C 84 44, 82 52, 84 58 L 84 64 Z"/>
+      <!-- stern (left small curl) -->
+      <path d="M12 64 C 6 58, 8 50, 14 52 L 14 60 Z"/>
+      <!-- waves base -->
+      <path d="M10 80 q 6 -3 12 0 q 6 3 12 0 q 6 -3 12 0 q 6 3 12 0 q 6 -3 12 0 q 6 3 12 0 v 8 h -72 z"/>
+      <rect x="14" y="92" width="72" height="12"/>
+    </g>
+    <g fill="#000" opacity="0.32">
+      <!-- sail vertical stripe -->
+      <rect x="48" y="18" width="4" height="28"/>
+      <!-- hull upper strake -->
+      <path d="M14 62 L 86 62 L 86 64 L 14 64 Z"/>
+      <!-- round shields along hull rim -->
+      <circle cx="22" cy="70" r="3"/>
+      <circle cx="34" cy="70" r="3"/>
+      <circle cx="46" cy="70" r="3"/>
+      <circle cx="58" cy="70" r="3"/>
+      <circle cx="70" cy="70" r="3"/>
+    </g>
+  </symbol>
+
+  <symbol id="norse-N" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- wolf head, right-facing, snarling -->
+      <path d="M22 18
+               L 28 8
+               L 36 16
+               L 44 6
+               L 50 16
+               L 60 8
+               L 68 18
+               L 76 14
+               L 80 26
+               C 82 36, 80 50, 72 60
+               L 78 70
+               L 76 80
+               C 76 84, 72 86, 66 86
+               L 32 86
+               C 26 86, 24 82, 26 76
+               L 22 64
+               C 14 54, 14 32, 22 18 Z"/>
+      <!-- base -->
+      <path d="M26 86 h48 q6 0 8 4 v6 h-64 v-6 q2 -4 8 -4 z"/>
+      <rect x="20" y="96" width="60" height="10"/>
+    </g>
+    <g fill="#000" opacity="0.42">
+      <!-- eye -->
+      <circle cx="56" cy="34" r="2.6"/>
+      <!-- nostril -->
+      <circle cx="68" cy="50" r="2"/>
+      <!-- mouth/fang line -->
+      <path d="M52 60 L 70 64 L 70 66 L 52 62 Z"/>
+    </g>
+  </symbol>
+
+  <symbol id="norse-B" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- drinking horn (curved tapered shape, point at top-right) -->
+      <path d="M82 10
+               C 70 8, 50 12, 38 24
+               C 28 36, 24 50, 26 64
+               C 28 72, 34 76, 42 76
+               L 60 76
+               C 68 76, 70 70, 68 62
+               C 66 50, 70 38, 78 30
+               C 84 22, 86 14, 82 10 Z"/>
+      <!-- rim band -->
+      <path d="M40 26 q 22 -8, 36 -4 l 2 4 q -16 -4, -34 4 z"/>
+      <!-- base / stand -->
+      <path d="M28 78 q2 -4 8 -4 h32 q6 0 8 4 v8 h-48 z"/>
+      <rect x="22" y="86" width="56" height="10"/>
+      <rect x="18" y="96" width="64" height="10"/>
+    </g>
+    <g fill="#000" opacity="0.32">
+      <!-- decorative bands -->
+      <path d="M32 50 q 16 -8, 34 -4 l 1 3 q -16 -4, -34 4 z"/>
+      <path d="M34 62 q 14 -6, 30 -2 l 1 3 q -14 -4, -30 2 z"/>
+    </g>
+  </symbol>
+
+  <symbol id="norse-Q" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- Yggdrasil-style tree: trunk + canopy + roots -->
+      <!-- canopy (cloud of leaves) -->
+      <circle cx="30" cy="20" r="10"/>
+      <circle cx="50" cy="12" r="12"/>
+      <circle cx="70" cy="20" r="10"/>
+      <circle cx="22" cy="32" r="8"/>
+      <circle cx="78" cy="32" r="8"/>
+      <circle cx="50" cy="32" r="10"/>
+      <!-- trunk -->
+      <path d="M44 36 L 56 36 L 58 70 L 42 70 Z"/>
+      <!-- root flare -->
+      <path d="M24 86 q 8 -16 18 -16 h 16 q 10 0 18 16 v 4 h -52 z"/>
+      <rect x="20" y="90" width="60" height="6"/>
+      <rect x="16" y="96" width="68" height="10"/>
+    </g>
+    <g fill="#000" opacity="0.32">
+      <!-- trunk bark line -->
+      <rect x="49" y="38" width="2" height="30"/>
+      <!-- branch suggestions -->
+      <path d="M42 46 q -8 -4 -12 -2 v 2 q 4 -2 12 2 z"/>
+      <path d="M58 46 q 8 -4 12 -2 v 2 q -4 -2 -12 2 z"/>
+    </g>
+  </symbol>
+
+  <symbol id="norse-K" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- horned helm -->
+      <!-- left horn -->
+      <path d="M14 18 C 4 12, 6 6, 14 4 C 22 6, 26 14, 26 22 C 22 22, 18 20, 14 18 Z"/>
+      <!-- right horn -->
+      <path d="M86 18 C 96 12, 94 6, 86 4 C 78 6, 74 14, 74 22 C 78 22, 82 20, 86 18 Z"/>
+      <!-- helm dome -->
+      <path d="M22 30 C 26 18, 38 12, 50 12 C 62 12, 74 18, 78 30 L 78 44 L 22 44 Z"/>
+      <!-- nose guard -->
+      <rect x="46" y="40" width="8" height="14"/>
+      <!-- body / cape -->
+      <path d="M28 54 q 22 -8, 44 0 q -2 14, 4 28 L 24 82 q 6 -14, 4 -28 z"/>
+      <!-- base -->
+      <path d="M22 82 q4 -2 8 -2 h40 q4 0 8 2 v8 h-56 z"/>
+      <rect x="18" y="90" width="64" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.36">
+      <!-- helm eye-slots -->
+      <rect x="32" y="32" width="10" height="3"/>
+      <rect x="58" y="32" width="10" height="3"/>
+      <!-- helm band -->
+      <rect x="22" y="44" width="56" height="2"/>
+    </g>
+  </symbol>
+
+  <!-- ============ SET 09 — MARBLE (classical Greco-Roman traditional) ============ -->
+
+  <symbol id="marble-P" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- amphora pawn: small neck, wide body, two tiny handles -->
+      <ellipse cx="50" cy="22" rx="8" ry="6"/>
+      <rect x="44" y="26" width="12" height="6"/>
+      <!-- handles -->
+      <path d="M44 32 q-8 6 0 14 l 4 -2 q -4 -6 0 -10 z"/>
+      <path d="M56 32 q 8 6 0 14 l -4 -2 q 4 -6 0 -10 z"/>
+      <!-- body -->
+      <path d="M40 32 q -8 20 0 44 q 10 6 20 0 q 8 -24 0 -44 z"/>
+      <!-- base -->
+      <path d="M26 80 q2 -4 8 -4 h32 q6 0 8 4 v6 h-48 z"/>
+      <rect x="22" y="86" width="56" height="8"/>
+      <rect x="18" y="94" width="64" height="12"/>
+    </g>
+    <g fill="#000" opacity="0.28">
+      <!-- amphora vertical flute -->
+      <rect x="49" y="36" width="2" height="36"/>
+      <rect x="42" y="40" width="1.5" height="28"/>
+      <rect x="56" y="40" width="1.5" height="28"/>
+    </g>
+  </symbol>
+
+  <symbol id="marble-R" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- doric column rook -->
+      <!-- capital (echinus + abacus) -->
+      <rect x="20" y="14" width="60" height="6"/>
+      <path d="M22 20 q 8 -4 28 -4 q 20 0 28 4 v 8 h -56 z"/>
+      <!-- shaft -->
+      <rect x="30" y="28" width="40" height="50"/>
+      <!-- base -->
+      <path d="M22 78 q 4 -4 12 -4 h 32 q 8 0 12 4 v 8 h -56 z"/>
+      <rect x="18" y="86" width="64" height="8"/>
+      <rect x="14" y="94" width="72" height="12"/>
+    </g>
+    <g fill="#000" opacity="0.28">
+      <!-- fluting on shaft -->
+      <rect x="34" y="30" width="2" height="46"/>
+      <rect x="40" y="30" width="2" height="46"/>
+      <rect x="46" y="30" width="2" height="46"/>
+      <rect x="52" y="30" width="2" height="46"/>
+      <rect x="58" y="30" width="2" height="46"/>
+      <rect x="64" y="30" width="2" height="46"/>
+    </g>
+  </symbol>
+
+  <symbol id="marble-N" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- classical horse head (Parthenon-style) -->
+      <path d="M64 8
+               C 50 6, 38 14, 32 26
+               C 28 34, 32 40, 26 46
+               L 18 56
+               C 14 64, 18 70, 26 70
+               L 32 70
+               C 28 76, 30 84, 38 84
+               L 70 84
+               C 76 84, 80 78, 78 70
+               C 76 56, 78 36, 74 22
+               C 72 14, 70 8, 64 8 Z"/>
+      <!-- mane locks -->
+      <path d="M62 8 L 56 0 L 54 8 Z"/>
+      <path d="M68 12 L 64 4 L 60 12 Z"/>
+      <!-- base -->
+      <path d="M26 84 h48 q6 0 8 4 v6 h-64 v-6 q 2 -4 8 -4 z"/>
+      <rect x="20" y="94" width="60" height="12"/>
+    </g>
+    <g fill="#000" opacity="0.32">
+      <!-- eye -->
+      <ellipse cx="58" cy="32" rx="2.4" ry="2"/>
+      <!-- mouth line -->
+      <path d="M18 56 q 8 -3 14 0 v 2 q -6 -3 -14 0 z"/>
+      <!-- ear -->
+      <path d="M54 12 L 58 6 L 60 12 Z"/>
+    </g>
+  </symbol>
+
+  <symbol id="marble-B" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- pointed mitre on a fluted body -->
+      <circle cx="50" cy="14" r="5"/>
+      <path d="M38 22 q 12 -10 24 0 q 4 8 0 16 q -6 8 -12 8 q -6 0 -12 -8 q -4 -8 0 -16 Z"/>
+      <!-- collar -->
+      <rect x="36" y="48" width="28" height="6"/>
+      <!-- fluted body -->
+      <path d="M34 54 q 14 16 4 32 h 24 q -10 -16 4 -32 z"/>
+      <!-- base -->
+      <path d="M28 86 q 2 -4 10 -4 h 24 q 8 0 10 4 v 8 h -44 z"/>
+      <rect x="22" y="94" width="56" height="6"/>
+      <rect x="18" y="100" width="64" height="6"/>
+    </g>
+    <g fill="#000" opacity="0.3">
+      <!-- mitre slit -->
+      <path d="M50 22 l 6 10 l -12 0 z"/>
+      <!-- body flutes -->
+      <rect x="40" y="58" width="2" height="24"/>
+      <rect x="47" y="58" width="2" height="24"/>
+      <rect x="54" y="58" width="2" height="24"/>
+      <rect x="61" y="58" width="2" height="24"/>
+    </g>
+  </symbol>
+
+  <symbol id="marble-Q" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- top knob -->
+      <circle cx="50" cy="6" r="3.5"/>
+      <!-- crown with 5 leaf points -->
+      <path d="M22 30
+               L 28 12 L 32 30
+               L 40 8 L 44 30
+               L 50 4 L 56 30
+               L 60 8 L 68 30
+               L 72 12 L 78 30
+               L 78 36 L 22 36 Z"/>
+      <!-- band -->
+      <rect x="22" y="36" width="56" height="4"/>
+      <!-- collar -->
+      <rect x="26" y="40" width="48" height="6"/>
+      <!-- fluted body -->
+      <path d="M30 46 q 14 18 4 36 h 32 q -10 -18 4 -36 z"/>
+      <!-- base -->
+      <path d="M24 82 q 4 -4 12 -4 h 28 q 8 0 12 4 v 8 h -52 z"/>
+      <rect x="20" y="90" width="60" height="6"/>
+      <rect x="16" y="96" width="68" height="10"/>
+    </g>
+    <g fill="#000" opacity="0.32">
+      <!-- jewels at each crown point -->
+      <circle cx="28" cy="12" r="1.6"/>
+      <circle cx="40" cy="8" r="1.6"/>
+      <circle cx="50" cy="4" r="1.6"/>
+      <circle cx="60" cy="8" r="1.6"/>
+      <circle cx="72" cy="12" r="1.6"/>
+      <!-- body flutes -->
+      <rect x="37" y="52" width="2" height="26"/>
+      <rect x="44" y="52" width="2" height="26"/>
+      <rect x="51" y="52" width="2" height="26"/>
+      <rect x="58" y="52" width="2" height="26"/>
+    </g>
+  </symbol>
+
+  <symbol id="marble-K" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- cross -->
+      <rect x="47" y="2" width="6" height="20"/>
+      <rect x="40" y="8" width="20" height="6"/>
+      <!-- laurel base of cross -->
+      <ellipse cx="34" cy="28" rx="5" ry="8" transform="rotate(-30 34 28)"/>
+      <ellipse cx="66" cy="28" rx="5" ry="8" transform="rotate(30 66 28)"/>
+      <!-- band -->
+      <rect x="22" y="34" width="56" height="6"/>
+      <!-- collar -->
+      <rect x="26" y="40" width="48" height="6"/>
+      <!-- fluted body -->
+      <path d="M30 46 q 14 18 4 36 h 32 q -10 -18 4 -36 z"/>
+      <!-- base -->
+      <path d="M24 82 q 4 -4 12 -4 h 28 q 8 0 12 4 v 8 h -52 z"/>
+      <rect x="20" y="90" width="60" height="6"/>
+      <rect x="16" y="96" width="68" height="10"/>
+    </g>
+    <g fill="#000" opacity="0.28">
+      <!-- body flutes -->
+      <rect x="37" y="52" width="2" height="26"/>
+      <rect x="44" y="52" width="2" height="26"/>
+      <rect x="51" y="52" width="2" height="26"/>
+      <rect x="58" y="52" width="2" height="26"/>
+    </g>
+  </symbol>
+
+  <!-- ============ SET 10 — CATHEDRAL (Gothic architecture) ============ -->
+
+  <symbol id="cathedral-P" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- pointed lancet pawn -->
+      <!-- finial point -->
+      <path d="M50 4 L 56 14 L 44 14 Z"/>
+      <!-- lancet column -->
+      <path d="M40 14 q 0 -2 10 -2 q 10 0 10 2 v 60 q 0 4 -10 4 q -10 0 -10 -4 z"/>
+      <!-- pointed arch window cut -->
+      <!-- (rendered in overlay) -->
+      <!-- plinth -->
+      <path d="M28 80 q 2 -4 8 -4 h 28 q 6 0 8 4 v 8 h -44 z"/>
+      <rect x="22" y="88" width="56" height="8"/>
+      <rect x="18" y="96" width="64" height="10"/>
+    </g>
+    <g fill="#000" opacity="0.32">
+      <!-- arched window in shaft -->
+      <path d="M46 30 q 0 -6 4 -6 q 4 0 4 6 v 30 h -8 z"/>
+    </g>
+  </symbol>
+
+  <symbol id="cathedral-R" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- flying-buttress / gatehouse with twin towers -->
+      <!-- left tower -->
+      <path d="M14 18 L 18 14 L 22 18 L 22 78 L 14 78 Z"/>
+      <!-- right tower -->
+      <path d="M78 18 L 82 14 L 86 18 L 86 78 L 78 78 Z"/>
+      <!-- spires -->
+      <path d="M16 14 L 18 6 L 20 14 Z"/>
+      <path d="M80 14 L 82 6 L 84 14 Z"/>
+      <!-- center keep wall -->
+      <rect x="22" y="30" width="56" height="50"/>
+      <!-- battlement top -->
+      <path d="M22 22 h 8 v 8 h 4 v -8 h 8 v 8 h 4 v -8 h 8 v 8 h 4 v -8 h 8 v 8 h 4 v -8 h 8 v 8 h -56 z"/>
+      <!-- base -->
+      <path d="M14 80 h 72 v 8 h -72 z"/>
+      <rect x="10" y="88" width="80" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.32">
+      <!-- gatehouse arch -->
+      <path d="M42 80 v -18 q 0 -8 8 -8 q 8 0 8 8 v 18 z"/>
+      <!-- tower windows -->
+      <rect x="16" y="40" width="4" height="8"/>
+      <rect x="16" y="56" width="4" height="8"/>
+      <rect x="80" y="40" width="4" height="8"/>
+      <rect x="80" y="56" width="4" height="8"/>
+    </g>
+  </symbol>
+
+  <symbol id="cathedral-N" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- gargoyle perched -->
+      <!-- horns -->
+      <path d="M32 8 L 36 0 L 40 10 Z"/>
+      <path d="M58 8 L 62 0 L 66 10 Z"/>
+      <!-- head -->
+      <path d="M26 10 C 22 18, 26 28, 40 30 L 60 30 C 74 28, 78 18, 74 10 C 70 4, 60 6, 50 8 C 40 6, 30 4, 26 10 Z"/>
+      <!-- wing arc (left, swept up) -->
+      <path d="M14 32 C 8 40, 12 56, 22 62 L 32 56 L 28 50 C 24 44, 22 38, 22 32 Z"/>
+      <!-- body crouched -->
+      <path d="M22 32 L 78 32 C 76 50, 80 70, 70 82 L 30 82 C 20 70, 24 50, 22 32 Z"/>
+      <!-- base / corbel -->
+      <path d="M22 82 q 4 -2 8 -2 h 40 q 4 0 8 2 v 8 h -56 z"/>
+      <rect x="18" y="90" width="64" height="14"/>
+    </g>
+    <g fill="#000" opacity="0.42">
+      <!-- eyes -->
+      <circle cx="38" cy="20" r="2"/>
+      <circle cx="62" cy="20" r="2"/>
+      <!-- snarl -->
+      <path d="M40 26 L 60 26 L 58 28 L 42 28 Z"/>
+    </g>
+  </symbol>
+
+  <symbol id="cathedral-B" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- pointed gothic arch bishop -->
+      <!-- finial -->
+      <path d="M50 2 L 56 12 L 44 12 Z"/>
+      <!-- pointed arch -->
+      <path d="M28 60 L 28 28 Q 28 12 50 12 Q 72 12 72 28 L 72 60 Z"/>
+      <!-- inner arch (tracery) -->
+      <!-- (in overlay) -->
+      <!-- collar -->
+      <rect x="26" y="60" width="48" height="6"/>
+      <!-- pedestal -->
+      <path d="M30 66 q 12 14 4 28 h 32 q -8 -14 4 -28 z"/>
+      <path d="M24 94 q 4 -4 10 -4 h 32 q 6 0 10 4 v 8 h -52 z"/>
+      <rect x="20" y="102" width="60" height="8"/>
+    </g>
+    <g fill="#000" opacity="0.34">
+      <!-- inner arch -->
+      <path d="M34 56 L 34 30 Q 34 18 50 18 Q 66 18 66 30 L 66 56 Z"/>
+      <!-- mullion -->
+      <rect x="49" y="20" width="2" height="36"/>
+      <!-- quatrefoil at top -->
+      <circle cx="50" cy="28" r="3"/>
+    </g>
+  </symbol>
+
+  <symbol id="cathedral-Q" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- rose window queen -->
+      <!-- crown finial -->
+      <path d="M50 0 L 54 8 L 46 8 Z"/>
+      <!-- large rose circle (outer ring) -->
+      <circle cx="50" cy="32" r="24"/>
+      <!-- collar -->
+      <rect x="28" y="56" width="44" height="6"/>
+      <!-- pedestal -->
+      <path d="M32 62 q 12 14 4 28 h 28 q -8 -14 4 -28 z"/>
+      <path d="M26 90 q 4 -4 10 -4 h 28 q 6 0 10 4 v 8 h -48 z"/>
+      <rect x="22" y="98" width="56" height="8"/>
+    </g>
+    <g fill="#000" opacity="0.36">
+      <!-- inner ring -->
+      <circle cx="50" cy="32" r="18" fill="none" stroke="#000" stroke-width="1.6" opacity="0.55"/>
+      <!-- petals: 8 small circles around the center -->
+      <circle cx="50" cy="18" r="3"/>
+      <circle cx="50" cy="46" r="3"/>
+      <circle cx="36" cy="32" r="3"/>
+      <circle cx="64" cy="32" r="3"/>
+      <circle cx="40" cy="22" r="3"/>
+      <circle cx="60" cy="22" r="3"/>
+      <circle cx="40" cy="42" r="3"/>
+      <circle cx="60" cy="42" r="3"/>
+      <!-- center -->
+      <circle cx="50" cy="32" r="3"/>
+    </g>
+  </symbol>
+
+  <symbol id="cathedral-K" viewBox="0 0 100 120">
+    <g fill="currentColor">
+      <!-- tall cross-tipped spire -->
+      <!-- cross -->
+      <rect x="47" y="0" width="6" height="14"/>
+      <rect x="42" y="4" width="16" height="4"/>
+      <!-- crocketed spire -->
+      <path d="M40 14 L 50 14 L 60 14 L 58 24 L 50 22 L 42 24 Z"/>
+      <path d="M38 24 L 62 24 L 60 36 L 50 34 L 40 36 Z"/>
+      <path d="M36 36 L 64 36 L 62 50 L 50 48 L 38 50 Z"/>
+      <!-- spire base -->
+      <path d="M30 50 L 70 50 L 68 64 L 32 64 Z"/>
+      <!-- collar -->
+      <rect x="26" y="64" width="48" height="6"/>
+      <!-- pedestal -->
+      <path d="M30 70 q 12 14 4 28 h 32 q -8 -14 4 -28 z"/>
+      <path d="M24 98 q 4 -4 10 -4 h 32 q 6 0 10 4 v 6 h -52 z"/>
+      <rect x="20" y="104" width="60" height="6"/>
+    </g>
+    <g fill="#000" opacity="0.28">
+      <!-- spire crockets -->
+      <circle cx="40" cy="20" r="1.5"/>
+      <circle cx="60" cy="20" r="1.5"/>
+      <circle cx="38" cy="32" r="1.5"/>
+      <circle cx="62" cy="32" r="1.5"/>
+      <circle cx="36" cy="44" r="1.5"/>
+      <circle cx="64" cy="44" r="1.5"/>
+    </g>
+  </symbol>
+
+</defs>
+</svg>
+
+<script>
+  // ============================================================
+  // CONFIGURATION: each set's two colors + which is "light" vs "dark"
+  // ============================================================
+  const SETS = [
+    { id: 'cinder',    light: '#F3EAD8', dark: '#2A2622' },
+    { id: 'foundry',   light: '#D27145', dark: '#2E3138' },
+    { id: 'phosphor',  light: '#6FD17A', dark: '#0E1A2B' },
+    { id: 'console',   light: '#F0A740', dark: '#161312' },
+    { id: 'sumi',      light: '#B0382C', dark: '#1A1410' },
+    { id: 'schematic', light: '#2D6E8A', dark: '#C2613A' },
+    { id: 'bastion',   light: '#C45A3F', dark: '#1F1F23' },
+    { id: 'norse',     light: '#C89C4A', dark: '#1F4258' },
+    { id: 'marble',    light: '#F0E8D4', dark: '#8A4A26' },
+    { id: 'cathedral', light: '#C89A3A', dark: '#2C4A8A' },
+  ];
+  // Console set: dark side gets light glyph on dark frame, etc.
+  // Schematic is a special case — both sides use the same blueprint cyan;
+  // we differentiate using stroke-dasharray for opponent side.
+
+  const TYPES = ['K','Q','R','B','N','P'];
+
+  function pieceSvg(setId, type, color, opts = {}) {
+    // Inline the symbol's content (not a <use> reference) so all renderers
+    // — including html-to-image — pick up currentColor consistently.
+    const symId = `${setId}-${type}`;
+    const sym = document.getElementById(symId);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', sym.getAttribute('viewBox'));
+    svg.classList.add('piece');
+    svg.style.color = color;
+    if (setId === 'phosphor') svg.setAttribute('shape-rendering', 'crispEdges');
+    for (const child of Array.from(sym.children)) {
+      svg.appendChild(child.cloneNode(true));
+    }
+    return svg;
+  }
+
+  // ============================================================
+  // SHEET: 6 columns × 2 rows. Top row = dark pieces on alternating squares.
+  // ============================================================
+  function buildSheet(set) {
+    const sheet = document.getElementById(`sheet-${set.id}`);
+    if (!sheet) return;
+    // dark side on top, light side on bottom (chess-conventional white-on-bottom)
+    // Use chess-board alternation: top-left dark square (file a, rank 8).
+    for (let row = 0; row < 2; row++) {
+      const side = row === 0 ? 'dark' : 'light';
+      const color = row === 0 ? set.dark : set.light;
+      // schematic: invert — dark side uses opacity-reduced cyan to differentiate
+      for (let col = 0; col < 6; col++) {
+        const cell = document.createElement('div');
+        const isLightSq = ((row + col) % 2 === 0);
+        cell.className = 'cell ' + (isLightSq ? 'light' : 'dark');
+        const type = TYPES[col];
+        let pieceColor = color;
+        if (set.id === 'schematic' && side === 'dark') {
+          pieceColor = '#C2613A'; // rust counter-army for two-tone blueprint
+        }
+        const piece = pieceSvg(set.id, type, pieceColor);
+        cell.appendChild(piece);
+        const lbl = document.createElement('span');
+        lbl.className = 'pl';
+        lbl.textContent = type;
+        cell.appendChild(lbl);
+        sheet.appendChild(cell);
+      }
+    }
+  }
+
+  // ============================================================
+  // BOARD: 8×8 with standard starting position.
+  // Rank 8 (top) = black back rank; Rank 1 (bottom) = white back rank.
+  // We map our two colors: "light" = the player at the bottom (whites),
+  // "dark"  = the player at the top (blacks).
+  // ============================================================
+  const START = [
+    ['R','N','B','Q','K','B','N','R'], // rank 8 - dark side
+    ['P','P','P','P','P','P','P','P'], // rank 7
+    [null,null,null,null,null,null,null,null],
+    [null,null,null,null,null,null,null,null],
+    [null,null,null,null,null,null,null,null],
+    [null,null,null,null,null,null,null,null],
+    ['P','P','P','P','P','P','P','P'], // rank 2
+    ['R','N','B','Q','K','B','N','R'], // rank 1 - light side
+  ];
+  const FILES = ['a','b','c','d','e','f','g','h'];
+
+  function buildBoard(set) {
+    const board = document.getElementById(`board-${set.id}`);
+    if (!board) return;
+    for (let r = 0; r < 8; r++) {
+      for (let f = 0; f < 8; f++) {
+        const sq = document.createElement('div');
+        const isLightSq = ((r + f) % 2 === 0);
+        sq.className = 'sq ' + (isLightSq ? 'l' : 'd');
+        const piece = START[r][f];
+        if (piece) {
+          const isTopSide = r < 2; // ranks 8,7 are the "dark" side (top)
+          let color;
+          if (set.id === 'schematic') {
+            color = isTopSide ? '#C2613A' : '#2D6E8A';
+          } else {
+            color = isTopSide ? set.dark : set.light;
+          }
+          sq.appendChild(pieceSvg(set.id, piece, color));
+        }
+        // edge labels
+        if (f === 0) {
+          const rl = document.createElement('span');
+          rl.className = 'rank-label';
+          rl.textContent = 8 - r;
+          sq.appendChild(rl);
+        }
+        if (r === 7) {
+          const fl = document.createElement('span');
+          fl.className = 'file-label';
+          fl.textContent = FILES[f];
+          sq.appendChild(fl);
+        }
+        board.appendChild(sq);
+      }
+    }
+  }
+
+  SETS.forEach(set => {
+    buildSheet(set);
+    buildBoard(set);
+  });
+</script>
+
+</body>
+</html>
