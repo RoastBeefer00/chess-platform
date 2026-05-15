@@ -1,5 +1,6 @@
-use shakmaty::{Chess, Color, Move, Position};
+use shakmaty::{Chess, Color, Move, Position as _};
 use tokio::sync::broadcast::{self, Receiver, Sender};
+use tracing::instrument;
 
 use shared::{Game, GameStatus, PlayerRole, ServerMessage};
 use uuid::Uuid;
@@ -43,6 +44,7 @@ impl GameRoom {
         self.game.position.clone()
     }
 
+    #[instrument(skip(self))]
     pub fn add_player(&mut self, player_id: Uuid) -> PlayerRole {
         fn assign_player(
             room: &mut GameRoom,
@@ -91,6 +93,7 @@ impl GameRoom {
         }
     }
 
+    #[instrument(skip(self))]
     pub fn make_move(&mut self, mv: Move) -> Result<(), String> {
         let chess = self.get_position();
         match chess.play(mv) {

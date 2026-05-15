@@ -52,7 +52,7 @@ pub fn Board(game_id: Uuid) -> impl IntoView {
     provide_context(player_role);
 
     let legal_move_targets = Signal::derive(move || -> Vec<shakmaty::Square> {
-        use shakmaty::Position;
+        use shakmaty::Position as _;
         let Some(selected) = selected_square.get() else {
             return vec![];
         };
@@ -133,7 +133,7 @@ pub fn Board(game_id: Uuid) -> impl IntoView {
                                 }
                                 ServerMessage::UserLeft { username: _ } => {}
                                 ServerMessage::MoveMade { uci } => {
-                                    use shakmaty::{uci::UciMove, Position};
+                                    use shakmaty::{uci::UciMove, Position as _};
                                     if let Ok(uci_move) = uci.parse::<UciMove>() {
                                         if let Ok(m) = uci_move.to_move(&position.get_untracked()) {
                                             if let Some(from) = m.from() {
@@ -182,7 +182,7 @@ pub fn Board(game_id: Uuid) -> impl IntoView {
                         let rank = sq.rank().to_usize();
                         let file = sq.file().to_usize();
 
-                        let piece = Signal::derive(move || { use shakmaty::Position; position.get().board().piece_at(sq) });
+                        let piece = Signal::derive(move || { use shakmaty::Position as _; position.get().board().piece_at(sq) });
 
 
                         view! {

@@ -3,9 +3,11 @@ use std::{collections::HashMap, sync::Arc};
 use axum::extract::FromRef;
 use leptos::config::LeptosOptions;
 use shared::Game;
+use sqlx::PgPool;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use crate::auth::AuthBackend;
 use crate::game_room::GameRoom;
 
 pub type GameId = Uuid;
@@ -15,13 +17,20 @@ pub type GameRooms = Arc<Mutex<HashMap<GameId, Arc<Mutex<GameRoom>>>>>;
 pub struct AppState {
     pub leptos_options: LeptosOptions,
     pub games: GameRooms,
+    pub auth_backend: AuthBackend,
 }
 
 impl AppState {
-    pub fn new(leptos_options: LeptosOptions) -> Self {
+    pub async fn new(leptos_options: LeptosOptions, pool: PgPool) -> Self {
+        // GitHub's API rejects requests without a User-Agent header.
+        let http_client = reqwest::Client::builder()
+            .user_agent(concat!("chess-rs/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .expect("failed to build reqwest client");
         AppState {
             leptos_options,
             games: Arc::new(Mutex::new(HashMap::new())),
+            auth_backend: AuthBackend::new(pool, http_client).await,
         }
     }
 

@@ -6,6 +6,8 @@ pub mod pages;
 pub mod websocket;
 
 #[cfg(feature = "ssr")]
+pub mod auth;
+#[cfg(feature = "ssr")]
 pub mod game_room;
 #[cfg(feature = "ssr")]
 pub mod state;

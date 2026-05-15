@@ -108,7 +108,7 @@ pub fn Square(
                             leptos::logging::log!("dropped on square {}", attr);
                             if let Ok(dropped_square) = Square::from_str(&attr) {
                                 if valid_move_targets.get().contains(&dropped_square) {
-                                    use shakmaty::{Position, Role};
+                                    use shakmaty::{Position as _, Role};
                                     let from_sq = selected_square.get_untracked().unwrap();
                                     let legal = position.get_untracked().legal_moves();
                                     // For promotions, default to queen
@@ -157,7 +157,7 @@ pub fn Square(
             if !valid_move_targets.get_untracked().contains(&this_square) {
                 return;
             }
-            use shakmaty::{Position, Role};
+            use shakmaty::{Position as _, Role};
             let legal = position.get_untracked().legal_moves();
             if let Some(m) = legal.iter().find(|m| {
                 m.from() == Some(from_sq)
