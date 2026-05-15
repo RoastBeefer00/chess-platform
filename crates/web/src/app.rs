@@ -6,8 +6,9 @@ use leptos_router::{
 };
 
 use crate::components::{Nav, RequireAuth};
-use crate::pages::{HomePage, LoginPage, NotFoundPage, RegisterPage};
 use crate::pages::play::PlayPage;
+use crate::pages::{HomePage, LoginPage, NotFoundPage, RegisterPage};
+use crate::{components::auth::provide_current_user, pages::CreateUsernamePage};
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
@@ -30,6 +31,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 #[component]
 pub fn App() -> impl IntoView {
     provide_meta_context();
+    provide_current_user();
 
     view! {
         <Stylesheet id="leptos" href="/pkg/web.css"/>
@@ -42,6 +44,7 @@ pub fn App() -> impl IntoView {
                     <ParentRoute path=StaticSegment("/") view=RequireAuth>
                         <Route path=StaticSegment("") view={Lazy::<HomePage>::new()}/>
                         <Route path=(StaticSegment("play"), ParamSegment("game_id")) view={Lazy::<PlayPage>::new()}/>
+                        <Route path=StaticSegment("create-username") view={Lazy::<CreateUsernamePage>::new()}/>
                     </ParentRoute>
                     <Route path=StaticSegment("/login") view={Lazy::<LoginPage>::new()}/>
                     <Route path=StaticSegment("/register") view={Lazy::<RegisterPage>::new()}/>

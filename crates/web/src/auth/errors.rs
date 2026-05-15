@@ -14,4 +14,6 @@ pub enum AuthError {
     EmailAlreadyRegistered,
     #[error("OIDC configuration error: {0}")]
     OidcConfig(#[from] openidconnect::ConfigurationError),
+    #[error("Username already taken: {0}")]
+    UsernameTaken(String),
 }

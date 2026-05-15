@@ -1,4 +1,7 @@
-use argon2::{password_hash::{rand_core::OsRng, SaltString, PasswordHasher}, Argon2, PasswordHash, PasswordVerifier};
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
+    Argon2, PasswordHash, PasswordVerifier,
+};
 use axum_login::{AuthUser, AuthnBackend, UserId};
 use oauth2::{
     basic::{
@@ -164,6 +167,30 @@ impl AuthBackend {
         )
         .fetch_one(&self.pool)
         .await?)
+    }
+
+    pub async fn is_username_available(&self, username: String) -> Result<bool, AuthError> {
+        Ok(
+            sqlx::query_scalar!("SELECT 1 FROM users WHERE username = $1", username)
+                .fetch_optional(&self.pool)
+                .await?
+                .is_none(),
+        )
+    }
+
+    pub async fn set_username(&self, user_id: Uuid, username: String) -> Result<(), AuthError> {
+        if self.is_username_available(username.clone()).await? {
+            sqlx::query!(
+                "UPDATE users SET username = $1 WHERE id = $2",
+                username,
+                user_id
+            )
+            .execute(&self.pool)
+            .await?;
+            Ok(())
+        } else {
+            Err(AuthError::UsernameTaken(username))
+        }
     }
 }
 

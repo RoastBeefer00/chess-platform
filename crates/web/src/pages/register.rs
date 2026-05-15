@@ -33,6 +33,15 @@ impl LazyRoute for RegisterPage {
         });
         let pending = action.pending();
 
+        // Full page navigation — see comment in login.rs.
+        Effect::new(move |_| {
+            if value.get().is_some_and(|r| r.is_ok()) {
+                if let Some(win) = web_sys::window() {
+                    let _ = win.location().set_href("/");
+                }
+            }
+        });
+
         view! {
             <div class="flex flex-col items-center justify-center min-h-[calc(100vh-3.5rem)] px-6">
                 <div class="w-full max-w-sm">

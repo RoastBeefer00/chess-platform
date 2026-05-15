@@ -27,11 +27,12 @@
   services.redis.enable = true;
 
   env = {
-    DATABASE_URL = "postgresql://localhost/chess_dev";
+    DATABASE_URL = "postgresql://localhost:5433/chess_dev";
     REDIS_URL = "redis://localhost:6379";
     LEPTOS_OUTPUT_NAME = "web";
     LEPTOS_SITE_ROOT = "target/site";
     LEPTOS_SITE_ADDR = "127.0.0.1:3000";
+    RUST_LOG = "web=debug,tower_http=info,tower_sessions=debug";
   };
 
   scripts = {

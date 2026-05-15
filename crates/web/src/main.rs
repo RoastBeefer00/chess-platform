@@ -3,12 +3,14 @@
 async fn main() {
     use axum::{routing::get, Router};
     use axum_login::AuthManagerLayerBuilder;
+    use fred::prelude::*;
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use sqlx::PgPool;
     use tower_http::trace::TraceLayer;
     use tower_sessions::{cookie::SameSite, SessionManagerLayer};
-    use tower_sessions_sqlx_store::PostgresStore;
+    use tower_sessions_redis_store::RedisStore;
+
     use tracing::info;
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
     use web::app::*;
@@ -33,8 +35,11 @@ async fn main() {
         .await
         .unwrap();
 
-    let session_store = PostgresStore::new(pool.clone());
-    session_store.migrate().await.unwrap();
+    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
+    let redis = Pool::new(Config::from_url(&redis_url).unwrap(), None, None, None, 6).unwrap();
+    redis.connect();
+    redis.wait_for_connect().await.unwrap();
+    let session_store = RedisStore::new(redis);
     let session_layer = SessionManagerLayer::new(session_store)
         .with_secure(false) // set to true behind HTTPS in prod
         .with_same_site(SameSite::Lax); // required so the session cookie is sent on the OAuth callback redirect
