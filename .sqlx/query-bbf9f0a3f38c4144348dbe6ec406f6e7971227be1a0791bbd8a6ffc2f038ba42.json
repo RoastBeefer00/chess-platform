@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO oauth_accounts (user_id, provider, provider_user_id) VALUES ($1, 'github', $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bbf9f0a3f38c4144348dbe6ec406f6e7971227be1a0791bbd8a6ffc2f038ba42"
+}
