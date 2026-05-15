@@ -81,7 +81,7 @@ pub async fn game_websocket(
 
         while let Some(msg) = input.next().await {
             if let Ok(msg) = msg {
-                println!("Received message from client: {:?}", msg);
+                tracing::debug!(?msg, "received message from client");
                 let mut gr = game_room.lock().await;
                 match msg {
                     ClientMessage::UserJoined { uuid, game_id: _ } => {
@@ -99,30 +99,31 @@ pub async fn game_websocket(
                     ClientMessage::UserLeft { uuid } => todo!(),
                     ClientMessage::MoveMade { uci } => {
                         if gr.current_player() != Some(uuid) {
-                            leptos::logging::warn!("move from non-current player");
+                            tracing::warn!(%uuid, "move from non-current player");
                             continue;
                         }
                         use shakmaty::uci::UciMove;
                         let uci_move = match uci.parse::<UciMove>() {
                             Ok(u) => u,
                             Err(e) => {
-                                leptos::logging::warn!("invalid uci: {e}");
+                                tracing::warn!(%uci, %e, "invalid uci");
                                 continue;
                             }
                         };
                         let move_made = match uci_move.to_move(&gr.get_position()) {
                             Ok(m) => m,
                             Err(e) => {
-                                leptos::logging::warn!("illegal move: {e}");
+                                tracing::warn!(%uci, %e, "illegal move");
                                 continue;
                             }
                         };
                         match gr.make_move(move_made) {
                             Ok(()) => {
+                                tracing::info!(%uci, "move accepted");
                                 gr.broadcast(ServerMessage::MoveMade { uci });
                             }
                             Err(e) => {
-                                leptos::logging::warn!("failed to make move: {e}");
+                                tracing::warn!(%uci, %e, "failed to make move");
                             }
                         }
                     }

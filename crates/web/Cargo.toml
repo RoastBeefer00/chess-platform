@@ -7,24 +7,39 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-leptos = { workspace = true }
+leptos = { version = "0.8", features = [] }
 leptos_router = { version = "0.8.0" }
-leptos-use = {workspace = true }
-axum = { workspace = true, optional = true }
-console_error_panic_hook = { version = "0.1", optional = true }
+leptos-use = { version = "0.18.3", features = ["use_draggable"] }
 leptos_axum = { version = "0.8.0", optional = true }
 leptos_meta = { version = "0.8.0" }
-tokio = { workspace = true, optional = true }
+axum = { version = "0.8", features = ["ws", "macros"], optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+server_fn = { version = "0.8", optional = true }
+rand = { version = "0.10.1", optional = true }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "uuid", "time"], optional = true }
+tracing = { version = "0.1.44", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+tower-http = { version = "0.6", features = ["trace"], optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen = { version = "=0.2.117", optional = true }
+web-sys = { version = "=0.3.94" }
+futures = "0.3"
 shared = { workspace = true }
-server_fn = { workspace = true, optional = true }
 serde = { workspace = true }
-futures = { workspace = true }
-tokio-stream = { workspace = true, optional = true }
 uuid = { workspace = true }
 shakmaty = { workspace = true }
-rand = { workspace = true, optional = true }
-web-sys = { workspace = true }
+oauth2 = { version = "5.0.0", features = ["reqwest"], optional = true }
+reqwest = { version = "0.12", features = ["json"], optional = true }
+openidconnect = { version = "4.0.1", optional = true }
+axum-login = { version = "0.18", optional = true }
+tower-sessions = { version = "0.14", optional = true }
+tower-sessions-sqlx-store = { version = "0.15", features = ["postgres"], optional = true }
+argon2 = { version = "0.5.3", features = ["std"], optional = true }
+time = { version = "0.3.47", optional = true }
+thiserror = { version = "2", optional = true }
+dotenvy = { version = "0.15.7", optional = true }
+
 
 [features]
 hydrate = [
@@ -39,6 +54,20 @@ ssr = [
     "dep:rand",
     "dep:leptos_axum",
     "dep:tokio-stream",
+    "dep:oauth2",
+    "dep:reqwest",
+    "dep:openidconnect",
+    "dep:axum-login",
+    "dep:tower-sessions",
+    "dep:tower-sessions-sqlx-store",
+    "dep:argon2",
+    "dep:sqlx",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:tower-http",
+    "dep:time",
+    "dep:thiserror",
+    "dep:dotenvy",
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",

@@ -1,5 +1,7 @@
 use leptos::prelude::*;
 
+use crate::components::user::UserMenu;
+
 #[component]
 pub fn Nav() -> impl IntoView {
     view! {
@@ -18,12 +20,7 @@ pub fn Nav() -> impl IntoView {
                 </div>
 
                 <div class="flex items-center gap-2 shrink-0">
-                    <button class="px-3.5 py-1.5 text-sm font-medium text-zinc-300 rounded-md hover:text-white hover:bg-zinc-800 transition-colors">
-                        "Log in"
-                    </button>
-                    <button class="px-3.5 py-1.5 text-sm font-medium text-zinc-950 bg-white rounded-md hover:bg-zinc-100 transition-colors">
-                        "Register"
-                    </button>
+                    <UserMenu/>
                 </div>
             </div>
         </nav>

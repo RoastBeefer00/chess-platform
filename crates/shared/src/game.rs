@@ -1,4 +1,4 @@
-use shakmaty::{Chess, Color, Move, Outcome, PlayError, Position};
+use shakmaty::{Chess, Color, Move, Outcome, PlayError, Position as _};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]

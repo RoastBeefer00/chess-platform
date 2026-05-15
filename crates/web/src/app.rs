@@ -1,12 +1,13 @@
 use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
 use leptos_router::{
-    components::{Route, Router, Routes},
+    components::{ParentRoute, Route, Router, Routes},
     Lazy, ParamSegment, StaticSegment,
 };
 
-use crate::pages::{play::PlayPage, NotFoundPage};
-use crate::{components::Nav, pages::HomePage};
+use crate::components::{Nav, RequireAuth};
+use crate::pages::{HomePage, LoginPage, NotFoundPage, RegisterPage};
+use crate::pages::play::PlayPage;
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
@@ -16,7 +17,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 <AutoReload options=options.clone() />
-                <HydrationScripts options islands=true/>
+                <HydrationScripts options/>
                 <MetaTags/>
             </head>
             <body class="bg-zinc-950 text-white min-h-screen">
@@ -28,7 +29,6 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 
 #[component]
 pub fn App() -> impl IntoView {
-    // Provides context that manages stylesheets, titles, meta tags, etc.
     provide_meta_context();
 
     view! {
@@ -39,8 +39,12 @@ pub fn App() -> impl IntoView {
             <Nav/>
             <main class="pt-14 min-h-screen bg-zinc-950">
                 <Routes fallback=NotFoundPage>
-                    <Route path=StaticSegment("") view={Lazy::<HomePage>::new()}/>
-                    <Route path=(StaticSegment("play"), ParamSegment("game_id")) view={Lazy::<PlayPage>::new()}/>
+                    <ParentRoute path=StaticSegment("/") view=RequireAuth>
+                        <Route path=StaticSegment("") view={Lazy::<HomePage>::new()}/>
+                        <Route path=(StaticSegment("play"), ParamSegment("game_id")) view={Lazy::<PlayPage>::new()}/>
+                    </ParentRoute>
+                    <Route path=StaticSegment("/login") view={Lazy::<LoginPage>::new()}/>
+                    <Route path=StaticSegment("/register") view={Lazy::<RegisterPage>::new()}/>
                 </Routes>
             </main>
         </Router>
