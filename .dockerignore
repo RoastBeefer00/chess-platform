@@ -1,0 +1,10 @@
+target/
+.devenv/
+.direnv/
+.git/
+.github/
+node_modules/
+mobile/
+end2end/
+.env
+*.log
