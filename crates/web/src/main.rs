@@ -19,6 +19,10 @@ async fn main() {
 
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
 
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
+
     tracing_subscriber::registry()
         .with(
             EnvFilter::try_from_default_env()
@@ -40,8 +44,9 @@ async fn main() {
     redis.connect();
     redis.wait_for_connect().await.unwrap();
     let session_store = RedisStore::new(redis);
+    let env = std::env::var("ENV").expect("ENV must be set to 'development' or 'production'");
     let session_layer = SessionManagerLayer::new(session_store)
-        .with_secure(false) // set to true behind HTTPS in prod
+        .with_secure(env == "production") // set to true behind HTTPS in prod
         .with_same_site(SameSite::Lax); // required so the session cookie is sent on the OAuth callback redirect
 
     let app_state = AppState::new(leptos_options.clone(), pool).await;

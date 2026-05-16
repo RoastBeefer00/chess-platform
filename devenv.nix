@@ -10,6 +10,7 @@
     tailwindcss_4
     wasm-bindgen-cli
     binaryen
+    libiconv
   ];
 
   languages.rust = {
