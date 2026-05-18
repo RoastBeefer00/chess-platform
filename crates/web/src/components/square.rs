@@ -7,7 +7,7 @@ use leptos_use::UseDraggableReturn;
 use shakmaty::Chess;
 use shakmaty::{Color, Piece, Square};
 #[cfg(feature = "hydrate")]
-use shared::{ClientMessage, PlayerRole};
+use shared::{GameClientMessage, PlayerRole};
 
 use crate::components::BoardPerspective;
 
@@ -22,7 +22,7 @@ pub fn Square(
     let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
     let last_move = expect_context::<RwSignal<Option<(shakmaty::Square, shakmaty::Square)>>>();
     #[cfg(feature = "hydrate")]
-    let tx = expect_context::<Sender<ClientMessage>>();
+    let tx = expect_context::<Sender<GameClientMessage>>();
     #[cfg(feature = "hydrate")]
     let (position, _) = expect_context::<(ReadSignal<Chess>, WriteSignal<Chess>)>();
     #[cfg(feature = "hydrate")]
@@ -119,7 +119,7 @@ pub fn Square(
                                     }) {
                                         let m = m.clone();
                                         selected_square.set(None);
-                                        let _ = tx.try_send(ClientMessage::MoveMade {
+                                        let _ = tx.try_send(GameClientMessage::MoveMade {
                                             uci: m
                                                 .to_uci(shakmaty::CastlingMode::Standard)
                                                 .to_string(),
@@ -166,7 +166,7 @@ pub fn Square(
             }) {
                 let m = m.clone();
                 selected_square.set(None);
-                let _ = tx.try_send(ClientMessage::MoveMade {
+                let _ = tx.try_send(GameClientMessage::MoveMade {
                     uci: m.to_uci(shakmaty::CastlingMode::Standard).to_string(),
                 });
             }
@@ -178,7 +178,9 @@ pub fn Square(
     let this_sq = Square::new((rank * 8 + file) as u32);
     let is_highlighted = move || {
         selected_square.get() == Some(this_sq)
-            || last_move.get().is_some_and(|(f, t)| f == this_sq || t == this_sq)
+            || last_move
+                .get()
+                .is_some_and(|(f, t)| f == this_sq || t == this_sq)
     };
 
     view! {

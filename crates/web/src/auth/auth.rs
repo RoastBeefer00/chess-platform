@@ -26,6 +26,7 @@ type GoogleClient = CoreClient<
     EndpointMaybeSet,
 >;
 use serde::{Deserialize, Serialize};
+use shared::GameMode;
 use sqlx::{query_as, PgPool};
 use uuid::Uuid;
 
@@ -191,6 +192,18 @@ impl AuthBackend {
         } else {
             Err(AuthError::UsernameTaken(username))
         }
+    }
+
+    pub async fn get_user_rating(&self, id: &Uuid, mode: GameMode) -> Result<u32, AuthError> {
+        let rating = sqlx::query_scalar!(
+            "SELECT rating FROM ratings WHERE user_id = $1 AND mode = $2",
+            id,
+            &mode.to_string()
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(rating as u32)
     }
 }
 

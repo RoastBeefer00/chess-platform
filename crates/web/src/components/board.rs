@@ -2,10 +2,10 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use shakmaty::attacks::attacks;
 use shakmaty::Bitboard;
-use shared::{ClientMessage, PlayerRole, ServerMessage, Side};
+use shared::{GameClientMessage, GameServerMessage, PlayerRole, Side};
 use uuid::Uuid;
 
-use crate::components::Square;
+use crate::components::{use_current_user, Square};
 use crate::websocket::game_websocket;
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +30,8 @@ pub fn Board(game_id: Uuid) -> impl IntoView {
     use futures::StreamExt;
     use leptos::task::spawn_local;
     use shakmaty::fen::Fen;
+
+    let user = use_current_user();
 
     // Channel to websocket
     let (mut tx, rx) = mpsc::channel(1);
@@ -90,9 +92,7 @@ pub fn Board(game_id: Uuid) -> impl IntoView {
                         if rank > 0 {
                             targets.push(shakmaty::Square::new(((rank - 1) * 8 + file) as u32));
                             if rank == 6 {
-                                targets.push(shakmaty::Square::new(
-                                    ((rank - 2) * 8 + file) as u32,
-                                ));
+                                targets.push(shakmaty::Square::new(((rank - 2) * 8 + file) as u32));
                             }
                         }
                     }
@@ -105,16 +105,21 @@ pub fn Board(game_id: Uuid) -> impl IntoView {
 
     let perspective = Signal::derive(move || BoardPerspective::from(player_role.get()));
 
-    let my_uuid = Uuid::new_v4();
-
     if cfg!(feature = "hydrate") {
         spawn_local(async move {
+            let Some(my_uuid) = user.await.ok().flatten().map(|u| u.id) else {
+                leptos::logging::warn!("Board mounted without authenticated user");
+                return;
+            };
+
+            let _send_result = tx.try_send(GameClientMessage::UserJoined { game_id });
+
             match game_websocket(rx.map(Ok).into()).await {
                 Ok(mut messages) => {
                     while let Some(msg) = messages.next().await {
                         if let Ok(msg) = msg {
                             match msg {
-                                ServerMessage::UserJoined {
+                                GameServerMessage::UserJoined {
                                     uuid,
                                     position_fen,
                                     player_role,
@@ -131,8 +136,8 @@ pub fn Board(game_id: Uuid) -> impl IntoView {
                                         set_player_role.set(Some(player_role));
                                     }
                                 }
-                                ServerMessage::UserLeft { username: _ } => {}
-                                ServerMessage::MoveMade { uci } => {
+                                GameServerMessage::UserLeft { username: _ } => {}
+                                GameServerMessage::MoveMade { uci } => {
                                     use shakmaty::{uci::UciMove, Position as _};
                                     if let Ok(uci_move) = uci.parse::<UciMove>() {
                                         if let Ok(m) = uci_move.to_move(&position.get_untracked()) {
@@ -147,17 +152,13 @@ pub fn Board(game_id: Uuid) -> impl IntoView {
                                         }
                                     }
                                 }
-                                ServerMessage::Chat { user: _, text: _ } => {}
+                                GameServerMessage::Chat { user: _, text: _ } => {}
                             }
                         }
                     }
                 }
                 Err(e) => leptos::logging::warn!("websocket error: {e}"),
             }
-        });
-        let _send_result = tx.try_send(ClientMessage::UserJoined {
-            uuid: my_uuid,
-            game_id,
         });
     }
 
