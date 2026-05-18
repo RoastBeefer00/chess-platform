@@ -1,5 +1,21 @@
+use serde::{Deserialize, Serialize};
 use shakmaty::{Chess, Color, Move, Outcome, PlayError, Position as _};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerInfo {
+    pub id: Uuid,
+    pub username: Option<String>,
+    pub avatar_url: Option<String>,
+    pub rating: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameInfo {
+    pub id: Uuid,
+    pub white: PlayerInfo,
+    pub black: PlayerInfo,
+}
 
 #[derive(Debug, Clone)]
 pub enum GameStatus {

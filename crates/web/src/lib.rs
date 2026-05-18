@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod components;
+pub mod game;
 pub mod matchmaking;
 pub mod pages;
 pub mod websocket;
