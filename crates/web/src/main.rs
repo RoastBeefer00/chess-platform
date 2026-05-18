@@ -43,13 +43,13 @@ async fn main() {
     let redis = Pool::new(Config::from_url(&redis_url).unwrap(), None, None, None, 6).unwrap();
     redis.connect();
     redis.wait_for_connect().await.unwrap();
-    let session_store = RedisStore::new(redis);
+    let session_store = RedisStore::new(redis.clone());
     let env = std::env::var("ENV").expect("ENV must be set to 'development' or 'production'");
     let session_layer = SessionManagerLayer::new(session_store)
         .with_secure(env == "production") // set to true behind HTTPS in prod
         .with_same_site(SameSite::Lax); // required so the session cookie is sent on the OAuth callback redirect
 
-    let app_state = AppState::new(leptos_options.clone(), pool).await;
+    let app_state = AppState::new(leptos_options.clone(), pool, redis).await;
     let auth_layer =
         AuthManagerLayerBuilder::new(app_state.auth_backend.clone(), session_layer).build();
 
@@ -64,11 +64,9 @@ async fn main() {
             &app_state,
             routes,
             {
-                let games = app_state.games.clone();
-                let backend = app_state.auth_backend.clone();
+                let state = app_state.clone();
                 move || {
-                    provide_context(games.clone());
-                    provide_context(backend.clone());
+                    provide_context(state.clone());
                 }
             },
             {

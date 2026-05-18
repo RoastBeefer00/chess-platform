@@ -7,7 +7,7 @@ use leptos_use::UseDraggableReturn;
 use shakmaty::Chess;
 use shakmaty::{Color, Piece, Square};
 #[cfg(feature = "hydrate")]
-use shared::{ClientMessage, PlayerRole};
+use shared::{GameClientMessage, PlayerRole};
 
 use crate::components::BoardPerspective;
 
@@ -22,7 +22,7 @@ pub fn Square(
     let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
     let last_move = expect_context::<RwSignal<Option<(shakmaty::Square, shakmaty::Square)>>>();
     #[cfg(feature = "hydrate")]
-    let tx = expect_context::<Sender<ClientMessage>>();
+    let tx = expect_context::<Sender<GameClientMessage>>();
     #[cfg(feature = "hydrate")]
     let (position, _) = expect_context::<(ReadSignal<Chess>, WriteSignal<Chess>)>();
     #[cfg(feature = "hydrate")]
@@ -50,6 +50,9 @@ pub fn Square(
 
     #[cfg(feature = "hydrate")]
     let tx_click = tx.clone();
+
+    #[cfg(feature = "hydrate")]
+    let drag_size = RwSignal::new((0.0_f64, 0.0_f64));
 
     #[cfg(feature = "hydrate")]
     let UseDraggableReturn {
@@ -80,6 +83,7 @@ pub fn Square(
                                 x: rect.left(),
                                 y: rect.top(),
                             });
+                            drag_size.set((rect.width(), rect.height()));
                         }
                         true
                     } else {
@@ -119,7 +123,7 @@ pub fn Square(
                                     }) {
                                         let m = m.clone();
                                         selected_square.set(None);
-                                        let _ = tx.try_send(ClientMessage::MoveMade {
+                                        let _ = tx.try_send(GameClientMessage::MoveMade {
                                             uci: m
                                                 .to_uci(shakmaty::CastlingMode::Standard)
                                                 .to_string(),
@@ -144,7 +148,11 @@ pub fn Square(
     }
 
     #[cfg(not(feature = "hydrate"))]
-    let (is_dragging, style) = (Signal::derive(|| false), Signal::derive(|| String::new()));
+    let (is_dragging, style, drag_size) = (
+        Signal::derive(|| false),
+        Signal::derive(|| String::new()),
+        Signal::derive(|| (0.0_f64, 0.0_f64)),
+    );
 
     #[cfg(feature = "hydrate")]
     let on_click = {
@@ -166,7 +174,7 @@ pub fn Square(
             }) {
                 let m = m.clone();
                 selected_square.set(None);
-                let _ = tx.try_send(ClientMessage::MoveMade {
+                let _ = tx.try_send(GameClientMessage::MoveMade {
                     uci: m.to_uci(shakmaty::CastlingMode::Standard).to_string(),
                 });
             }
@@ -178,7 +186,9 @@ pub fn Square(
     let this_sq = Square::new((rank * 8 + file) as u32);
     let is_highlighted = move || {
         selected_square.get() == Some(this_sq)
-            || last_move.get().is_some_and(|(f, t)| f == this_sq || t == this_sq)
+            || last_move
+                .get()
+                .is_some_and(|(f, t)| f == this_sq || t == this_sq)
     };
 
     view! {
@@ -213,9 +223,9 @@ pub fn Square(
                     draggable="false"
                     class="w-full h-full cursor-grab"
                     class:cursor-grabbing=move || is_dragging.get()
-                    class:opacity-50=move || is_dragging.get()
                     style=move || if is_dragging.get() {
-                        format!("position: fixed; {} pointer-events: none; width: 80px; height: 80px; z-index: 50;", style.get())
+                        let (w, h) = drag_size.get();
+                        format!("position: fixed; {} pointer-events: none; width: {}px; height: {}px; z-index: 50;", style.get(), w, h)
                     } else {
                         String::new()
                     }

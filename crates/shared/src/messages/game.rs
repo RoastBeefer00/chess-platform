@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::PlayerRole;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ServerMessage {
+pub enum GameServerMessage {
     UserJoined {
         uuid: Uuid,
         position_fen: String,
@@ -23,9 +23,8 @@ pub enum ServerMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClientMessage {
-    UserJoined { uuid: Uuid, game_id: Uuid },
-    UserLeft { uuid: Uuid },
+pub enum GameClientMessage {
+    UserJoined { game_id: Uuid },
     MoveMade { uci: String },
-    Chat { user: Uuid, text: String },
+    Chat { text: String },
 }

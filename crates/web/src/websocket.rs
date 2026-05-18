@@ -1,26 +1,29 @@
 use leptos::prelude::*;
 use server_fn::{codec::JsonEncoding, BoxedStream, Websocket};
-use shared::{ClientMessage, ServerMessage};
+use shared::{GameClientMessage, GameServerMessage};
 
 #[server(protocol = Websocket<JsonEncoding, JsonEncoding>)]
 pub async fn game_websocket(
-    input: BoxedStream<ClientMessage, ServerFnError>,
-) -> Result<BoxedStream<ServerMessage, ServerFnError>, ServerFnError> {
-    use crate::game_room::GameRoom;
-    use crate::state::GameRooms;
+    input: BoxedStream<GameClientMessage, ServerFnError>,
+) -> Result<BoxedStream<GameServerMessage, ServerFnError>, ServerFnError> {
+    use crate::auth::AuthBackend;
+    use crate::state::AppState;
+    use axum_login::AuthSession;
     use futures::StreamExt;
-    use shared::Game;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
     use tokio_stream::wrappers::BroadcastStream;
 
     let mut input = input;
-    let games = expect_context::<GameRooms>();
+    let state = expect_context::<AppState>();
+    let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
 
     // Return output channel immediately — don't block on input before returning
     // the stream. Blocking here causes a deadlock: the client won't send input
     // until game_websocket returns, but the server won't return until it reads input.
-    let (tx, rx) = futures::channel::mpsc::unbounded::<Result<ServerMessage, ServerFnError>>();
+    let (tx, rx) = futures::channel::mpsc::unbounded::<Result<GameServerMessage, ServerFnError>>();
+
+    let user = auth
+        .user
+        .ok_or_else(|| ServerFnError::new("unauthenticated"))?;
 
     tokio::spawn(async move {
         let first = match input.next().await {
@@ -36,8 +39,8 @@ pub async fn game_websocket(
             }
         };
 
-        let (uuid, game_id) = match first {
-            ClientMessage::UserJoined { uuid, game_id } => (uuid, game_id),
+        let game_id = match first {
+            GameClientMessage::UserJoined { game_id } => game_id,
             _ => {
                 let _ = tx.unbounded_send(Err(ServerFnError::new(
                     "expected UserJoined as first message",
@@ -46,24 +49,22 @@ pub async fn game_websocket(
             }
         };
 
-        let game_room = games
-            .lock()
-            .await
-            .entry(game_id)
-            .or_insert_with(|| Arc::new(Mutex::new(GameRoom::new(Game::new(uuid, uuid)))))
-            .clone();
+        let Some(game_room) = state.get_game_room(&game_id).await else {
+            let _ = tx.unbounded_send(Err(ServerFnError::new("game not found")));
+            return;
+        };
 
         let (player_role, position_fen) = {
             use shakmaty::fen::Fen;
             let mut gr = game_room.lock().await;
-            let role = gr.add_player(uuid);
+            let role = gr.add_player(user.id);
             let fen =
                 Fen::from_position(&gr.get_position(), shakmaty::EnPassantMode::Legal).to_string();
             (role, fen)
         };
 
-        let _ = tx.unbounded_send(Ok(ServerMessage::UserJoined {
-            uuid,
+        let _ = tx.unbounded_send(Ok(GameServerMessage::UserJoined {
+            uuid: user.id,
             position_fen,
             player_role,
         }));
@@ -84,22 +85,12 @@ pub async fn game_websocket(
                 tracing::debug!(?msg, "received message from client");
                 let mut gr = game_room.lock().await;
                 match msg {
-                    ClientMessage::UserJoined { uuid, game_id: _ } => {
-                        use shakmaty::fen::Fen;
-                        let player_role = gr.add_player(uuid);
-                        let fen =
-                            Fen::from_position(&gr.get_position(), shakmaty::EnPassantMode::Legal)
-                                .to_string();
-                        gr.broadcast(ServerMessage::UserJoined {
-                            uuid,
-                            position_fen: fen,
-                            player_role,
-                        });
+                    GameClientMessage::UserJoined { game_id: _ } => {
+                        tracing::warn!(%user.id, "ignoring duplicate UserJoined");
                     }
-                    ClientMessage::UserLeft { uuid } => todo!(),
-                    ClientMessage::MoveMade { uci } => {
-                        if gr.current_player() != Some(uuid) {
-                            tracing::warn!(%uuid, "move from non-current player");
+                    GameClientMessage::MoveMade { uci } => {
+                        if gr.current_player() != Some(user.id) {
+                            tracing::warn!(%user.id, "move from non-current player");
                             continue;
                         }
                         use shakmaty::uci::UciMove;
@@ -120,17 +111,22 @@ pub async fn game_websocket(
                         match gr.make_move(move_made) {
                             Ok(()) => {
                                 tracing::info!(%uci, "move accepted");
-                                gr.broadcast(ServerMessage::MoveMade { uci });
+                                gr.broadcast(GameServerMessage::MoveMade { uci });
                             }
                             Err(e) => {
                                 tracing::warn!(%uci, %e, "failed to make move");
                             }
                         }
                     }
-                    ClientMessage::Chat { user, text } => todo!(),
+                    GameClientMessage::Chat { text } => todo!(),
                 }
             }
         }
+        let mut gr = game_room.lock().await;
+        gr.remove_player(user.id);
+        gr.broadcast(GameServerMessage::UserLeft {
+            username: user.username.unwrap_or_default(),
+        });
     });
 
     Ok(rx.into())

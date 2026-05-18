@@ -2,7 +2,7 @@ use shakmaty::{Chess, Color, Move, Position as _};
 use tokio::sync::broadcast::{self, Receiver, Sender};
 use tracing::instrument;
 
-use shared::{Game, GameStatus, PlayerRole, ServerMessage};
+use shared::{Game, GameServerMessage, GameStatus, PlayerRole};
 use uuid::Uuid;
 
 const BROADCAST_CAPACITY: usize = 32;
@@ -13,7 +13,7 @@ pub struct GameRoom {
     pub white_player: Option<Uuid>,
     pub black_player: Option<Uuid>,
     pub status: GameStatus,
-    tx: Sender<ServerMessage>,
+    tx: Sender<GameServerMessage>,
 }
 
 impl GameRoom {
@@ -28,11 +28,11 @@ impl GameRoom {
         }
     }
 
-    pub fn subscribe(&self) -> Receiver<ServerMessage> {
+    pub fn subscribe(&self) -> Receiver<GameServerMessage> {
         self.tx.subscribe()
     }
 
-    pub fn broadcast(&self, msg: ServerMessage) {
+    pub fn broadcast(&self, msg: GameServerMessage) {
         let _ = self.tx.send(msg);
     }
 
@@ -77,12 +77,25 @@ impl GameRoom {
                     Color::Black,
                 )
             }
+        } else if self.black_player.is_some_and(|id| id == player_id) {
+            PlayerRole::Player(Color::Black.into())
+        } else if self.white_player.is_some_and(|id| id == player_id) {
+            PlayerRole::Player(Color::White.into())
         } else if self.white_player.is_none() {
             assign_player(self, GameStatus::Ongoing, player_id, Color::White)
         } else if self.black_player.is_none() {
             assign_player(self, GameStatus::Ongoing, player_id, Color::Black)
         } else {
             PlayerRole::Spectator
+        }
+    }
+
+    #[instrument(skip(self))]
+    pub fn remove_player(&mut self, id: Uuid) {
+        if self.white_player == Some(id) {
+            self.white_player = None;
+        } else if self.black_player == Some(id) {
+            self.black_player = None;
         }
     }
 

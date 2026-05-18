@@ -4,12 +4,13 @@ use leptos_router::{lazy_route, LazyRoute};
 #[server]
 pub async fn register_user(email: String, password: String) -> Result<(), ServerFnError> {
     use crate::auth::AuthBackend;
+    use crate::state::AppState;
     use axum_login::AuthSession;
 
-    let backend = expect_context::<AuthBackend>();
+    let state = expect_context::<AppState>();
     let mut auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
 
-    let user = backend.register(email, password).await?;
+    let user = state.auth_backend.register(email, password).await?;
     auth.login(&user).await?;
 
     leptos_axum::redirect("/");
