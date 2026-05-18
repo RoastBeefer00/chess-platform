@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use leptos_router::{hooks::use_params_map, lazy_route, LazyRoute};
 use uuid::Uuid;
 
-use crate::components::Board;
+use crate::components::PlayBoard;
 
 #[derive(Clone)]
 pub struct PlayPage;
@@ -24,7 +24,7 @@ impl LazyRoute for PlayPage {
 
         view! {
             <div>
-                {move || game_id().map(|id| view! { <Board game_id=id /> })}
+                {move || game_id().map(|id| view! { <PlayBoard game_id=id /> })}
             </div>
         }
         .into_any()

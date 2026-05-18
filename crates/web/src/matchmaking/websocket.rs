@@ -1,6 +1,20 @@
 use leptos::prelude::*;
 use server_fn::{codec::JsonEncoding, BoxedStream, Websocket};
-use shared::{MatchmakingClientMessage, MatchmakingServerMessage};
+use shared::{GameMode, MatchmakingClientMessage, MatchmakingServerMessage};
+use uuid::Uuid;
+
+#[server]
+pub async fn get_user_rating(id: Uuid, game_mode: GameMode) -> Result<u32, ServerFnError> {
+    use crate::auth::AuthBackend;
+    use axum_login::AuthSession;
+
+    let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
+
+    auth.backend
+        .get_user_rating(&id, game_mode)
+        .await
+        .map_err(|e| ServerFnError::new(e))
+}
 
 #[server(protocol = Websocket<JsonEncoding, JsonEncoding>)]
 pub async fn matchmaking_websocket(
@@ -49,8 +63,8 @@ pub async fn matchmaking_websocket(
             {
                 Ok(r) => r,
                 Err(_) => {
-                    let _ = tx
-                        .unbounded_send(Err(ServerFnError::new("unable to get player rating")));
+                    let _ =
+                        tx.unbounded_send(Err(ServerFnError::new("unable to get player rating")));
                     return Err(());
                 }
             };
@@ -115,10 +129,7 @@ pub async fn matchmaking_websocket(
         // Always-runs cleanup, regardless of which exit path was taken.
         state.remove_match_inbox(&player_id).await;
         if let Some(key) = queued_key {
-            let _ = state
-                .redis_client
-                .remove_from_bucket(&key, player_id)
-                .await;
+            let _ = state.redis_client.remove_from_bucket(&key, player_id).await;
         }
     });
 

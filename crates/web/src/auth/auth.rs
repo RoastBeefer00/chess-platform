@@ -205,6 +205,30 @@ impl AuthBackend {
 
         Ok(rating as u32)
     }
+
+    pub async fn get_player_info(
+        &self,
+        id: &Uuid,
+        mode: GameMode,
+    ) -> Result<shared::PlayerInfo, AuthError> {
+        let row = sqlx::query!(
+            r#"SELECT u.id, u.username, u.avatar_url, r.rating
+               FROM users u
+               LEFT JOIN ratings r ON r.user_id = u.id AND r.mode = $2
+               WHERE u.id = $1"#,
+            id,
+            &mode.to_string()
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(shared::PlayerInfo {
+            id: row.id,
+            username: row.username,
+            avatar_url: row.avatar_url,
+            rating: row.rating,
+        })
+    }
 }
 
 impl AuthnBackend for AuthBackend {

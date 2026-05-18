@@ -1,13 +1,9 @@
-#[cfg(feature = "hydrate")]
-use futures::channel::mpsc::Sender;
 use leptos::{html::Img, prelude::*};
 #[cfg(feature = "hydrate")]
 use leptos_use::UseDraggableReturn;
 #[cfg(feature = "hydrate")]
 use shakmaty::Chess;
 use shakmaty::{Color, Piece, Square};
-#[cfg(feature = "hydrate")]
-use shared::{GameClientMessage, PlayerRole};
 
 use crate::components::BoardPerspective;
 
@@ -22,11 +18,11 @@ pub fn Square(
     let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
     let last_move = expect_context::<RwSignal<Option<(shakmaty::Square, shakmaty::Square)>>>();
     #[cfg(feature = "hydrate")]
-    let tx = expect_context::<Sender<GameClientMessage>>();
+    let on_move = expect_context::<Callback<shakmaty::Move>>();
     #[cfg(feature = "hydrate")]
-    let (position, _) = expect_context::<(ReadSignal<Chess>, WriteSignal<Chess>)>();
+    let can_drag_piece = expect_context::<Callback<shakmaty::Piece, bool>>();
     #[cfg(feature = "hydrate")]
-    let player_role = expect_context::<ReadSignal<Option<PlayerRole>>>();
+    let position = expect_context::<ReadSignal<Chess>>();
 
     let image_path = Signal::derive(move || {
         piece.get().map(|p| {
@@ -49,9 +45,6 @@ pub fn Square(
     let el = NodeRef::<Img>::new();
 
     #[cfg(feature = "hydrate")]
-    let tx_click = tx.clone();
-
-    #[cfg(feature = "hydrate")]
     let drag_size = RwSignal::new((0.0_f64, 0.0_f64));
 
     #[cfg(feature = "hydrate")]
@@ -70,11 +63,7 @@ pub fn Square(
             UseDraggableOptions::default()
                 .initial_value(pos)
                 .on_start(move |_: UseDraggableCallbackArgs| {
-                    let can_drag = player_role
-                        .get()
-                        .and_then(|r| r.color())
-                        .zip(piece.get())
-                        .is_some_and(|(my_color, p)| my_color == p.color);
+                    let can_drag = piece.get().is_some_and(|p| can_drag_piece.run(p));
                     if can_drag {
                         selected_square.set(Some(Square::new((rank * 8 + file) as u32)));
                         if let Some(element) = el.get_untracked() {
@@ -91,7 +80,6 @@ pub fn Square(
                     }
                 })
                 .on_end(move |args: UseDraggableCallbackArgs| {
-                    let mut tx = tx.clone();
                     let (x, y) = (args.event.client_x() as f32, args.event.client_y() as f32);
                     let dom_element = web_sys::window()
                         .unwrap()
@@ -104,31 +92,22 @@ pub fn Square(
                     if let Some(el) = data {
                         use std::str::FromStr;
 
-                        if player_role
-                            .get()
-                            .is_some_and(|role| role != PlayerRole::Spectator)
-                        {
-                            let attr = el.get_attribute("data-square").unwrap();
-                            leptos::logging::log!("dropped on square {}", attr);
-                            if let Ok(dropped_square) = Square::from_str(&attr) {
-                                if valid_move_targets.get().contains(&dropped_square) {
-                                    use shakmaty::{Position as _, Role};
-                                    let from_sq = selected_square.get_untracked().unwrap();
-                                    let legal = position.get_untracked().legal_moves();
-                                    // For promotions, default to queen
-                                    if let Some(m) = legal.iter().find(|m| {
-                                        m.from() == Some(from_sq)
-                                            && m.to() == dropped_square
-                                            && m.promotion().map_or(true, |r| r == Role::Queen)
-                                    }) {
-                                        let m = m.clone();
-                                        selected_square.set(None);
-                                        let _ = tx.try_send(GameClientMessage::MoveMade {
-                                            uci: m
-                                                .to_uci(shakmaty::CastlingMode::Standard)
-                                                .to_string(),
-                                        });
-                                    }
+                        let attr = el.get_attribute("data-square").unwrap();
+                        leptos::logging::log!("dropped on square {}", attr);
+                        if let Ok(dropped_square) = Square::from_str(&attr) {
+                            if valid_move_targets.get().contains(&dropped_square) {
+                                use shakmaty::{Position as _, Role};
+                                let from_sq = selected_square.get_untracked().unwrap();
+                                let legal = position.get_untracked().legal_moves();
+                                // For promotions, default to queen
+                                if let Some(m) = legal.iter().find(|m| {
+                                    m.from() == Some(from_sq)
+                                        && m.to() == dropped_square
+                                        && m.promotion().map_or(true, |r| r == Role::Queen)
+                                }) {
+                                    let m = m.clone();
+                                    selected_square.set(None);
+                                    on_move.run(m);
                                 }
                             }
                         }
@@ -155,29 +134,24 @@ pub fn Square(
     );
 
     #[cfg(feature = "hydrate")]
-    let on_click = {
-        let mut tx = tx_click;
-        move |_: leptos::ev::MouseEvent| {
-            let this_square = Square::new((rank * 8 + file) as u32);
-            let Some(from_sq) = selected_square.get_untracked() else {
-                return;
-            };
-            if !valid_move_targets.get_untracked().contains(&this_square) {
-                return;
-            }
-            use shakmaty::{Position as _, Role};
-            let legal = position.get_untracked().legal_moves();
-            if let Some(m) = legal.iter().find(|m| {
-                m.from() == Some(from_sq)
-                    && m.to() == this_square
-                    && m.promotion().map_or(true, |r| r == Role::Queen)
-            }) {
-                let m = m.clone();
-                selected_square.set(None);
-                let _ = tx.try_send(GameClientMessage::MoveMade {
-                    uci: m.to_uci(shakmaty::CastlingMode::Standard).to_string(),
-                });
-            }
+    let on_click = move |_: leptos::ev::MouseEvent| {
+        let this_square = Square::new((rank * 8 + file) as u32);
+        let Some(from_sq) = selected_square.get_untracked() else {
+            return;
+        };
+        if !valid_move_targets.get_untracked().contains(&this_square) {
+            return;
+        }
+        use shakmaty::{Position as _, Role};
+        let legal = position.get_untracked().legal_moves();
+        if let Some(m) = legal.iter().find(|m| {
+            m.from() == Some(from_sq)
+                && m.to() == this_square
+                && m.promotion().map_or(true, |r| r == Role::Queen)
+        }) {
+            let m = m.clone();
+            selected_square.set(None);
+            on_move.run(m);
         }
     };
     #[cfg(not(feature = "hydrate"))]
