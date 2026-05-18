@@ -52,6 +52,9 @@ pub fn Square(
     let tx_click = tx.clone();
 
     #[cfg(feature = "hydrate")]
+    let drag_size = RwSignal::new((0.0_f64, 0.0_f64));
+
+    #[cfg(feature = "hydrate")]
     let UseDraggableReturn {
         is_dragging, style, ..
     } = {
@@ -80,6 +83,7 @@ pub fn Square(
                                 x: rect.left(),
                                 y: rect.top(),
                             });
+                            drag_size.set((rect.width(), rect.height()));
                         }
                         true
                     } else {
@@ -144,7 +148,11 @@ pub fn Square(
     }
 
     #[cfg(not(feature = "hydrate"))]
-    let (is_dragging, style) = (Signal::derive(|| false), Signal::derive(|| String::new()));
+    let (is_dragging, style, drag_size) = (
+        Signal::derive(|| false),
+        Signal::derive(|| String::new()),
+        Signal::derive(|| (0.0_f64, 0.0_f64)),
+    );
 
     #[cfg(feature = "hydrate")]
     let on_click = {
@@ -215,9 +223,9 @@ pub fn Square(
                     draggable="false"
                     class="w-full h-full cursor-grab"
                     class:cursor-grabbing=move || is_dragging.get()
-                    class:opacity-50=move || is_dragging.get()
                     style=move || if is_dragging.get() {
-                        format!("position: fixed; {} pointer-events: none; width: 80px; height: 80px; z-index: 50;", style.get())
+                        let (w, h) = drag_size.get();
+                        format!("position: fixed; {} pointer-events: none; width: {}px; height: {}px; z-index: 50;", style.get(), w, h)
                     } else {
                         String::new()
                     }
