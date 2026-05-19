@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use shakmaty::{Chess, Color, Move, Position as _};
 use tokio::sync::broadcast::{self, Receiver, Sender};
 use tracing::instrument;
@@ -10,9 +12,8 @@ const BROADCAST_CAPACITY: usize = 32;
 #[derive(Debug)]
 pub struct GameRoom {
     pub game: Game,
-    pub white_player: Option<Uuid>,
-    pub black_player: Option<Uuid>,
     pub status: GameStatus,
+    connected: HashSet<Uuid>,
     tx: Sender<GameServerMessage>,
 }
 
@@ -21,9 +22,8 @@ impl GameRoom {
         let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         GameRoom {
             game,
-            white_player: None,
-            black_player: None,
             status: GameStatus::WaitingForOpponent,
+            connected: HashSet::new(),
             tx,
         }
     }
@@ -37,7 +37,7 @@ impl GameRoom {
     }
 
     pub fn player_count(&self) -> usize {
-        self.white_player.is_some() as usize + self.black_player.is_some() as usize
+        self.connected.len()
     }
 
     pub fn get_position(&self) -> Chess {
@@ -46,64 +46,37 @@ impl GameRoom {
 
     #[instrument(skip(self))]
     pub fn add_player(&mut self, player_id: Uuid) -> PlayerRole {
-        fn assign_player(
-            room: &mut GameRoom,
-            status: GameStatus,
-            player_id: Uuid,
-            color: Color,
-        ) -> PlayerRole {
-            match color {
-                Color::White => room.white_player = Some(player_id),
-                Color::Black => room.black_player = Some(player_id),
-            }
-            room.status = status;
-            PlayerRole::Player(color.into())
-        }
-
-        if self.white_player.is_none() && self.black_player.is_none() {
-            // Randomly assign the first player to white or black
-            if rand::random() {
-                assign_player(
-                    self,
-                    GameStatus::WaitingForOpponent,
-                    player_id,
-                    Color::White,
-                )
-            } else {
-                assign_player(
-                    self,
-                    GameStatus::WaitingForOpponent,
-                    player_id,
-                    Color::Black,
-                )
-            }
-        } else if self.black_player.is_some_and(|id| id == player_id) {
-            PlayerRole::Player(Color::Black.into())
-        } else if self.white_player.is_some_and(|id| id == player_id) {
+        let role = if player_id == self.game.white_player {
+            self.connected.insert(player_id);
             PlayerRole::Player(Color::White.into())
-        } else if self.white_player.is_none() {
-            assign_player(self, GameStatus::Ongoing, player_id, Color::White)
-        } else if self.black_player.is_none() {
-            assign_player(self, GameStatus::Ongoing, player_id, Color::Black)
+        } else if player_id == self.game.black_player {
+            self.connected.insert(player_id);
+            PlayerRole::Player(Color::Black.into())
         } else {
             PlayerRole::Spectator
+        };
+
+        if self.connected.contains(&self.game.white_player)
+            && self.connected.contains(&self.game.black_player)
+        {
+            self.status = GameStatus::Ongoing;
         }
+
+        role
     }
 
     #[instrument(skip(self))]
     pub fn remove_player(&mut self, id: Uuid) {
-        if self.white_player == Some(id) {
-            self.white_player = None;
-        } else if self.black_player == Some(id) {
-            self.black_player = None;
-        }
+        self.connected.remove(&id);
     }
 
     pub fn current_player(&self) -> Option<Uuid> {
-        match self.game.position.turn() {
-            Color::White => self.white_player,
-            Color::Black => self.black_player,
-        }
+        let id = match self.game.position.turn() {
+            Color::White => self.game.white_player,
+            Color::Black => self.game.black_player,
+        };
+        // Only consider it "their turn" if they're actually connected.
+        self.connected.contains(&id).then_some(id)
     }
 
     #[instrument(skip(self))]
