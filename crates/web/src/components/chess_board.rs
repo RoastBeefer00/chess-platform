@@ -1,10 +1,28 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use shakmaty::attacks::attacks;
-use shakmaty::Bitboard;
+use shakmaty::{Bitboard, File};
 use shared::{PlayerRole, Side};
 
 use crate::components::Square;
+
+/// Square the user visually drops on for a given move.
+/// For castling, shakmaty's `.to()` returns the rook square; this returns the
+/// king's destination (g/c file) instead. Use this everywhere we compare a
+/// drop/click target to a legal move.
+pub fn move_target(m: &shakmaty::Move) -> shakmaty::Square {
+    match m {
+        shakmaty::Move::Castle { king, rook } => {
+            let dest_file = if rook.file() > king.file() {
+                File::G
+            } else {
+                File::C
+            };
+            shakmaty::Square::from_coords(dest_file, king.rank())
+        }
+        other => other.to(),
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BoardPerspective {
@@ -41,43 +59,62 @@ pub fn ChessBoard(
         let Some(piece) = pos.board().piece_at(selected) else {
             return vec![];
         };
-        // If the selected piece is the side-to-move, show legal moves.
-        // Otherwise show pseudo-attacks (visual exploration) — handy for
-        // analyzing opponent threats.
-        if piece.color == pos.turn() {
-            pos.legal_moves()
-                .into_iter()
-                .filter(|m| m.from() == Some(selected))
-                .map(|m| m.to())
-                .collect()
+        // For our piece + our turn: just legal moves.
+        // For our piece + opponent's turn: legal-as-if-our-turn (for premoves +
+        // castling) UNION pseudo-attacks (threat-analysis view).
+        let view_pos = if piece.color == pos.turn() {
+            Some(pos.clone())
         } else {
-            use shakmaty::Role;
-            let mut targets: Vec<shakmaty::Square> =
-                attacks(selected, piece, Bitboard::EMPTY).into_iter().collect();
-            if piece.role == Role::Pawn {
-                let rank = selected.rank().to_usize();
-                let file = selected.file().to_usize();
-                match piece.color {
-                    shakmaty::Color::White => {
-                        targets.push(shakmaty::Square::new(((rank + 1) * 8 + file) as u32));
-                        if rank == 1 {
-                            targets.push(shakmaty::Square::new(((rank + 2) * 8 + file) as u32));
-                        }
+            // swap_turn fails if swapping leaves the new side-to-move in check.
+            pos.clone().swap_turn().ok()
+        };
+
+        let mut targets: std::collections::HashSet<shakmaty::Square> = view_pos
+            .into_iter()
+            .flat_map(|p| {
+                p.legal_moves()
+                    .into_iter()
+                    .filter(|m| m.from() == Some(selected))
+                    .map(|m| move_target(&m))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        // Add pseudo-attacks when it's not our turn so the user can also see
+        // potential threat rays.
+        if piece.color != pos.turn() {
+            targets.extend(pseudo_attacks(selected, piece));
+        }
+
+        targets.into_iter().collect()
+    });
+
+    fn pseudo_attacks(selected: shakmaty::Square, piece: shakmaty::Piece) -> Vec<shakmaty::Square> {
+        use shakmaty::Role;
+        let mut targets: Vec<shakmaty::Square> =
+            attacks(selected, piece, Bitboard::EMPTY).into_iter().collect();
+        if piece.role == Role::Pawn {
+            let rank = selected.rank().to_usize();
+            let file = selected.file().to_usize();
+            match piece.color {
+                shakmaty::Color::White => {
+                    targets.push(shakmaty::Square::new(((rank + 1) * 8 + file) as u32));
+                    if rank == 1 {
+                        targets.push(shakmaty::Square::new(((rank + 2) * 8 + file) as u32));
                     }
-                    shakmaty::Color::Black => {
-                        if rank > 0 {
-                            targets.push(shakmaty::Square::new(((rank - 1) * 8 + file) as u32));
-                            if rank == 6 {
-                                targets
-                                    .push(shakmaty::Square::new(((rank - 2) * 8 + file) as u32));
-                            }
+                }
+                shakmaty::Color::Black => {
+                    if rank > 0 {
+                        targets.push(shakmaty::Square::new(((rank - 1) * 8 + file) as u32));
+                        if rank == 6 {
+                            targets.push(shakmaty::Square::new(((rank - 2) * 8 + file) as u32));
                         }
                     }
                 }
             }
-            targets
         }
-    });
+        targets
+    }
 
     // Contexts consumed by Square.
     provide_context(position);

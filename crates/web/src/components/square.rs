@@ -5,7 +5,7 @@ use leptos_use::UseDraggableReturn;
 use shakmaty::Chess;
 use shakmaty::{Color, Piece, Square};
 
-use crate::components::BoardPerspective;
+use crate::components::{move_target, BoardPerspective};
 
 #[component]
 pub fn Square(
@@ -102,7 +102,7 @@ pub fn Square(
                                 // For promotions, default to queen
                                 if let Some(m) = legal.iter().find(|m| {
                                     m.from() == Some(from_sq)
-                                        && m.to() == dropped_square
+                                        && move_target(m) == dropped_square
                                         && m.promotion().map_or(true, |r| r == Role::Queen)
                                 }) {
                                     let m = m.clone();
@@ -146,7 +146,7 @@ pub fn Square(
         let legal = position.get_untracked().legal_moves();
         if let Some(m) = legal.iter().find(|m| {
             m.from() == Some(from_sq)
-                && m.to() == this_square
+                && move_target(m) == this_square
                 && m.promotion().map_or(true, |r| r == Role::Queen)
         }) {
             let m = m.clone();
