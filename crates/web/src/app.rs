@@ -35,14 +35,14 @@ pub fn App() -> impl IntoView {
 
     view! {
         <Stylesheet id="leptos" href="/pkg/web.css"/>
-        <Title text="chess-rs"/>
+        <Title text="Gambit"/>
 
         <Router>
             <Nav/>
             <main class="pt-14 min-h-screen bg-zinc-950">
                 <Routes fallback=NotFoundPage>
+                    <Route path=StaticSegment("/") view={Lazy::<HomePage>::new()}/>
                     <ParentRoute path=StaticSegment("/") view=RequireAuth>
-                        <Route path=StaticSegment("") view={Lazy::<HomePage>::new()}/>
                         <Route path=(StaticSegment("play"), ParamSegment("game_id")) view={Lazy::<PlayPage>::new()}/>
                         <Route path=StaticSegment("create-username") view={Lazy::<CreateUsernamePage>::new()}/>
                     </ParentRoute>

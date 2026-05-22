@@ -14,7 +14,9 @@ use tokio::{
 };
 use tracing::instrument;
 
-use shared::{messages::GameOverReason, Game, GameServerMessage, GameStatus, PlayerRole, Side};
+use shared::{
+    messages::GameOverReason, Game, GameServerMessage, GameStatus, PlayerRole, Side, TimeMode,
+};
 use uuid::Uuid;
 
 const BROADCAST_CAPACITY: usize = 32;
@@ -131,11 +133,28 @@ impl GameRoom {
 
     pub fn end_game(&mut self, outcome: KnownOutcome, reason: GameOverReason) {
         self.status = GameStatus::Finished(Outcome::Known(outcome));
+
+        // Push the final clock snapshot so clients display the true ending values
+        // (e.g. 0.0 for the side that flagged) instead of whatever their local
+        // interval extrapolated to.
+        let sent_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.broadcast(GameServerMessage::ClockSync {
+            white_ms_left: self.game.white_ms_left,
+            black_ms_left: self.game.black_ms_left,
+            turn: self.game.position.turn().into(),
+            sent_at_ms,
+            clock_running: false,
+        });
+
         let winner = match outcome {
             KnownOutcome::Decisive { winner } => Some(Side::from(winner)),
             KnownOutcome::Draw => None,
         };
         self.broadcast(GameServerMessage::GameOver { winner, reason });
+
         if let Some(h) = self.timeout_task.take() {
             h.abort();
         }
@@ -164,6 +183,9 @@ impl GameRoom {
             Color::White => self.game.white_ms_left,
         };
         mover_ms -= elapsed;
+        if let TimeMode::Increment(i) = self.game.config.time_control.mode {
+            mover_ms += i;
+        }
         if mover_ms <= 0 {
             return Err(MoveError::FlagFall);
         }

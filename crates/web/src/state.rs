@@ -35,7 +35,7 @@ impl AppState {
     ) -> Self {
         // GitHub's API rejects requests without a User-Agent header.
         let http_client = reqwest::Client::builder()
-            .user_agent(concat!("chess-rs/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("gambit/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("failed to build reqwest client");
         let redis_client = RedisClient::new(redis_pool).await;
