@@ -3,7 +3,7 @@ use leptos::prelude::*;
 #[component]
 pub fn NotFoundPage() -> impl IntoView {
     view! {
-        <div class="flex flex-col items-center justify-center min-h-[calc(100vh-3.5rem)] px-6 text-center select-none">
+        <div class="flex flex-col items-center justify-center min-h-[calc(100dvh-3.5rem)] px-6 text-center select-none">
             <span class="text-[10rem] font-bold leading-none tracking-tighter text-zinc-800 mb-2">
                 "404"
             </span>

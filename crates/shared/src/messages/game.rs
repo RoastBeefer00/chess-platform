@@ -1,7 +1,15 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::PlayerRole;
+use crate::{PlayerRole, Side};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GameOverReason {
+    Abort,
+    Checkmate,
+    Draw,
+    Timeout,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GameServerMessage {
@@ -15,10 +23,25 @@ pub enum GameServerMessage {
     },
     MoveMade {
         uci: String,
+        white_ms_left: i64,
+        black_ms_left: i64,
+        turn: Side,
+        sent_at_ms: i64,
     },
     Chat {
         user: Uuid,
         text: String,
+    },
+    ClockSync {
+        white_ms_left: i64,
+        black_ms_left: i64,
+        turn: Side,
+        sent_at_ms: i64,
+        clock_running: bool,
+    },
+    GameOver {
+        winner: Option<Side>,
+        reason: GameOverReason,
     },
 }
 

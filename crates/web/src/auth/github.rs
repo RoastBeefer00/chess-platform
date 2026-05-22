@@ -45,7 +45,10 @@ pub async fn github_callback(
     };
 
     if csrf_token != query.state {
-        tracing::error!("github callback: csrf mismatch (session={csrf_token}, query={})", query.state);
+        tracing::error!(
+            "github callback: csrf mismatch (session={csrf_token}, query={})",
+            query.state
+        );
         return Redirect::to("/login");
     }
 
@@ -88,7 +91,7 @@ pub async fn get_github_user(
 ) -> Result<GitHubUser, AuthError> {
     let user_response = client
         .get("https://api.github.com/user")
-        .bearer_auth(&jwt_token)
+        .bearer_auth(jwt_token)
         .send()
         .await?
         .error_for_status()?;
@@ -98,7 +101,7 @@ pub async fn get_github_user(
     if user.email.is_none() {
         let emails_response = client
             .get("https://api.github.com/user/emails")
-            .bearer_auth(&jwt_token)
+            .bearer_auth(jwt_token)
             .send()
             .await?
             .error_for_status()?;

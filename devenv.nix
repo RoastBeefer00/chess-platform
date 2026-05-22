@@ -37,13 +37,17 @@
   };
 
   scripts = {
-    dev.exec = "cargo leptos watch --release -P --project web --split";
+    dev.exec = "cargo leptos watch --project web --split";
     kill-dev.exec = "lsof -ti :3000 | xargs kill -9 2>/dev/null; echo 'done'";
     migrate.exec = "sqlx migrate run";
     flutter-dev.exec = "cd mobile && flutter run";
     check-all.exec = ''
       cargo check --workspace
       cargo check -p web --target wasm32-unknown-unknown --features hydrate
+    '';
+    clippy.exec = ''
+      cargo clippy --workspace --all-targets --features "web/ssr" -- -D warnings
+      cargo clippy -p web --target wasm32-unknown-unknown --features hydrate -- -D warnings
     '';
   };
 }

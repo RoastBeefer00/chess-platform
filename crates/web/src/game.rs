@@ -4,8 +4,9 @@ use uuid::Uuid;
 
 #[server]
 pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use crate::state::AppState;
-    use shared::GameMode;
 
     let state = expect_context::<AppState>();
     let game_room = state
@@ -13,23 +14,38 @@ pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("game not found"))?;
 
-    let (white_id, black_id) = {
+    let (white_id, black_id, variant, white_ms_left, black_ms_left, clock_running) = {
         let gr = game_room.lock().await;
-        (gr.game.white_player, gr.game.black_player)
+        (
+            gr.game.white_player,
+            gr.game.black_player,
+            gr.game.config.time_control.category(),
+            gr.game.white_ms_left,
+            gr.game.black_ms_left,
+            gr.last_move_at.is_some(),
+        )
     };
 
-    // TODO: derive mode from the game itself once it's stored on Game.
-    let mode = GameMode::Blitz;
-
     let (white, black) = tokio::try_join!(
-        state.auth_backend.get_player_info(&white_id, mode.clone()),
-        state.auth_backend.get_player_info(&black_id, mode),
+        state
+            .auth_backend
+            .get_player_info(&white_id, variant.clone()),
+        state.auth_backend.get_player_info(&black_id, variant),
     )
     .map_err(|e| ServerFnError::new(e.to_string()))?;
+
+    let sent_at_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
 
     Ok(GameInfo {
         id: game_id,
         white,
         black,
+        white_ms_left,
+        black_ms_left,
+        sent_at_ms,
+        clock_running,
     })
 }

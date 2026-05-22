@@ -26,7 +26,7 @@ type GoogleClient = CoreClient<
     EndpointMaybeSet,
 >;
 use serde::{Deserialize, Serialize};
-use shared::GameMode;
+use shared::Category;
 use sqlx::{query_as, PgPool};
 use uuid::Uuid;
 
@@ -194,11 +194,11 @@ impl AuthBackend {
         }
     }
 
-    pub async fn get_user_rating(&self, id: &Uuid, mode: GameMode) -> Result<u32, AuthError> {
+    pub async fn get_user_rating(&self, id: &Uuid, category: Category) -> Result<u32, AuthError> {
         let rating = sqlx::query_scalar!(
             "SELECT rating FROM ratings WHERE user_id = $1 AND mode = $2",
             id,
-            &mode.to_string()
+            &category.to_string()
         )
         .fetch_one(&self.pool)
         .await?;
@@ -209,15 +209,15 @@ impl AuthBackend {
     pub async fn get_player_info(
         &self,
         id: &Uuid,
-        mode: GameMode,
+        category: Category,
     ) -> Result<shared::PlayerInfo, AuthError> {
         let row = sqlx::query!(
             r#"SELECT u.id, u.username, u.avatar_url, r.rating
                FROM users u
-               LEFT JOIN ratings r ON r.user_id = u.id AND r.mode = $2
+               INNER JOIN ratings r ON r.user_id = u.id AND r.mode = $2
                WHERE u.id = $1"#,
             id,
-            &mode.to_string()
+            &category.to_string()
         )
         .fetch_one(&self.pool)
         .await?;

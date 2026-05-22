@@ -5,7 +5,7 @@ use fred::prelude::*;
 use futures::channel::mpsc::UnboundedSender;
 use leptos::config::LeptosOptions;
 use leptos::prelude::ServerFnError;
-use shared::{Game, MatchmakingServerMessage};
+use shared::{Game, GameConfig, MatchmakingServerMessage};
 use sqlx::PgPool;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -48,8 +48,13 @@ impl AppState {
         }
     }
 
-    pub async fn create_game(&self, white_player: Uuid, black_player: Uuid) -> GameId {
-        let game = GameRoom::new(Game::new(white_player, black_player));
+    pub async fn create_game(
+        &self,
+        game_config: GameConfig,
+        white_player: Uuid,
+        black_player: Uuid,
+    ) -> GameId {
+        let game = GameRoom::new(Game::new(game_config, white_player, black_player));
         let game_id = game.game.id;
         let mut games = self.games.lock().await;
         games.insert(game_id, Arc::new(Mutex::new(game)));

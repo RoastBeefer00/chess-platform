@@ -1,10 +1,10 @@
 use leptos::prelude::*;
-use shared::{Bucket, GameMode, GameStatus, RatingMode};
+use shared::{RatingMode, TimeControl};
 use uuid::Uuid;
 
 #[server]
 pub async fn search_for_game(
-    bucket: Bucket,
+    time_control: TimeControl,
     rating_mode: RatingMode,
     player_id: Uuid,
 ) -> Result<Option<Uuid>, ServerFnError> {
@@ -17,10 +17,10 @@ pub async fn search_for_game(
 
     let rating = auth
         .backend
-        .get_user_rating(&player_id, bucket.mode())
+        .get_user_rating(&player_id, time_control.category())
         .await?;
 
-    let key = bucket.id(rating_mode);
+    let key = time_control.bucket(rating_mode);
     let window: u32 = 100;
 
     state
