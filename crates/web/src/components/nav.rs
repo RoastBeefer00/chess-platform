@@ -10,9 +10,12 @@ pub fn Nav() -> impl IntoView {
     view! {
         <nav class="fixed top-0 left-0 w-full z-50 border-b border-zinc-800 bg-zinc-950/90 backdrop-blur-sm">
             <div class="flex items-center justify-between px-4 sm:px-6 h-14 max-w-7xl mx-auto">
-                <a href="/" class="flex items-center gap-2.5 shrink-0" on:click=close_mobile>
-                    <img src="/assets/logo.svg" alt="Logo" width="32" height="32"/>
-                    <span class="font-semibold text-white tracking-tight text-sm">"chess-rs"</span>
+                <a
+                    href="/"
+                    on:click=close_mobile
+                    class="shrink-0 text-xl font-bold tracking-tight text-white hover:text-zinc-200 transition-colors"
+                >
+                    "Gambit"
                 </a>
 
                 // Desktop links — hidden on mobile.
