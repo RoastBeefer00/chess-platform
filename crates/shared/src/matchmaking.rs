@@ -1,100 +1,65 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum GameMode {
+pub struct GameConfig {
+    pub time_control: TimeControl,
+    pub variant: Variant,
+    pub rated: RatingMode,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum Category {
     Bullet,
     Blitz,
     Rapid,
     Classical,
-    NineSixty,
 }
 
-impl std::fmt::Display for GameMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            GameMode::Bullet => "bullet",
-            GameMode::Blitz => "blitz",
-            GameMode::Rapid => "rapid",
-            GameMode::Classical => "classical",
-            GameMode::NineSixty => "960",
-        };
-        f.write_str(s)
-    }
-}
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-pub enum Bucket {
-    // Bullet
-    Bullet30,
-    Bullet60,
-    Bullet60Plus1,
-    Bullet120Plus1,
-    // Blitz
-    Blitz180,
-    Blitz180Plus2,
-    Blitz300,
-    Blitz300Plus3,
-    // Rapid
-    Rapid600,
-    Rapid600Plus5,
-    Rapid900Plus10,
-    // Classical
-    Classical1800,
-    Classical1800Plus20,
-    Classical3600,
-    // 960 (Chess960 / Fischer Random) — bucket separately so variant players don't pair with standard
-    NineSixty300,
-    NineSixty300Plus3,
-    NineSixty600,
-    NineSixty600Plus5,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum Variant {
+    Standard,
+    Chess960,
 }
 
-impl Bucket {
-    pub fn id(&self, rating_mode: RatingMode) -> String {
-        format!("{}:{}", self, rating_mode)
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TimeControl {
+    pub initial_time: i64,
+    pub mode: TimeMode,
+}
+
+impl TimeControl {
+    pub fn category(&self) -> Category {
+        let seconds = self.initial_time / 1000;
+        match seconds {
+            ..120 => Category::Bullet,
+            120..300 => Category::Blitz,
+            300..1500 => Category::Rapid,
+            _ => Category::Classical,
+        }
     }
 
-    pub fn mode(&self) -> GameMode {
-        match self {
-            Bucket::Bullet30
-            | Bucket::Bullet60
-            | Bucket::Bullet60Plus1
-            | Bucket::Bullet120Plus1 => GameMode::Bullet,
-            Bucket::Blitz180 | Bucket::Blitz180Plus2 | Bucket::Blitz300 | Bucket::Blitz300Plus3 => {
-                GameMode::Blitz
-            }
-            Bucket::Rapid600 | Bucket::Rapid600Plus5 | Bucket::Rapid900Plus10 => GameMode::Rapid,
-            Bucket::Classical1800 | Bucket::Classical1800Plus20 | Bucket::Classical3600 => {
-                GameMode::Classical
-            }
-            Bucket::NineSixty300
-            | Bucket::NineSixty300Plus3
-            | Bucket::NineSixty600
-            | Bucket::NineSixty600Plus5 => GameMode::NineSixty,
+    pub fn bucket(&self, rated: RatingMode) -> String {
+        let seconds = self.initial_time / 1000;
+        match self.mode {
+            TimeMode::Increment(i) => format!("mm:{}+{}:i:{}", seconds, i, rated),
+            TimeMode::Delay(d) => format!("mm:{}+{}:d:{}", seconds, d, rated),
         }
     }
 }
 
-impl std::fmt::Display for Bucket {
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum TimeMode {
+    Increment(i64),
+    Delay(i64),
+}
+
+impl std::fmt::Display for Category {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            Bucket::Bullet30 => "mm:30+0",
-            Bucket::Bullet60 => "mm:60+0",
-            Bucket::Bullet60Plus1 => "mm:60+1",
-            Bucket::Bullet120Plus1 => "mm:120+1",
-            Bucket::Blitz180 => "mm:180+0",
-            Bucket::Blitz180Plus2 => "mm:180+2",
-            Bucket::Blitz300 => "mm:300+0",
-            Bucket::Blitz300Plus3 => "mm:300+3",
-            Bucket::Rapid600 => "mm:600+0",
-            Bucket::Rapid600Plus5 => "mm:600+5",
-            Bucket::Rapid900Plus10 => "mm:900+10",
-            Bucket::Classical1800 => "mm:1800+0",
-            Bucket::Classical1800Plus20 => "mm:1800+20",
-            Bucket::Classical3600 => "mm:3600+0",
-            Bucket::NineSixty300 => "mm:960:300+0",
-            Bucket::NineSixty300Plus3 => "mm:960:300+3",
-            Bucket::NineSixty600 => "mm:960:600+0",
-            Bucket::NineSixty600Plus5 => "mm:960:600+5",
+            Category::Bullet => "bullet",
+            Category::Blitz => "blitz",
+            Category::Rapid => "rapid",
+            Category::Classical => "classical",
         };
         f.write_str(s)
     }

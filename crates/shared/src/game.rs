@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use shakmaty::{Chess, Color, Move, Outcome, PlayError, Position as _};
 use uuid::Uuid;
 
+use crate::GameConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerInfo {
     pub id: Uuid,
@@ -15,6 +17,10 @@ pub struct GameInfo {
     pub id: Uuid,
     pub white: PlayerInfo,
     pub black: PlayerInfo,
+    pub white_ms_left: i64,
+    pub black_ms_left: i64,
+    pub sent_at_ms: i64,
+    pub clock_running: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -27,19 +33,25 @@ pub enum GameStatus {
 #[derive(Debug, Clone)]
 pub struct Game {
     pub id: Uuid,
+    pub config: GameConfig,
     pub position: Chess,
     pub white_player: Uuid,
     pub black_player: Uuid,
+    pub white_ms_left: i64,
+    pub black_ms_left: i64,
 }
 
 impl Game {
-    pub fn new(white_player: Uuid, black_player: Uuid) -> Self {
+    pub fn new(config: GameConfig, white_player: Uuid, black_player: Uuid) -> Self {
         let pos = Chess::default();
         Game {
             id: Uuid::new_v4(),
+            config: config.clone(),
             position: pos,
             white_player,
             black_player,
+            white_ms_left: config.time_control.initial_time,
+            black_ms_left: config.time_control.initial_time,
         }
     }
 

@@ -1,7 +1,8 @@
-use crate::components::use_current_user;
 use leptos::prelude::*;
 use leptos_router::{lazy_route, LazyRoute, NavigateOptions};
-use shared::{MatchmakingClientMessage, MatchmakingServerMessage, RatingMode};
+use shared::{
+    MatchmakingClientMessage, MatchmakingServerMessage, RatingMode, TimeControl, TimeMode,
+};
 
 use crate::matchmaking::matchmaking_websocket;
 
@@ -27,13 +28,11 @@ impl LazyRoute for HomePage {
             let navigate = navigate.clone();
 
             spawn_local(async move {
-                // let Some(my_uuid) = user.await.ok().flatten().map(|u| u.id) else {
-                //     leptos::logging::warn!("Board mounted without authenticated user");
-                //     return;
-                // };
-                //
                 let _send_result = tx.try_send(MatchmakingClientMessage::Join {
-                    bucket: shared::Bucket::Blitz180,
+                    time_control: TimeControl {
+                        initial_time: 300_000,
+                        mode: TimeMode::Increment(0),
+                    },
                     rating_mode: RatingMode::Rated,
                 });
 
@@ -42,7 +41,7 @@ impl LazyRoute for HomePage {
                         while let Some(msg) = messages.next().await {
                             if let Ok(msg) = msg {
                                 match msg {
-                                    MatchmakingServerMessage::Queued { bucket: _ } => {}
+                                    MatchmakingServerMessage::Queued { time_control: _ } => {}
                                     MatchmakingServerMessage::Matched { game, side: _ } => {
                                         // Redirect to game
                                         navigate(
@@ -60,7 +59,7 @@ impl LazyRoute for HomePage {
             });
         };
         view! {
-            <div class="flex flex-col items-center justify-center min-h-[calc(100vh-3.5rem)] px-6 text-center">
+            <div class="flex flex-col items-center justify-center min-h-[calc(100dvh-3.5rem)] px-6 text-center">
                 <h1 class="text-5xl font-semibold tracking-tight text-white mb-3">
                     "Your next move"
                 </h1>

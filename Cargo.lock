@@ -4827,6 +4827,7 @@ dependencies = [
  "dotenvy",
  "fred",
  "futures",
+ "js-sys",
  "leptos",
  "leptos-use",
  "leptos_axum",

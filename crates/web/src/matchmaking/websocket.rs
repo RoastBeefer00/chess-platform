@@ -1,19 +1,19 @@
 use leptos::prelude::*;
 use server_fn::{codec::JsonEncoding, BoxedStream, Websocket};
-use shared::{GameMode, MatchmakingClientMessage, MatchmakingServerMessage};
+use shared::{Category, MatchmakingClientMessage, MatchmakingServerMessage};
 use uuid::Uuid;
 
 #[server]
-pub async fn get_user_rating(id: Uuid, game_mode: GameMode) -> Result<u32, ServerFnError> {
+pub async fn get_user_rating(id: Uuid, category: Category) -> Result<u32, ServerFnError> {
     use crate::auth::AuthBackend;
     use axum_login::AuthSession;
 
     let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
 
     auth.backend
-        .get_user_rating(&id, game_mode)
+        .get_user_rating(&id, category)
         .await
-        .map_err(|e| ServerFnError::new(e))
+        .map_err(ServerFnError::new)
 }
 
 #[server(protocol = Websocket<JsonEncoding, JsonEncoding>)]
@@ -23,7 +23,7 @@ pub async fn matchmaking_websocket(
     use crate::auth::AuthBackend;
     use crate::state::AppState;
     use axum_login::AuthSession;
-    use shared::Side;
+    use shared::{GameConfig, Side, Variant};
     use tokio_stream::StreamExt as _;
 
     let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
@@ -45,7 +45,7 @@ pub async fn matchmaking_websocket(
         let _ = async {
             // First message MUST be Join.
             let Some(Ok(MatchmakingClientMessage::Join {
-                bucket,
+                time_control,
                 rating_mode,
             })) = input.next().await
             else {
@@ -53,12 +53,12 @@ pub async fn matchmaking_websocket(
                 return Err(());
             };
 
-            let key = bucket.id(rating_mode);
+            let key = time_control.bucket(rating_mode);
             queued_key = Some(key.clone());
 
             let player_rating = match auth
                 .backend
-                .get_user_rating(&player_id, bucket.mode())
+                .get_user_rating(&player_id, time_control.category())
                 .await
             {
                 Ok(r) => r,
@@ -78,7 +78,9 @@ pub async fn matchmaking_websocket(
                 return Err(());
             }
 
-            let _ = tx.unbounded_send(Ok(MatchmakingServerMessage::Queued { bucket }));
+            let _ = tx.unbounded_send(Ok(MatchmakingServerMessage::Queued {
+                time_control: time_control.clone(),
+            }));
 
             match state
                 .redis_client
@@ -96,7 +98,12 @@ pub async fn matchmaking_websocket(
                     } else {
                         (opponent_id, player_id, Side::Black)
                     };
-                    let game_id = state.create_game(white, black).await;
+                    let game_config = GameConfig {
+                        time_control,
+                        variant: Variant::Standard,
+                        rated: rating_mode,
+                    };
+                    let game_id = state.create_game(game_config, white, black).await;
                     // Notify opponent via their inbox.
                     state
                         .notify_match(

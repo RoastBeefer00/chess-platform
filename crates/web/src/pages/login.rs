@@ -48,7 +48,7 @@ impl LazyRoute for LoginPage {
         });
 
         view! {
-            <div class="flex flex-col items-center justify-center min-h-[calc(100vh-3.5rem)] px-6">
+            <div class="flex flex-col items-center justify-center min-h-[calc(100dvh-3.5rem)] px-6">
                 <div class="w-full max-w-sm">
                     <h1 class="text-2xl font-semibold text-white mb-8 text-center">"Sign in"</h1>
 

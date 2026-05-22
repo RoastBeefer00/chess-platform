@@ -7,9 +7,12 @@ pub async fn game_websocket(
     input: BoxedStream<GameClientMessage, ServerFnError>,
 ) -> Result<BoxedStream<GameServerMessage, ServerFnError>, ServerFnError> {
     use crate::auth::AuthBackend;
+    use crate::game_room::{handle_timeout, MoveError};
     use crate::state::AppState;
     use axum_login::AuthSession;
     use futures::StreamExt;
+    use shakmaty::Position as _;
+    use shared::messages::GameOverReason;
     use tokio_stream::wrappers::BroadcastStream;
 
     let mut input = input;
@@ -54,14 +57,49 @@ pub async fn game_websocket(
             return;
         };
 
-        let (player_role, position_fen) = {
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+        let (
+            player_role,
+            position_fen,
+            white_ms_left,
+            black_ms_left,
+            turn,
+            clock_running,
+            receiver,
+        ) = {
             use shakmaty::fen::Fen;
             let mut gr = game_room.lock().await;
             let role = gr.add_player(user.id);
             let fen =
                 Fen::from_position(&gr.get_position(), shakmaty::EnPassantMode::Legal).to_string();
-            (role, fen)
+
+            // Compute live remaining time for the side-to-move (their clock has
+            // been ticking since last_move_at on the server).
+            let mut white_ms = gr.game.white_ms_left;
+            let mut black_ms = gr.game.black_ms_left;
+            if let Some(last) = gr.last_move_at {
+                let elapsed = Instant::now().duration_since(last).as_millis() as i64;
+                match gr.game.position.turn() {
+                    shakmaty::Color::White => white_ms = (white_ms - elapsed).max(0),
+                    shakmaty::Color::Black => black_ms = (black_ms - elapsed).max(0),
+                }
+            }
+
+            (
+                role,
+                fen,
+                white_ms,
+                black_ms,
+                gr.game.position.turn().into(),
+                gr.last_move_at.is_some(),
+                gr.subscribe(),
+            )
         };
+
+        let sent_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
 
         let _ = tx.unbounded_send(Ok(GameServerMessage::UserJoined {
             uuid: user.id,
@@ -69,7 +107,15 @@ pub async fn game_websocket(
             player_role,
         }));
 
-        let mut broadcast = BroadcastStream::new(game_room.lock().await.subscribe());
+        let _ = tx.unbounded_send(Ok(GameServerMessage::ClockSync {
+            white_ms_left,
+            black_ms_left,
+            turn,
+            sent_at_ms,
+            clock_running,
+        }));
+
+        let mut broadcast = BroadcastStream::new(receiver);
         let tx2 = tx.clone();
         tokio::spawn(async move {
             while let Some(msg) = broadcast.next().await {
@@ -89,36 +135,40 @@ pub async fn game_websocket(
                         tracing::warn!(%user.id, "ignoring duplicate UserJoined");
                     }
                     GameClientMessage::MoveMade { uci } => {
-                        if gr.current_player() != Some(user.id) {
-                            tracing::warn!(%user.id, "move from non-current player");
-                            continue;
-                        }
-                        use shakmaty::uci::UciMove;
-                        let uci_move = match uci.parse::<UciMove>() {
-                            Ok(u) => u,
-                            Err(e) => {
-                                tracing::warn!(%uci, %e, "invalid uci");
-                                continue;
+                        use crate::game_room::MoveOutcome;
+                        match gr.handle_move_made(uci, user.id) {
+                            Ok(MoveOutcome::Continuing(plan)) => {
+                                if let Some(h) = gr.timeout_task.take() {
+                                    h.abort();
+                                }
+                                let room = game_room.clone();
+                                let handle = tokio::spawn(handle_timeout(
+                                    room,
+                                    plan.next_color,
+                                    plan.ms_until_flag,
+                                ));
+                                gr.timeout_task = Some(handle);
                             }
-                        };
-                        let move_made = match uci_move.to_move(&gr.get_position()) {
-                            Ok(m) => m,
-                            Err(e) => {
-                                tracing::warn!(%uci, %e, "illegal move");
-                                continue;
+                            Ok(MoveOutcome::Ended) => {
+                                // end_game already broadcast + cancelled timer.
                             }
-                        };
-                        match gr.make_move(move_made) {
-                            Ok(()) => {
-                                tracing::info!(%uci, "move accepted");
-                                gr.broadcast(GameServerMessage::MoveMade { uci });
+                            Err(MoveError::FlagFall) => {
+                                // mover ran out applying their own move — they lose.
+                                let winner_color = match gr.game.position.turn() {
+                                    shakmaty::Color::White => shakmaty::Color::Black,
+                                    shakmaty::Color::Black => shakmaty::Color::White,
+                                };
+                                gr.end_game(
+                                    shakmaty::KnownOutcome::Decisive {
+                                        winner: winner_color,
+                                    },
+                                    GameOverReason::Timeout,
+                                );
                             }
-                            Err(e) => {
-                                tracing::warn!(%uci, %e, "failed to make move");
-                            }
+                            Err(e) => tracing::warn!(?e, "move rejected"),
                         }
                     }
-                    GameClientMessage::Chat { text } => todo!(),
+                    GameClientMessage::Chat { text: _ } => todo!(),
                 }
             }
         }

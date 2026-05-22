@@ -125,8 +125,8 @@ pub fn ChessBoard(
     provide_context(can_drag_piece);
 
     view! {
-        <div class="flex items-center justify-center w-full h-full">
-            <div class="grid grid-cols-8 grid-rows-8 w-[min(100vw,calc(100vh-11.5rem))] aspect-square">
+        <div class="flex items-center justify-center">
+            <div class="grid grid-cols-8 grid-rows-8 w-[min(100vw,calc(100dvh-11.5rem))] aspect-square">
                 <For
                     each={move || {
                         match perspective.get() {

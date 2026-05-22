@@ -4,9 +4,11 @@ async fn main() {
     use axum::{routing::get, Router};
     use axum_login::AuthManagerLayerBuilder;
     use fred::prelude::*;
+    use fred::types::config::{ConnectionConfig, PerformanceConfig};
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
-    use sqlx::PgPool;
+    use sqlx::postgres::PgPoolOptions;
+    use std::time::Duration;
     use tower_http::trace::TraceLayer;
     use tower_sessions::{cookie::SameSite, SessionManagerLayer};
     use tower_sessions_redis_store::RedisStore;
@@ -35,12 +37,33 @@ async fn main() {
     let addr = conf.leptos_options.site_addr;
     let leptos_options = conf.leptos_options;
 
-    let pool = PgPool::connect(&std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"))
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
+        .min_connections(1)
+        .max_lifetime(Some(Duration::from_secs(15 * 60)))
+        .idle_timeout(Some(Duration::from_secs(5 * 60)))
+        .acquire_timeout(Duration::from_secs(10))
+        .test_before_acquire(true)
+        .connect(&std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"))
         .await
         .unwrap();
 
     let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
-    let redis = Pool::new(Config::from_url(&redis_url).unwrap(), None, None, None, 6).unwrap();
+    let redis_config = Config::from_url(&redis_url).unwrap();
+    let redis_conn_cfg = ConnectionConfig {
+        connection_timeout: Duration::from_secs(10),
+        internal_command_timeout: Duration::from_secs(10),
+        ..Default::default()
+    };
+    let redis_policy = ReconnectPolicy::new_exponential(0, 100, 30_000, 2);
+    let redis = Pool::new(
+        redis_config,
+        Some(PerformanceConfig::default()),
+        Some(redis_conn_cfg),
+        Some(redis_policy),
+        6,
+    )
+    .unwrap();
     redis.connect();
     redis.wait_for_connect().await.unwrap();
     let session_store = RedisStore::new(redis.clone());

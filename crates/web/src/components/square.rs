@@ -17,12 +17,21 @@ pub fn Square(
     let valid_move_targets = expect_context::<Signal<Vec<shakmaty::Square>>>();
     let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
     let last_move = expect_context::<RwSignal<Option<(shakmaty::Square, shakmaty::Square)>>>();
+    let position = expect_context::<ReadSignal<shakmaty::Chess>>();
     #[cfg(feature = "hydrate")]
     let on_move = expect_context::<Callback<shakmaty::Move>>();
     #[cfg(feature = "hydrate")]
     let can_drag_piece = expect_context::<Callback<shakmaty::Piece, bool>>();
-    #[cfg(feature = "hydrate")]
-    let position = expect_context::<ReadSignal<Chess>>();
+
+    let in_check = Signal::derive(move || {
+        use shakmaty::Position as _;
+        let Some(p) = piece.get() else { return false };
+        if p.role != shakmaty::Role::King {
+            return false;
+        }
+        let pos = position.get();
+        p.color == pos.turn() && pos.is_check()
+    });
 
     let image_path = Signal::derive(move || {
         piece.get().map(|p| {
@@ -103,9 +112,9 @@ pub fn Square(
                                 if let Some(m) = legal.iter().find(|m| {
                                     m.from() == Some(from_sq)
                                         && move_target(m) == dropped_square
-                                        && m.promotion().map_or(true, |r| r == Role::Queen)
+                                        && m.promotion().is_none_or(|r| r == Role::Queen)
                                 }) {
-                                    let m = m.clone();
+                                    let m = *m;
                                     selected_square.set(None);
                                     on_move.run(m);
                                 }
@@ -147,9 +156,9 @@ pub fn Square(
         if let Some(m) = legal.iter().find(|m| {
             m.from() == Some(from_sq)
                 && move_target(m) == this_square
-                && m.promotion().map_or(true, |r| r == Role::Queen)
+                && m.promotion().is_none_or(|r| r == Role::Queen)
         }) {
-            let m = m.clone();
+            let m = *m;
             selected_square.set(None);
             on_move.run(m);
         }
@@ -167,14 +176,17 @@ pub fn Square(
 
     view! {
         <div
-            class="relative w-full h-full"
-            class:bg-white=move || (rank + file) % 2 == 0 && !is_highlighted()
-            class:bg-green-800=move || (rank + file) % 2 != 0 && !is_highlighted()
-            class:bg-green-300=move || (rank + file) % 2 == 0 && is_highlighted()
-            class:bg-green-600=move || (rank + file) % 2 != 0 && is_highlighted()
+            class="relative w-full h-full select-none touch-none"
+            class:bg-white=move || (rank + file).is_multiple_of(2) && !is_highlighted()
+            class:bg-green-800=move || !(rank + file).is_multiple_of(2) && !is_highlighted()
+            class:bg-green-300=move || (rank + file).is_multiple_of(2) && is_highlighted()
+            class:bg-green-600=move || !(rank + file).is_multiple_of(2) && is_highlighted()
             data-square=format!("{}{}", file_to_char(file), rank_to_char(rank))
             on:click=on_click
         >
+            <Show when=move || in_check.get()>
+                <div class="absolute inset-0 bg-red-500 pointer-events-none animate-pulse"></div>
+            </Show>
             <Show
                 when=move || valid_move_targets.get().contains(&Square::new((rank * 8 + file) as u32))
             >
@@ -195,7 +207,7 @@ pub fn Square(
                     src={src}
                     node_ref=el
                     draggable="false"
-                    class="w-full h-full cursor-grab"
+                    class="relative z-10 w-full h-full cursor-grab select-none touch-none"
                     class:cursor-grabbing=move || is_dragging.get()
                     style=move || if is_dragging.get() {
                         let (w, h) = drag_size.get();
@@ -208,15 +220,15 @@ pub fn Square(
             <Show when=move || perspective.get() == BoardPerspective::White && rank == 0 || perspective.get() == BoardPerspective::Black && rank == 7>
                 <span
                     class="absolute bottom-0 left-0.5 font-bold text-sm"
-                    class:text-white=move || (rank + file) % 2 != 0
-                    class:text-green-800=move || (rank + file) % 2 == 0
+                    class:text-white=move || !(rank + file).is_multiple_of(2)
+                    class:text-green-800=move || (rank + file).is_multiple_of(2)
                 >{file_to_char(file)}</span>
             </Show>
             <Show when=move || perspective.get() == BoardPerspective::White && file == 7 || perspective.get() == BoardPerspective::Black && file == 0>
                 <span
                     class="absolute top-0 right-0.5 font-bold text-sm"
-                    class:text-white=move || (rank + file) % 2 != 0
-                    class:text-green-800=move || (rank + file) % 2 == 0
+                    class:text-white=move || !(rank + file).is_multiple_of(2)
+                    class:text-green-800=move || (rank + file).is_multiple_of(2)
                 >{rank_to_char(rank)}</span>
             </Show>
         </div>
