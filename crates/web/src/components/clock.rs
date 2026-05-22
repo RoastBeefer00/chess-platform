@@ -13,29 +13,22 @@ pub fn Clock(
     let displayed_ms = RwSignal::new(snapshot_ms.get_untracked());
 
     #[cfg(feature = "hydrate")]
-    {
-        // Browser wall clock at the moment the latest snapshot landed.
-        // Resets whenever a fresh snapshot arrives.
-        let received_at_ms = RwSignal::new(Date::now() as i64);
-        Effect::new(move || {
-            // Track the sent_at signal so this Effect re-runs on each new snapshot.
-            let _ = snapshot_sent_at_ms.get();
-            received_at_ms.set(Date::now() as i64);
-        });
-
-        use_interval_fn(
-            move || {
-                let snap = snapshot_ms.get_untracked();
-                if is_active.get_untracked() {
-                    let elapsed = Date::now() as i64 - received_at_ms.get_untracked();
-                    displayed_ms.set((snap - elapsed).max(0));
-                } else {
-                    displayed_ms.set(snap);
-                }
-            },
-            100,
-        );
-    }
+    use_interval_fn(
+        move || {
+            let snap = snapshot_ms.get_untracked();
+            if is_active.get_untracked() {
+                // Use server's sent_at as the time origin. Assumes browser and
+                // server wall clocks are NTP-synced (~50ms in practice).
+                // This accounts for network lag so the displayed countdown
+                // matches server reality, instead of lagging behind by RTT.
+                let elapsed = Date::now() as i64 - snapshot_sent_at_ms.get_untracked();
+                displayed_ms.set((snap - elapsed).max(0));
+            } else {
+                displayed_ms.set(snap);
+            }
+        },
+        100,
+    );
 
     let state_classes = move || {
         let ms = displayed_ms.get();

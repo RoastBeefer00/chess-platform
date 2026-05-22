@@ -1,10 +1,8 @@
 use leptos::prelude::*;
-use leptos_router::{lazy_route, LazyRoute, NavigateOptions};
-use shared::{
-    MatchmakingClientMessage, MatchmakingServerMessage, RatingMode, TimeControl, TimeMode,
-};
+use leptos_router::{lazy_route, LazyRoute};
+use shared::{RatingMode, TimeControl, TimeMode};
 
-use crate::matchmaking::matchmaking_websocket;
+use crate::matchmaking::use_start_matchmaking;
 
 #[derive(Clone)]
 pub struct HomePage;
@@ -16,48 +14,19 @@ impl LazyRoute for HomePage {
     }
 
     fn view(_data: Self) -> AnyView {
-        let navigate = leptos_router::hooks::use_navigate();
+        let start_matchmaking = use_start_matchmaking();
 
-        let start_matchmaking = move || {
-            use futures::channel::mpsc;
-            use futures::StreamExt;
-            use leptos::task::spawn_local;
-
-            // let user = use_current_user();
-            let (mut tx, rx) = mpsc::channel(1);
-            let navigate = navigate.clone();
-
-            spawn_local(async move {
-                let _send_result = tx.try_send(MatchmakingClientMessage::Join {
-                    time_control: TimeControl {
-                        initial_time: 300_000,
-                        mode: TimeMode::Increment(0),
-                    },
-                    rating_mode: RatingMode::Rated,
-                });
-
-                match matchmaking_websocket(rx.map(Ok).into()).await {
-                    Ok(mut messages) => {
-                        while let Some(msg) = messages.next().await {
-                            if let Ok(msg) = msg {
-                                match msg {
-                                    MatchmakingServerMessage::Queued { time_control: _ } => {}
-                                    MatchmakingServerMessage::Matched { game, side: _ } => {
-                                        // Redirect to game
-                                        navigate(
-                                            &format!("/play/{game}"),
-                                            NavigateOptions::default(),
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => leptos::logging::warn!("websocket error: {e}"),
-                }
-            });
-        };
+        let time_controls = vec![
+            ("1+0", "Bullet", 60_000, 0),
+            ("1+1", "Bullet", 60_000, 1_000),
+            ("2+1", "Bullet", 120_000, 1_000),
+            ("3+0", "Blitz", 180_000, 0),
+            ("3+2", "Blitz", 180_000, 2_000),
+            ("5+0", "Blitz", 300_000, 0),
+            ("5+5", "Blitz", 300_000, 5_000),
+            ("10+0", "Rapid", 600_000, 0),
+            ("15+10", "Rapid", 900_000, 10_000),
+        ];
         view! {
             <div class="flex flex-col items-center justify-center min-h-[calc(100dvh-3.5rem)] px-6 text-center">
                 <h1 class="text-5xl font-semibold tracking-tight text-white mb-3">
@@ -66,15 +35,19 @@ impl LazyRoute for HomePage {
                 <p class="text-zinc-400 text-lg mb-8 max-w-sm">
                     "Play, learn, and improve — all in one place."
                 </p>
-                <div class="flex items-center gap-3">
-                    <button on:click=move |_| start_matchmaking()
-                       class="px-5 py-2.5 text-sm font-medium bg-white text-zinc-950 rounded-md hover:bg-zinc-100 transition-colors">
-                        "Play now"
-                    </button>
-                    <a href="/learn"
-                       class="px-5 py-2.5 text-sm font-medium text-zinc-300 border border-zinc-700 rounded-md hover:border-zinc-500 hover:text-white transition-colors">
-                        "Learn"
-                    </a>
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 w-full max-w-2xl">
+                    {time_controls.into_iter().map(|(name, category, ms, inc)| view! {
+                        <button
+                            on:click=move |_| start_matchmaking.run((
+                                TimeControl { initial_time: ms, mode: TimeMode::Increment(inc) },
+                                RatingMode::Rated,
+                            ))
+                            class="group flex flex-col items-center justify-center gap-1 px-4 py-5 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-zinc-600 hover:bg-zinc-800 transition-colors"
+                        >
+                            <span class="text-2xl font-bold tracking-tight text-white">{name}</span>
+                            <span class="text-xs font-medium uppercase tracking-wider text-zinc-500 group-hover:text-zinc-300 transition-colors">{category}</span>
+                        </button>
+                    }).collect_view()}
                 </div>
             </div>
         }
