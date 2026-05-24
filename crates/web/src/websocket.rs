@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use server_fn::{codec::JsonEncoding, BoxedStream, Websocket};
-use shared::{GameClientMessage, GameServerMessage};
+use shared::{GameClientMessage, GameServerMessage, PlayerRole};
 
 #[server(protocol = Websocket<JsonEncoding, JsonEncoding>)]
 pub async fn game_websocket(
@@ -104,7 +104,7 @@ pub async fn game_websocket(
         let _ = tx.unbounded_send(Ok(GameServerMessage::UserJoined {
             uuid: user.id,
             position_fen,
-            player_role,
+            player_role: player_role.clone(),
         }));
 
         let _ = tx.unbounded_send(Ok(GameServerMessage::ClockSync {
@@ -169,11 +169,78 @@ pub async fn game_websocket(
                         }
                     }
                     GameClientMessage::Chat { text: _ } => todo!(),
+                    GameClientMessage::RematchOffer => {
+                        if player_role == PlayerRole::Spectator {
+                            return;
+                        }
+
+                        if let Some(id) = gr.rematch_offer {
+                            if user.id == id {
+                                return;
+                            } else if gr.game.black_player == id {
+                                let new_game_id = state
+                                    .create_game(
+                                        gr.game.config.clone(),
+                                        gr.game.black_player,
+                                        gr.game.white_player,
+                                    )
+                                    .await;
+                                gr.broadcast(GameServerMessage::RematchAccept { new_game_id });
+                                gr.clear_rematch_offer();
+                            }
+                        } else {
+                            gr.rematch_offer = Some(user.id);
+                            gr.broadcast(GameServerMessage::RematchOffer { from: user.id });
+                        }
+                    }
+                    GameClientMessage::RematchAccept => {
+                        if player_role == PlayerRole::Spectator {
+                            return;
+                        }
+
+                        let new_game_id = state
+                            .create_game(
+                                gr.game.config.clone(),
+                                gr.game.black_player,
+                                gr.game.white_player,
+                            )
+                            .await;
+                        gr.broadcast(GameServerMessage::RematchAccept { new_game_id });
+                        gr.clear_rematch_offer();
+                    }
+                    GameClientMessage::RematchDecline => {
+                        if player_role == PlayerRole::Spectator {
+                            return;
+                        }
+
+                        if let Some(id) = gr.rematch_offer {
+                            if user.id != id {
+                                gr.clear_rematch_offer();
+                                gr.broadcast(GameServerMessage::RematchDecline);
+                            }
+                        }
+                    }
+                    GameClientMessage::RematchCancel => {
+                        if player_role == PlayerRole::Spectator {
+                            return;
+                        }
+
+                        if let Some(id) = gr.rematch_offer {
+                            if user.id == id {
+                                gr.clear_rematch_offer();
+                                gr.broadcast(GameServerMessage::RematchCancel);
+                            }
+                        }
+                    }
                 }
             }
         }
         let mut gr = game_room.lock().await;
         gr.remove_player(user.id);
+        if gr.rematch_offer.is_some() {
+            gr.clear_rematch_offer();
+            gr.broadcast(GameServerMessage::RematchCancel);
+        }
         gr.broadcast(GameServerMessage::UserLeft {
             username: user.username.unwrap_or_default(),
         });

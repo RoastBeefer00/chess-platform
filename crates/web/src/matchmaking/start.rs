@@ -6,7 +6,7 @@ use crate::matchmaking::matchmaking_websocket;
 
 /// Hook that returns a callback to start matchmaking for a given
 /// `(TimeControl, RatingMode)`. The callback opens a WebSocket to the matchmaker
-/// and, on a match, navigates the client to `/play/<game_id>`.
+/// and, on a match, navigates the client to `/game/<game_id>`.
 ///
 /// Call once in a component to get a reusable, clonable callback.
 pub fn use_start_matchmaking() -> Callback<(TimeControl, RatingMode)> {
@@ -34,7 +34,7 @@ pub fn use_start_matchmaking() -> Callback<(TimeControl, RatingMode)> {
                             match msg {
                                 MatchmakingServerMessage::Queued { time_control: _ } => {}
                                 MatchmakingServerMessage::Matched { game, side: _ } => {
-                                    navigate(&format!("/play/{game}"), NavigateOptions::default());
+                                    navigate(&format!("/game/{game}"), NavigateOptions::default());
                                     break;
                                 }
                             }

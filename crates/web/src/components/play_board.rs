@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::components::{
     use_current_user, BoardPerspective, BoardUser, ChessBoard, Clock, GameOverModal,
+    MatchmakingModal, RematchState,
 };
 use crate::game::get_game_info;
 
@@ -22,6 +23,12 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     let user = use_current_user();
 
     let (tx, rx) = mpsc::unbounded::<GameClientMessage>();
+    let rematch_state = RwSignal::new(RematchState::Idle);
+    let searching = RwSignal::new(None::<(shared::TimeControl, shared::RatingMode)>);
+    let tx_send = tx.clone();
+    let send = Callback::new(move |msg: GameClientMessage| {
+        let _ = tx_send.unbounded_send(msg);
+    });
 
     let (position, set_position) = signal(shakmaty::Chess::default());
     let last_move = RwSignal::new(None::<(shakmaty::Square, shakmaty::Square)>);
@@ -95,7 +102,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
 
     if cfg!(feature = "hydrate") {
         spawn_local(async move {
-            let Some(_my_uuid) = user.await.ok().flatten().map(|u| u.id) else {
+            let Some(my_uuid) = user.await.ok().flatten().map(|u| u.id) else {
                 leptos::logging::warn!("PlayBoard mounted without authenticated user");
                 return;
             };
@@ -176,6 +183,22 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                 sent_at_ms.set(server_sent_at);
                                 clock_running.set(running);
                             }
+                            GameServerMessage::RematchOffer { from: id } => {
+                                if id != my_uuid {
+                                    rematch_state.set(RematchState::OfferedToUs);
+                                }
+                            }
+                            GameServerMessage::RematchAccept { new_game_id } => {
+                                let url = format!("/game/{new_game_id}");
+                                let _ = web_sys::window()
+                                    .and_then(|w| w.location().set_href(&url).ok());
+                            }
+                            GameServerMessage::RematchDecline => {
+                                rematch_state.set(RematchState::Declined);
+                            }
+                            GameServerMessage::RematchCancel => {
+                                rematch_state.set(RematchState::Idle);
+                            }
                         }
                     }
                 }
@@ -185,6 +208,28 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     }
 
     let game_info = Resource::new(move || game_id, |id| async move { get_game_info(id).await });
+
+    let tc_label = Signal::derive(move || {
+        game_info
+            .get()
+            .and_then(|r| r.ok())
+            .map(|info| {
+                let tc = &info.config.time_control;
+                let initial_sec = tc.initial_time / 1000;
+                let inc_sec = match tc.mode {
+                    shared::TimeMode::Increment(i) | shared::TimeMode::Delay(i) => i / 1000,
+                };
+                let initial = if initial_sec >= 60 && initial_sec % 60 == 0 {
+                    format!("{}", initial_sec / 60)
+                } else if initial_sec >= 60 {
+                    format!("{}m{}s", initial_sec / 60, initial_sec % 60)
+                } else {
+                    format!("{}s", initial_sec)
+                };
+                format!("{initial}+{inc_sec}")
+            })
+            .unwrap_or_default()
+    });
 
     // Populate clock signals once the initial game info resolves.
     Effect::new(move || {
@@ -198,10 +243,35 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
 
     view! {
         <div class="flex flex-col items-center justify-center w-full h-[calc(100dvh-3.5rem)]">
+            <Show when=move || searching.get().is_some()>
+                {move || searching.get().map(|(time_control, rating_mode)| view! {
+                    <MatchmakingModal
+                        time_control={time_control}
+                        rating_mode={rating_mode}
+                        on_close=move |_| searching.set(None)
+                    />
+                })}
+            </Show>
             <Show when=move || game_result.get().is_some()>
                 <GameOverModal
                     outcome=game_result.get().unwrap()
-                    on_close=move |_| set_game_result.set(None)
+                    on_close=move |_| {
+                        set_game_result.set(None);
+                        rematch_state.set(RematchState::Idle);
+                    }
+                    on_new_game=move |_| {
+                        if let Some(config) = game_info
+                            .get_untracked()
+                            .and_then(|r| r.ok())
+                            .map(|info| info.config)
+                        {
+                            set_game_result.set(None);
+                            searching.set(Some((config.time_control, config.rated)));
+                        }
+                    }
+                    rematch_state=rematch_state
+                    send=send
+                    tc_label=tc_label
                 />
             </Show>
             <div class="flex flex-row items-center justify-between w-[min(100vw,calc(100dvh-11.5rem))] pl-2 py-2">

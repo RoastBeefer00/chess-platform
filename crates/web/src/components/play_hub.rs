@@ -24,14 +24,14 @@ pub fn PlayHub() -> impl IntoView {
             <h2 class="text-2xl font-semibold tracking-tight text-white mb-6">
                 "Quick match"
             </h2>
-            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 w-full max-w-2xl">
+            <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 w-full max-w-2xl">
                 {time_controls.into_iter().map(|(name, category, ms, inc)| view! {
                     <button
                         on:click=move |_| searching.set(Some((
                             TimeControl { initial_time: ms, mode: TimeMode::Increment(inc) },
                             RatingMode::Rated,
                         )))
-                        class="group flex flex-col items-center justify-center gap-1 px-4 py-5 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-zinc-600 hover:bg-zinc-800 transition-colors"
+                        class="group flex flex-col items-center justify-center gap-1 px-4 py-5 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-zinc-600 hover:bg-zinc-800 transition-colors cursor-pointer"
                     >
                         <span class="text-2xl font-bold tracking-tight text-white">{name}</span>
                         <span class="text-xs font-medium uppercase tracking-wider text-zinc-500 group-hover:text-zinc-300 transition-colors">{category}</span>

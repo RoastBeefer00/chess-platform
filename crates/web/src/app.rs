@@ -43,7 +43,7 @@ pub fn App() -> impl IntoView {
                 <Routes fallback=NotFoundPage>
                     <Route path=StaticSegment("/") view={Lazy::<HomePage>::new()}/>
                     <ParentRoute path=StaticSegment("/") view=RequireAuth>
-                        <Route path=(StaticSegment("play"), ParamSegment("game_id")) view={Lazy::<PlayPage>::new()}/>
+                        <Route path=(StaticSegment("game"), ParamSegment("game_id")) view={Lazy::<PlayPage>::new()}/>
                         <Route path=StaticSegment("create-username") view={Lazy::<CreateUsernamePage>::new()}/>
                     </ParentRoute>
                     <Route path=StaticSegment("/login") view={Lazy::<LoginPage>::new()}/>

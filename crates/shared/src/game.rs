@@ -21,6 +21,7 @@ pub struct GameInfo {
     pub black_ms_left: i64,
     pub sent_at_ms: i64,
     pub clock_running: bool,
+    pub config: GameConfig,
 }
 
 #[derive(Debug, Clone)]
