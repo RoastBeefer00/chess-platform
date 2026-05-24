@@ -7,6 +7,7 @@ pub async fn game_websocket(
     input: BoxedStream<GameClientMessage, ServerFnError>,
 ) -> Result<BoxedStream<GameServerMessage, ServerFnError>, ServerFnError> {
     use crate::auth::AuthBackend;
+    use crate::db::spawn_finalize;
     use crate::game_room::{handle_timeout, MoveError};
     use crate::state::AppState;
     use axum_login::AuthSession;
@@ -144,13 +145,15 @@ pub async fn game_websocket(
                                 let room = game_room.clone();
                                 let handle = tokio::spawn(handle_timeout(
                                     room,
+                                    state.game_store.clone(),
                                     plan.next_color,
                                     plan.ms_until_flag,
                                 ));
                                 gr.timeout_task = Some(handle);
                             }
-                            Ok(MoveOutcome::Ended) => {
+                            Ok(MoveOutcome::Ended(plan)) => {
                                 // end_game already broadcast + cancelled timer.
+                                spawn_finalize(state.game_store.clone(), plan);
                             }
                             Err(MoveError::FlagFall) => {
                                 // mover ran out applying their own move — they lose.
@@ -158,12 +161,13 @@ pub async fn game_websocket(
                                     shakmaty::Color::White => shakmaty::Color::Black,
                                     shakmaty::Color::Black => shakmaty::Color::White,
                                 };
-                                gr.end_game(
+                                let plan = gr.end_game(
                                     shakmaty::KnownOutcome::Decisive {
                                         winner: winner_color,
                                     },
                                     GameOverReason::Timeout,
                                 );
+                                spawn_finalize(state.game_store.clone(), plan);
                             }
                             Err(e) => tracing::warn!(?e, "move rejected"),
                         }
@@ -178,12 +182,13 @@ pub async fn game_websocket(
                             continue;
                         }
                         let winner_color: shakmaty::Color = my_side.opposite().into();
-                        gr.end_game(
+                        let plan = gr.end_game(
                             shakmaty::KnownOutcome::Decisive {
                                 winner: winner_color,
                             },
                             GameOverReason::Resignation,
                         );
+                        spawn_finalize(state.game_store.clone(), plan);
                     }
                     GameClientMessage::DrawOffer => {
                         if !matches!(player_role, shared::PlayerRole::Player(_)) {
@@ -205,7 +210,9 @@ pub async fn game_websocket(
                         if let Some(offerer) = gr.draw_offer {
                             if offerer != user.id {
                                 gr.clear_draw_offer();
-                                gr.end_game(shakmaty::KnownOutcome::Draw, GameOverReason::Draw);
+                                let plan =
+                                    gr.end_game(shakmaty::KnownOutcome::Draw, GameOverReason::Draw);
+                                spawn_finalize(state.game_store.clone(), plan);
                             }
                         }
                     }
@@ -229,13 +236,20 @@ pub async fn game_websocket(
                             if user.id == id {
                                 return;
                             } else if gr.game.black_player == id {
-                                let new_game_id = state
+                                let new_game_id = match state
                                     .create_game(
                                         gr.game.config.clone(),
                                         gr.game.black_player,
                                         gr.game.white_player,
                                     )
-                                    .await;
+                                    .await
+                                {
+                                    Ok(id) => id,
+                                    Err(e) => {
+                                        tracing::warn!(?e, "rematch: create_game failed");
+                                        continue;
+                                    }
+                                };
                                 gr.broadcast(GameServerMessage::RematchAccept { new_game_id });
                                 gr.clear_rematch_offer();
                             }
@@ -249,13 +263,20 @@ pub async fn game_websocket(
                             return;
                         }
 
-                        let new_game_id = state
+                        let new_game_id = match state
                             .create_game(
                                 gr.game.config.clone(),
                                 gr.game.black_player,
                                 gr.game.white_player,
                             )
-                            .await;
+                            .await
+                        {
+                            Ok(id) => id,
+                            Err(e) => {
+                                tracing::warn!(?e, "rematch: create_game failed");
+                                continue;
+                            }
+                        };
                         gr.broadcast(GameServerMessage::RematchAccept { new_game_id });
                         gr.clear_rematch_offer();
                     }

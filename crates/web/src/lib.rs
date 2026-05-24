@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod components;
+pub mod elo;
 pub mod game;
 pub mod matchmaking;
 pub mod pages;
@@ -10,6 +11,8 @@ pub mod websocket;
 
 #[cfg(feature = "ssr")]
 pub mod auth;
+#[cfg(feature = "ssr")]
+pub mod db;
 #[cfg(feature = "ssr")]
 pub mod game_room;
 #[cfg(feature = "ssr")]

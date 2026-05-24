@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE games\n               SET status = 'finished',\n                   result = $2,\n                   termination = $3,\n                   ended_at = now(),\n                   moves = $4,\n                   final_fen = $5,\n                   white_rating_before = $6,\n                   black_rating_before = $7,\n                   white_rating_after = $8,\n                   black_rating_after = $9\n               WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "53efd6484d9a3ff23286f014767cf412aa72e73b5857fbaff42b9edb9d6c3e00"
+}

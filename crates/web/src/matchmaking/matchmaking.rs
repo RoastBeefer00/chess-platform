@@ -8,16 +8,13 @@ pub async fn search_for_game(
     rating_mode: RatingMode,
     player_id: Uuid,
 ) -> Result<Option<Uuid>, ServerFnError> {
-    use crate::auth::AuthBackend;
     use crate::state::AppState;
-    use axum_login::AuthSession;
 
-    let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
     let state: AppState = expect_context();
 
-    let rating = auth
-        .backend
-        .get_user_rating(&player_id, time_control.category())
+    let rating = state
+        .rating_store
+        .get_rating(&player_id, time_control.category())
         .await?;
 
     let key = time_control.bucket(rating_mode);
