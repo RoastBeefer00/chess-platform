@@ -172,8 +172,9 @@ pub fn ChessBoard(
                 class="grid grid-cols-8 grid-rows-8 w-[min(100vw,calc(100dvh-11.5rem))] aspect-square"
                 on:contextmenu=move |e| {
                     e.prevent_default();
-                    selected_square.set(None);
-                    if let Some(p) = premoves_ctx {
+                    if selected_square.get_untracked().is_some() {
+                        selected_square.set(None);
+                    } else if let Some(p) = premoves_ctx {
                         p.set(vec![]);
                     }
                 }
