@@ -1,11 +1,11 @@
 use leptos::prelude::*;
-use shakmaty::{Color, KnownOutcome, Outcome, Position as _};
+use shakmaty::{Color, KnownOutcome, Outcome, Position as _, Role};
 use shared::messages::GameOverReason;
 use shared::PlayerRole;
 use uuid::Uuid;
 
 use crate::components::{
-    use_current_user, BoardPerspective, BoardUser, ChessBoard, Clock, GameOverModal,
+    move_target, use_current_user, BoardPerspective, BoardUser, ChessBoard, Clock, GameOverModal,
     MatchmakingModal, RematchState,
 };
 use crate::game::get_game_info;
@@ -32,6 +32,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
 
     let (position, set_position) = signal(shakmaty::Chess::default());
     let last_move = RwSignal::new(None::<(shakmaty::Square, shakmaty::Square)>);
+    let premoves = RwSignal::new(Vec::<(shakmaty::Square, shakmaty::Square)>::new());
     let (player_role, set_player_role) = signal(None::<PlayerRole>);
     let (game_result, set_game_result) = signal(None::<Outcome>);
 
@@ -74,7 +75,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         turn == bottom_color
     });
 
-    // on_move: gate by turn ownership, send to server via WS.
+    // on_move: gate by turn ownership, apply optimistically, send to server via WS.
     let on_move = {
         let tx = tx.clone();
         Callback::new(move |m: shakmaty::Move| {
@@ -85,8 +86,22 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                 leptos::logging::warn!("attempted move out of turn");
                 return;
             }
+            if let Some(from) = m.from() {
+                last_move.set(Some((from, m.to())));
+            }
+            set_position.update(|pos| {
+                if let Ok(new_pos) = pos.clone().play(m) {
+                    *pos = new_pos;
+                }
+            });
             let uci = m.to_uci(shakmaty::CastlingMode::Standard).to_string();
             let _ = tx.unbounded_send(GameClientMessage::MoveMade { uci });
+        })
+    };
+
+    let on_premove = {
+        Callback::new(move |(from, to): (shakmaty::Square, shakmaty::Square)| {
+            premoves.update(|premoves| premoves.push((from, to)));
         })
     };
 
@@ -153,6 +168,28 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                                 *pos = new_pos;
                                             }
                                         });
+                                    }
+                                }
+                                let is_my_turn = player_role
+                                    .get_untracked()
+                                    .and_then(|r| r.color())
+                                    .is_some_and(|c| c == position.get_untracked().turn());
+                                if is_my_turn {
+                                    let mut queue = premoves.get_untracked();
+                                    if let Some((from, to)) = queue.first().copied() {
+                                        use shakmaty::{Position as _, Role};
+                                        let legal = position.get_untracked().legal_moves();
+                                        if let Some(m) = legal.iter().find(|m| {
+                                            m.from() == Some(from)
+                                                && move_target(m) == to
+                                                && m.promotion().is_none_or(|r| r == Role::Queen)
+                                        }) {
+                                            queue.remove(0);
+                                            premoves.set(queue);
+                                            on_move.run(*m);
+                                        } else {
+                                            premoves.set(vec![]);
+                                        }
                                     }
                                 }
                             }
@@ -241,6 +278,9 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         }
     });
 
+    provide_context(player_role);
+    provide_context(premoves);
+
     view! {
         <div class="flex flex-col items-center justify-center w-full h-[calc(100dvh-3.5rem)]">
             <Show when=move || searching.get().is_some()>
@@ -301,6 +341,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                 perspective={perspective}
                 last_move={last_move}
                 on_move={on_move}
+                on_premove={on_premove}
                 can_drag_piece={can_drag_piece}
             />
             <div class="flex flex-row items-center justify-between w-[min(100vw,calc(100dvh-11.5rem))] pl-2 py-2">

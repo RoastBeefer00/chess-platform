@@ -2,8 +2,9 @@ use leptos::{html::Img, prelude::*};
 #[cfg(feature = "hydrate")]
 use leptos_use::UseDraggableReturn;
 #[cfg(feature = "hydrate")]
-use shakmaty::Chess;
+use shakmaty::Chess as _;
 use shakmaty::{Color, Piece, Square};
+use shared::PlayerRole;
 
 use crate::components::{move_target, BoardPerspective};
 
@@ -14,6 +15,7 @@ pub fn Square(
     piece: Signal<Option<Piece>>,
     perspective: Signal<BoardPerspective>,
 ) -> impl IntoView {
+    let player_role = expect_context::<ReadSignal<Option<PlayerRole>>>();
     let valid_move_targets = expect_context::<Signal<Vec<shakmaty::Square>>>();
     let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
     let last_move = expect_context::<RwSignal<Option<(shakmaty::Square, shakmaty::Square)>>>();
@@ -21,7 +23,22 @@ pub fn Square(
     #[cfg(feature = "hydrate")]
     let on_move = expect_context::<Callback<shakmaty::Move>>();
     #[cfg(feature = "hydrate")]
+    let on_premove = expect_context::<Callback<(shakmaty::Square, shakmaty::Square)>>();
+    #[cfg(feature = "hydrate")]
     let can_drag_piece = expect_context::<Callback<shakmaty::Piece, bool>>();
+    let premoves_ctx =
+        use_context::<RwSignal<Vec<(shakmaty::Square, shakmaty::Square)>>>();
+
+    let is_my_turn = Signal::derive(move || {
+        use shakmaty::Position as _;
+        match player_role.get() {
+            Some(role) => match role {
+                PlayerRole::Player(side) => shakmaty::Color::from(side) == position.get().turn(),
+                PlayerRole::Spectator => false,
+            },
+            None => false,
+        }
+    });
 
     let in_check = Signal::derive(move || {
         use shakmaty::Position as _;
@@ -107,16 +124,20 @@ pub fn Square(
                             if valid_move_targets.get().contains(&dropped_square) {
                                 use shakmaty::{Position as _, Role};
                                 let from_sq = selected_square.get_untracked().unwrap();
-                                let legal = position.get_untracked().legal_moves();
-                                // For promotions, default to queen
-                                if let Some(m) = legal.iter().find(|m| {
-                                    m.from() == Some(from_sq)
-                                        && move_target(m) == dropped_square
-                                        && m.promotion().is_none_or(|r| r == Role::Queen)
-                                }) {
-                                    let m = *m;
+                                if is_my_turn.get() {
+                                    let legal = position.get_untracked().legal_moves();
+                                    // For promotions, default to queen
+                                    if let Some(m) = legal.iter().find(|m| {
+                                        m.from() == Some(from_sq)
+                                            && move_target(m) == dropped_square
+                                            && m.promotion().is_none_or(|r| r == Role::Queen)
+                                    }) {
+                                        selected_square.set(None);
+                                        on_move.run(*m);
+                                    }
+                                } else {
                                     selected_square.set(None);
-                                    on_move.run(m);
+                                    on_premove.run((from_sq, dropped_square))
                                 }
                             }
                         }
@@ -152,15 +173,20 @@ pub fn Square(
             return;
         }
         use shakmaty::{Position as _, Role};
-        let legal = position.get_untracked().legal_moves();
-        if let Some(m) = legal.iter().find(|m| {
-            m.from() == Some(from_sq)
-                && move_target(m) == this_square
-                && m.promotion().is_none_or(|r| r == Role::Queen)
-        }) {
-            let m = *m;
+        if is_my_turn.get_untracked() {
+            let legal = position.get_untracked().legal_moves();
+            if let Some(m) = legal.iter().find(|m| {
+                m.from() == Some(from_sq)
+                    && move_target(m) == this_square
+                    && m.promotion().is_none_or(|r| r == Role::Queen)
+            }) {
+                let m = *m;
+                selected_square.set(None);
+                on_move.run(m);
+            }
+        } else {
             selected_square.set(None);
-            on_move.run(m);
+            on_premove.run((from_sq, this_square));
         }
     };
     #[cfg(not(feature = "hydrate"))]
@@ -173,14 +199,20 @@ pub fn Square(
                 .get()
                 .is_some_and(|(f, t)| f == this_sq || t == this_sq)
     };
+    let is_premove_square = Signal::derive(move || {
+        let Some(p) = premoves_ctx else { return false };
+        p.get().iter().any(|(f, t)| *f == this_sq || *t == this_sq)
+    });
 
     view! {
         <div
             class="relative w-full h-full select-none touch-none"
-            class:bg-white=move || (rank + file).is_multiple_of(2) && !is_highlighted()
-            class:bg-green-800=move || !(rank + file).is_multiple_of(2) && !is_highlighted()
-            class:bg-green-300=move || (rank + file).is_multiple_of(2) && is_highlighted()
-            class:bg-green-600=move || !(rank + file).is_multiple_of(2) && is_highlighted()
+            class:bg-white=move || (rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
+            class:bg-green-800=move || !(rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
+            class:bg-green-300=move || (rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
+            class:bg-green-600=move || !(rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
+            class:bg-gray-300=move || (rank + file).is_multiple_of(2) && is_premove_square.get()
+            class:bg-gray-500=move || !(rank + file).is_multiple_of(2) && is_premove_square.get()
             data-square=format!("{}{}", file_to_char(file), rank_to_char(rank))
             on:click=on_click
         >

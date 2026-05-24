@@ -46,9 +46,12 @@ pub fn ChessBoard(
     perspective: Signal<BoardPerspective>,
     last_move: RwSignal<Option<(shakmaty::Square, shakmaty::Square)>>,
     #[prop(into)] on_move: Callback<shakmaty::Move>,
+    #[prop(into)] on_premove: Callback<(shakmaty::Square, shakmaty::Square)>,
     #[prop(into)] can_drag_piece: Callback<shakmaty::Piece, bool>,
 ) -> impl IntoView {
     let selected_square = RwSignal::new(None::<shakmaty::Square>);
+
+    let premoves_ctx = use_context::<RwSignal<Vec<(shakmaty::Square, shakmaty::Square)>>>();
 
     let legal_move_targets = Signal::derive(move || -> Vec<shakmaty::Square> {
         use shakmaty::Position as _;
@@ -56,12 +59,25 @@ pub fn ChessBoard(
             return vec![];
         };
         let pos = position.get();
-        let Some(piece) = pos.board().piece_at(selected) else {
+
+        // Look up piece in the virtual board (premoves may have moved it to `selected`)
+        let queue = premoves_ctx.map(|p| p.get()).unwrap_or_default();
+        let piece = if queue.is_empty() {
+            pos.board().piece_at(selected)
+        } else {
+            apply_premoves(pos.board(), &queue).get(&selected).copied()
+        };
+        let Some(piece) = piece else {
             return vec![];
         };
-        // For our piece + our turn: just legal moves.
-        // For our piece + opponent's turn: legal-as-if-our-turn (for premoves +
-        // castling) UNION pseudo-attacks (threat-analysis view).
+
+        // Piece was premoved to `selected` (not in actual board there) — use pseudo-attacks
+        // so the user can chain further premoves for that piece.
+        if pos.board().piece_at(selected) != Some(piece) {
+            return pseudo_attacks(selected, piece);
+        }
+
+        // Normal case: piece is at its actual position.
         let view_pos = if piece.color == pos.turn() {
             Some(pos.clone())
         } else {
@@ -89,10 +105,35 @@ pub fn ChessBoard(
         targets.into_iter().collect()
     });
 
+    fn apply_premoves(
+        board: &shakmaty::Board,
+        queue: &[(shakmaty::Square, shakmaty::Square)],
+    ) -> std::collections::HashMap<shakmaty::Square, shakmaty::Piece> {
+        use shakmaty::Role;
+        let mut pieces: std::collections::HashMap<shakmaty::Square, shakmaty::Piece> = board
+            .occupied()
+            .into_iter()
+            .filter_map(|s| board.piece_at(s).map(|p| (s, p)))
+            .collect();
+        for (from, to) in queue {
+            if let Some(mut p) = pieces.remove(from) {
+                if p.role == Role::Pawn {
+                    let back_rank = if p.color == shakmaty::Color::White { 7 } else { 0 };
+                    if to.rank().to_usize() == back_rank {
+                        p.role = Role::Queen;
+                    }
+                }
+                pieces.insert(*to, p);
+            }
+        }
+        pieces
+    }
+
     fn pseudo_attacks(selected: shakmaty::Square, piece: shakmaty::Piece) -> Vec<shakmaty::Square> {
         use shakmaty::Role;
-        let mut targets: Vec<shakmaty::Square> =
-            attacks(selected, piece, Bitboard::EMPTY).into_iter().collect();
+        let mut targets: Vec<shakmaty::Square> = attacks(selected, piece, Bitboard::EMPTY)
+            .into_iter()
+            .collect();
         if piece.role == Role::Pawn {
             let rank = selected.rank().to_usize();
             let file = selected.file().to_usize();
@@ -122,6 +163,7 @@ pub fn ChessBoard(
     provide_context(last_move);
     provide_context(legal_move_targets);
     provide_context(on_move);
+    provide_context(on_premove);
     provide_context(can_drag_piece);
 
     view! {
@@ -146,7 +188,12 @@ pub fn ChessBoard(
                         let file = sq.file().to_usize();
                         let piece = Signal::derive(move || {
                             use shakmaty::Position as _;
-                            position.get().board().piece_at(sq)
+                            let pos = position.get();
+                            let queue = premoves_ctx.map(|p| p.get()).unwrap_or_default();
+                            if queue.is_empty() {
+                                return pos.board().piece_at(sq);
+                            }
+                            apply_premoves(pos.board(), &queue).get(&sq).copied()
                         });
 
                         view! {
