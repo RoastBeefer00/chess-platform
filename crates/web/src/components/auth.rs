@@ -35,7 +35,11 @@ pub async fn logout() -> Result<(), ServerFnError> {
     use crate::auth::AuthBackend;
     use axum_login::AuthSession;
     let mut auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
+    let user_id = auth.user.as_ref().map(|u| u.id);
     auth.logout().await?;
+    if let Some(id) = user_id {
+        tracing::info!(user_id = %id, "logout");
+    }
     // No `leptos_axum::redirect` here on purpose: the client-side `UserMenu`
     // does a full `window.location` reload after this action succeeds, so a
     // server redirect would just trigger a redundant client-side navigation

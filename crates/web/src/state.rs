@@ -48,6 +48,7 @@ impl AppState {
         }
     }
 
+    #[tracing::instrument(skip(self, game_config), fields(white = %white_player, black = %black_player))]
     pub async fn create_game(
         &self,
         game_config: GameConfig,
@@ -58,6 +59,7 @@ impl AppState {
         let game_id = game.game.id;
         let mut games = self.games.lock().await;
         games.insert(game_id, Arc::new(Mutex::new(game)));
+        tracing::info!(%game_id, "game_created");
         game_id
     }
 
@@ -66,14 +68,17 @@ impl AppState {
         games.get(game_id).cloned()
     }
 
+    #[tracing::instrument(skip(self, tx), fields(user_id = %id))]
     pub async fn add_match_inbox(&self, id: Uuid, tx: MatchInboxSender) {
         let _ = self.match_inboxes.lock().await.insert(id, tx);
     }
 
+    #[tracing::instrument(skip(self), fields(user_id = %id))]
     pub async fn remove_match_inbox(&self, id: &Uuid) {
         let _ = self.match_inboxes.lock().await.remove(id);
     }
 
+    #[tracing::instrument(skip(self, message), fields(user_id = %id))]
     pub async fn notify_match(&self, id: Uuid, message: MatchmakingServerMessage) {
         let tx = self.match_inboxes.lock().await.get(&id).cloned();
         if let Some(tx) = tx {
@@ -101,6 +106,7 @@ impl RedisClient {
         Self { pool, hash }
     }
 
+    #[tracing::instrument(skip(self), fields(%player_id))]
     pub async fn find_pair(
         &self,
         bucket: &str,
@@ -123,6 +129,7 @@ impl RedisClient {
         Ok(opp.and_then(|s| Uuid::parse_str(&s).ok()))
     }
 
+    #[tracing::instrument(skip(self), fields(%player_id))]
     pub async fn add_to_bucket(
         &self,
         bucket: &str,
@@ -141,6 +148,7 @@ impl RedisClient {
             .await
     }
 
+    #[tracing::instrument(skip(self), fields(%player_id))]
     pub async fn remove_from_bucket(&self, bucket: &str, player_id: Uuid) -> FredResult<()> {
         self.pool.zrem(bucket, player_id.to_string()).await
     }

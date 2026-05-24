@@ -7,6 +7,7 @@ use tower_sessions::Session;
 
 use crate::auth::{AuthBackend, AuthError, Credentials};
 
+#[tracing::instrument(skip_all)]
 pub async fn github_login(
     State(backend): State<AuthBackend>,
     session: Session,
@@ -17,10 +18,14 @@ pub async fn github_login(
         .add_scope(oauth2::Scope::new("user:email".to_string()))
         .url();
 
-    session
+    if session
         .insert("oauth_csrf_token", csrf_token.secret())
         .await
-        .unwrap();
+        .is_err()
+    {
+        tracing::warn!("github_login: failed to persist CSRF token");
+        return Redirect::to("/login");
+    }
 
     Redirect::to(redirect_url.as_str())
 }
@@ -31,24 +36,27 @@ pub struct GitHubCallbackQuery {
     state: String,
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn github_callback(
     Query(query): Query<GitHubCallbackQuery>,
     mut auth_session: axum_login::AuthSession<AuthBackend>,
     session: Session,
 ) -> impl IntoResponse {
-    let csrf_token = match session.get::<String>("oauth_csrf_token").await.unwrap() {
-        Some(token) => token,
-        None => {
-            tracing::error!("github callback: no csrf token in session");
+    let csrf_token = match session.get::<String>("oauth_csrf_token").await {
+        Ok(Some(token)) => token,
+        Ok(None) => {
+            tracing::warn!("github_callback: no csrf token in session");
+            return Redirect::to("/login");
+        }
+        Err(_) => {
+            tracing::warn!("github_callback: session store error reading csrf token");
             return Redirect::to("/login");
         }
     };
 
     if csrf_token != query.state {
-        tracing::error!(
-            "github callback: csrf mismatch (session={csrf_token}, query={})",
-            query.state
-        );
+        // Intentionally omit both token values from the log.
+        tracing::warn!("github_callback: csrf mismatch");
         return Redirect::to("/login");
     }
 
@@ -57,16 +65,19 @@ pub async fn github_callback(
     };
 
     match auth_session.authenticate(credentials).await {
-        Ok(Some(user)) => {
-            auth_session.login(&user).await.unwrap();
-            Redirect::to("/")
-        }
+        Ok(Some(user)) => match auth_session.login(&user).await {
+            Ok(()) => Redirect::to("/"),
+            Err(_) => {
+                tracing::warn!("github_callback: session login failed");
+                Redirect::to("/login")
+            }
+        },
         Ok(None) => {
-            tracing::error!("github callback: authenticate returned None");
+            tracing::warn!("github_callback: authenticate returned None");
             Redirect::to("/login")
         }
         Err(e) => {
-            tracing::error!("github callback: authenticate error: {e:?}");
+            tracing::warn!(error = ?e, "github_callback: authenticate error");
             Redirect::to("/login")
         }
     }
@@ -85,6 +96,7 @@ pub struct GitHubEmail {
     verified: bool,
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn get_github_user(
     client: &reqwest::Client,
     jwt_token: &str,

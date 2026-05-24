@@ -1,26 +1,6 @@
 use leptos::prelude::*;
 use leptos_router::{lazy_route, LazyRoute};
 
-#[server]
-pub async fn login_with_password(email: String, password: String) -> Result<(), ServerFnError> {
-    use crate::auth::{AuthBackend, Credentials};
-    use axum_login::AuthSession;
-    let mut auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
-    match auth
-        .authenticate(Credentials::Password { email, password })
-        .await?
-    {
-        Some(user) => {
-            auth.login(&user).await?;
-            leptos_axum::redirect("/");
-            Ok(())
-        }
-        None => Err(ServerFnError::ServerError(
-            "Invalid email or password".to_string(),
-        )),
-    }
-}
-
 #[derive(Clone)]
 pub struct LoginPage;
 
@@ -31,22 +11,6 @@ impl LazyRoute for LoginPage {
     }
 
     fn view(_data: Self) -> AnyView {
-        let action = ServerAction::<LoginWithPassword>::new();
-        let value = action.value();
-        let error = Memo::new(move |_| value.get().and_then(|r| r.err()).map(|e| e.to_string()));
-        let pending = action.pending();
-
-        // Full page navigation: `RequireAuth` uses `<Transition>` and would
-        // serve the stale unauthenticated user during a client-side refetch,
-        // bouncing us back to `/login` before the new session arrives.
-        Effect::new(move |_| {
-            if value.get().is_some_and(|r| r.is_ok()) {
-                if let Some(win) = web_sys::window() {
-                    let _ = win.location().set_href("/");
-                }
-            }
-        });
-
         view! {
             <div class="flex flex-col items-center justify-center min-h-[calc(100dvh-3.5rem)] px-6">
                 <div class="w-full max-w-sm">
@@ -77,54 +41,6 @@ impl LazyRoute for LoginPage {
                             "Continue with GitHub"
                         </a>
                     </div>
-
-                    <div class="flex items-center gap-3 my-6">
-                        <div class="flex-1 h-px bg-zinc-800"></div>
-                        <span class="text-zinc-500 text-sm">"or"</span>
-                        <div class="flex-1 h-px bg-zinc-800"></div>
-                    </div>
-
-                    <ActionForm action=action>
-                        <div class="space-y-4">
-                            <div>
-                                <label class="block text-sm text-zinc-400 mb-1" for="email">"Email"</label>
-                                <input
-                                    id="email"
-                                    type="email"
-                                    name="email"
-                                    required
-                                    class="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-md text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
-                                    placeholder="you@example.com"
-                                />
-                            </div>
-                            <div>
-                                <label class="block text-sm text-zinc-400 mb-1" for="password">"Password"</label>
-                                <input
-                                    id="password"
-                                    type="password"
-                                    name="password"
-                                    required
-                                    class="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-md text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
-                                    placeholder="••••••••"
-                                />
-                            </div>
-                            <Show when=move || error.get().is_some()>
-                                <p class="text-red-400 text-sm">{move || error.get()}</p>
-                            </Show>
-                            <button
-                                type="submit"
-                                disabled=pending
-                                class="w-full py-2.5 px-4 bg-white text-zinc-950 font-medium rounded-md hover:bg-zinc-100 transition-colors disabled:opacity-50"
-                            >
-                                "Sign in"
-                            </button>
-                        </div>
-                    </ActionForm>
-
-                    <p class="text-center text-zinc-500 text-sm mt-6">
-                        "Don't have an account? "
-                        <a href="/register" class="text-white hover:underline">"Register"</a>
-                    </p>
                 </div>
             </div>
         }

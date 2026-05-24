@@ -7,6 +7,9 @@ pub async fn is_username_available(username: String) -> Result<bool, ServerFnErr
     use axum_login::AuthSession;
 
     let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
+    if auth.user.is_none() {
+        return Err(ServerFnError::ServerError("unauthorized".to_string()));
+    }
     Ok(auth.backend.is_username_available(username).await?)
 }
 
@@ -19,7 +22,10 @@ pub async fn set_username(username: String) -> Result<(), ServerFnError> {
     let Some(user_id) = auth.user.as_ref().map(|u| u.id) else {
         return Err(ServerFnError::ServerError("not signed in".to_string()));
     };
-    auth.backend.set_username(user_id, username).await?;
+    auth.backend
+        .set_username(user_id, username.clone())
+        .await?;
+    tracing::info!(user_id = %user_id, username = %username, "username_set");
     // Refresh the in-session user so AuthSession.user.username is up to date.
     if let Some(u) = auth.backend.get_user(&user_id).await? {
         auth.user = Some(u);
