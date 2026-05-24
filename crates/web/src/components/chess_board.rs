@@ -168,7 +168,16 @@ pub fn ChessBoard(
 
     view! {
         <div class="flex items-center justify-center">
-            <div class="grid grid-cols-8 grid-rows-8 w-[min(100vw,calc(100dvh-11.5rem))] aspect-square">
+            <div
+                class="grid grid-cols-8 grid-rows-8 w-[min(100vw,calc(100dvh-11.5rem))] aspect-square"
+                on:contextmenu=move |e| {
+                    e.prevent_default();
+                    selected_square.set(None);
+                    if let Some(p) = premoves_ctx {
+                        p.set(vec![]);
+                    }
+                }
+            >
                 <For
                     each={move || {
                         match perspective.get() {
