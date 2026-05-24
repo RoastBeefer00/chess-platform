@@ -54,6 +54,7 @@ pub struct GameRoom {
     pub last_move_at: Option<Instant>,
     pub timeout_task: Option<JoinHandle<()>>,
     pub rematch_offer: Option<Uuid>,
+    pub draw_offer: Option<Uuid>,
 }
 
 impl GameRoom {
@@ -67,6 +68,7 @@ impl GameRoom {
             last_move_at: None,
             timeout_task: None,
             rematch_offer: None,
+            draw_offer: None,
         }
     }
 
@@ -222,6 +224,12 @@ impl GameRoom {
             sent_at_ms,
         });
 
+        // A move implicitly declines any pending draw offer.
+        if self.draw_offer.is_some() {
+            self.draw_offer = None;
+            self.broadcast(GameServerMessage::DrawDecline);
+        }
+
         // Game ended on this move?
         if let Outcome::Known(known) = self.get_position().outcome() {
             let reason = match known {
@@ -245,6 +253,10 @@ impl GameRoom {
 
     pub fn clear_rematch_offer(&mut self) {
         self.rematch_offer = None;
+    }
+
+    pub fn clear_draw_offer(&mut self) {
+        self.draw_offer = None;
     }
 }
 

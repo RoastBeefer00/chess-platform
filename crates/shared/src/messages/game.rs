@@ -9,6 +9,7 @@ pub enum GameOverReason {
     Checkmate,
     Draw,
     Timeout,
+    Resignation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +52,10 @@ pub enum GameServerMessage {
     },
     RematchDecline,
     RematchCancel,
+    DrawOffer {
+        from: Uuid,
+    },
+    DrawDecline,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +63,10 @@ pub enum GameClientMessage {
     UserJoined { game_id: Uuid },
     MoveMade { uci: String },
     Chat { text: String },
+    Resign,
+    DrawOffer,
+    DrawAccept,
+    DrawDecline,
     RematchOffer,
     RematchAccept,
     RematchDecline,
