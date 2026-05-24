@@ -20,7 +20,8 @@ rand = { version = "0.10.1", optional = true }
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls-ring", "uuid", "time"], optional = true }
 tracing = { version = "0.1.44", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
-tower-http = { version = "0.6", features = ["trace"], optional = true }
+tower-http = { version = "0.6", features = ["trace", "set-header", "limit"], optional = true }
+tower_governor = { version = "0.8", default-features = false, features = ["axum"], optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen = { version = "=0.2.117", optional = true }
 web-sys = { version = "=0.3.94", features = ["HtmlAudioElement"] }
@@ -38,7 +39,6 @@ axum-login = { version = "0.18", optional = true }
 tower-sessions = { version = "0.14", optional = true }
 tower-sessions-redis-store = { version = "0.16", default-features = false, optional = true }
 fred = { version = "10.1.0", features = ["sha-1", "i-scripts"], optional = true }
-argon2 = { version = "0.5.3", features = ["std"], optional = true }
 time = { version = "0.3.47", optional = true }
 thiserror = { version = "2", optional = true }
 dotenvy = { version = "0.15.7", optional = true }
@@ -65,11 +65,11 @@ ssr = [
     "dep:tower-sessions",
     "dep:tower-sessions-redis-store",
     "dep:fred",
-    "dep:argon2",
     "dep:sqlx",
     "dep:tracing",
     "dep:tracing-subscriber",
     "dep:tower-http",
+    "dep:tower_governor",
     "dep:time",
     "dep:thiserror",
     "dep:dotenvy",

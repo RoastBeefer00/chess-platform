@@ -26,8 +26,7 @@ pub fn Square(
     let on_premove = expect_context::<Callback<(shakmaty::Square, shakmaty::Square)>>();
     #[cfg(feature = "hydrate")]
     let can_drag_piece = expect_context::<Callback<shakmaty::Piece, bool>>();
-    let premoves_ctx =
-        use_context::<RwSignal<Vec<(shakmaty::Square, shakmaty::Square)>>>();
+    let premoves_ctx = use_context::<RwSignal<Vec<(shakmaty::Square, shakmaty::Square)>>>();
 
     let is_my_turn = Signal::derive(move || {
         use shakmaty::Position as _;
@@ -119,7 +118,6 @@ pub fn Square(
                         use std::str::FromStr;
 
                         let attr = el.get_attribute("data-square").unwrap();
-                        leptos::logging::log!("dropped on square {}", attr);
                         if let Ok(dropped_square) = Square::from_str(&attr) {
                             if valid_move_targets.get().contains(&dropped_square) {
                                 use shakmaty::{Position as _, Role};

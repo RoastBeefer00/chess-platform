@@ -135,6 +135,7 @@ impl GameRoom {
         }
     }
 
+    #[instrument(skip(self), fields(game_id = %self.game.id, ?outcome, ?reason))]
     pub fn end_game(&mut self, outcome: KnownOutcome, reason: GameOverReason) {
         self.status = GameStatus::Finished(Outcome::Known(outcome));
 
@@ -164,6 +165,7 @@ impl GameRoom {
         }
     }
 
+    #[instrument(skip(self), fields(game_id = %self.game.id))]
     pub fn parse_and_apply_move(&mut self, uci: &str) -> Result<Move, MoveError> {
         let uci_move = uci
             .parse::<UciMove>()
@@ -175,6 +177,7 @@ impl GameRoom {
         Ok(m)
     }
 
+    #[instrument(skip(self), fields(game_id = %self.game.id))]
     pub fn update_clock(&mut self) -> Result<(), MoveError> {
         let now = Instant::now();
         let elapsed = match self.last_move_at {
@@ -201,6 +204,7 @@ impl GameRoom {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(game_id = %self.game.id, %mover_id))]
     pub fn handle_move_made(
         &mut self,
         uci: String,
@@ -260,6 +264,7 @@ impl GameRoom {
     }
 }
 
+#[instrument(skip(room), fields(?color, ms_until))]
 pub async fn handle_timeout(room: Arc<Mutex<GameRoom>>, color: Color, ms_until: i64) {
     if ms_until <= 0 {
         return;

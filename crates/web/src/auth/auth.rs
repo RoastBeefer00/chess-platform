@@ -1,7 +1,3 @@
-use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
-    Argon2, PasswordHash, PasswordVerifier,
-};
 use axum_login::{AuthUser, AuthnBackend, UserId};
 use oauth2::{
     basic::{
@@ -53,7 +49,6 @@ pub struct User {
     pub avatar_url: Option<String>,
     pub bio: Option<String>,
     pub country: Option<String>,
-    password_hash: Option<String>,
     created_at: time::OffsetDateTime,
 }
 
@@ -65,15 +60,14 @@ impl AuthUser for User {
     }
 
     fn session_auth_hash(&self) -> &[u8] {
-        self.password_hash
-            .as_ref()
-            .map(|s| s.as_bytes())
-            .unwrap_or_default()
+        // OAuth-only auth: no password to invalidate sessions against.
+        // Use the user's stable UUID bytes — sessions are invalidated by
+        // explicit logout, not by hash rotation.
+        self.id.as_bytes()
     }
 }
 
 pub enum Credentials {
-    Password { email: String, password: String },
     GitHubOAuth { code: String },
     GoogleOAuth { code: String, nonce: String },
 }
@@ -87,6 +81,7 @@ pub struct AuthBackend {
 }
 
 impl AuthBackend {
+    #[tracing::instrument(skip_all)]
     pub async fn new(pool: PgPool, http_client: reqwest::Client) -> Self {
         let github_client_id =
             std::env::var("GITHUB_CLIENT_ID").expect("GITHUB_CLIENT_ID must be set");
@@ -137,39 +132,7 @@ impl AuthBackend {
 }
 
 impl AuthBackend {
-    pub async fn register(&self, email: String, password: String) -> Result<User, AuthError> {
-        // Reject duplicate emails up front. We intentionally do NOT link a
-        // password registration to an existing OAuth-created account: the
-        // email isn't verified at this point, so linking would let anyone
-        // hijack an existing account by registering with its email.
-        if sqlx::query_scalar!("SELECT 1 FROM users WHERE email = $1", email)
-            .fetch_optional(&self.pool)
-            .await?
-            .is_some()
-        {
-            return Err(AuthError::EmailAlreadyRegistered);
-        }
-
-        let salt = SaltString::generate(&mut OsRng);
-        let hash = tokio::task::spawn_blocking(move || {
-            Argon2::default()
-                .hash_password(password.as_bytes(), &salt)
-                .map(|h| h.to_string())
-        })
-        .await??;
-
-        let id = Uuid::new_v4();
-        Ok(sqlx::query_as!(
-            User,
-            "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3) RETURNING *",
-            id,
-            email,
-            hash,
-        )
-        .fetch_one(&self.pool)
-        .await?)
-    }
-
+    #[tracing::instrument(skip(self))]
     pub async fn is_username_available(&self, username: String) -> Result<bool, AuthError> {
         Ok(
             sqlx::query_scalar!("SELECT 1 FROM users WHERE username = $1", username)
@@ -179,6 +142,7 @@ impl AuthBackend {
         )
     }
 
+    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn set_username(&self, user_id: Uuid, username: String) -> Result<(), AuthError> {
         if self.is_username_available(username.clone()).await? {
             sqlx::query!(
@@ -194,6 +158,7 @@ impl AuthBackend {
         }
     }
 
+    #[tracing::instrument(skip(self), fields(user_id = %id, ?category))]
     pub async fn get_user_rating(&self, id: &Uuid, category: Category) -> Result<u32, AuthError> {
         let rating = sqlx::query_scalar!(
             "SELECT rating FROM ratings WHERE user_id = $1 AND mode = $2",
@@ -206,6 +171,7 @@ impl AuthBackend {
         Ok(rating as u32)
     }
 
+    #[tracing::instrument(skip(self), fields(user_id = %id, ?category))]
     pub async fn get_player_info(
         &self,
         id: &Uuid,
@@ -236,40 +202,12 @@ impl AuthnBackend for AuthBackend {
     type Credentials = Credentials;
     type Error = AuthError;
 
+    #[tracing::instrument(skip_all)]
     async fn authenticate(
         &self,
         credentials: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
         match credentials {
-            Credentials::Password { email, password } => {
-                let user = match query_as!(User, "SELECT * FROM users WHERE email = $1", email)
-                    .fetch_optional(&self.pool)
-                    .await?
-                {
-                    Some(record) => record,
-                    None => return Ok(None),
-                };
-
-                let Some(hash_str) = user.password_hash.clone() else {
-                    return Ok(None);
-                };
-
-                let verified = tokio::task::spawn_blocking(move || {
-                    let Ok(parsed_hash) = PasswordHash::new(&hash_str) else {
-                        return false;
-                    };
-                    Argon2::default()
-                        .verify_password(password.as_bytes(), &parsed_hash)
-                        .is_ok()
-                })
-                .await?;
-
-                if verified {
-                    Ok(Some(user))
-                } else {
-                    Ok(None)
-                }
-            }
             Credentials::GitHubOAuth { code } => {
                 let token = match self
                     .github_client
@@ -279,7 +217,7 @@ impl AuthnBackend for AuthBackend {
                 {
                     Ok(token) => token,
                     Err(e) => {
-                        tracing::error!("github token exchange failed: {e:?}");
+                        tracing::warn!(provider = "github", error = ?e, "login_failure: token exchange failed");
                         return Ok(None);
                     }
                 };
@@ -288,7 +226,7 @@ impl AuthnBackend for AuthBackend {
                 let github_user = match get_github_user(&self.http_client, access_token).await {
                     Ok(user) => user,
                     Err(e) => {
-                        tracing::error!("github user fetch failed: {e:?}");
+                        tracing::warn!(provider = "github", error = ?e, "login_failure: user fetch failed");
                         return Ok(None);
                     }
                 };
@@ -297,7 +235,8 @@ impl AuthnBackend for AuthBackend {
                 // Look up existing oauth_accounts row
                 let existing = sqlx::query_as!(
                     User,
-                    r#"SELECT u.* FROM users u
+                    r#"SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at
+                       FROM users u
                        JOIN oauth_accounts oa ON oa.user_id = u.id
                        WHERE oa.provider = 'github' AND oa.provider_user_id = $1"#,
                     provider_user_id,
@@ -306,31 +245,48 @@ impl AuthnBackend for AuthBackend {
                 .await?;
 
                 if let Some(user) = existing {
+                    tracing::info!(user_id = %user.id, provider = "github", "login_success");
                     return Ok(Some(user));
                 }
 
-                let email = github_user
-                    .email
-                    .unwrap_or_else(|| format!("github_{}", provider_user_id));
+                // `get_github_user` already filters to primary + verified emails;
+                // fall back to a synthetic email when GitHub returns none so
+                // account creation doesn't fail. Synthetic emails use a
+                // `github_<id>` prefix that can't collide with real addresses.
+                let (email, has_verified_email) = match github_user.email {
+                    Some(real) => (real, true),
+                    None => (format!("github_{}", provider_user_id), false),
+                };
 
-                // Link to an existing user with this email (e.g. one created via Google OAuth)
-                // or create a new user.
-                let existing_by_email =
-                    sqlx::query_as!(User, "SELECT * FROM users WHERE email = $1", email)
-                        .fetch_optional(&self.pool)
-                        .await?;
-                let user = match existing_by_email {
-                    Some(user) => user,
+                // Only link to an existing user by email if GitHub gave us a
+                // verified address — otherwise we'd let anyone hijack accounts
+                // by passing a non-verified placeholder.
+                let existing_by_email = if has_verified_email {
+                    sqlx::query_as!(
+                        User,
+                        r#"SELECT id, email, username, avatar_url, bio, country, created_at
+                           FROM users WHERE email = $1"#,
+                        email
+                    )
+                    .fetch_optional(&self.pool)
+                    .await?
+                } else {
+                    None
+                };
+                let (user, was_created) = match existing_by_email {
+                    Some(user) => (user, false),
                     None => {
                         let user_id = Uuid::new_v4();
-                        sqlx::query_as!(
+                        let new_user = sqlx::query_as!(
                             User,
-                            "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, NULL) RETURNING *",
+                            r#"INSERT INTO users (id, email) VALUES ($1, $2)
+                               RETURNING id, email, username, avatar_url, bio, country, created_at"#,
                             user_id,
                             email,
                         )
                         .fetch_one(&self.pool)
-                        .await?
+                        .await?;
+                        (new_user, true)
                     }
                 };
                 sqlx::query!(
@@ -341,6 +297,12 @@ impl AuthnBackend for AuthBackend {
                 .execute(&self.pool)
                 .await?;
 
+                if was_created {
+                    tracing::info!(user_id = %user.id, provider = "github", "account_created");
+                } else {
+                    tracing::info!(user_id = %user.id, provider = "github", "account_linked");
+                }
+                tracing::info!(user_id = %user.id, provider = "github", "login_success");
                 Ok(Some(user))
             }
             Credentials::GoogleOAuth { code, nonce } => {
@@ -351,12 +313,18 @@ impl AuthnBackend for AuthBackend {
                     .await
                 {
                     Ok(token) => token,
-                    Err(_) => return Ok(None),
+                    Err(e) => {
+                        tracing::warn!(provider = "google", error = ?e, "login_failure: token exchange failed");
+                        return Ok(None);
+                    }
                 };
 
                 let id_token = match token.extra_fields().id_token() {
                     Some(t) => t,
-                    None => return Ok(None),
+                    None => {
+                        tracing::warn!(provider = "google", "login_failure: no id_token");
+                        return Ok(None);
+                    }
                 };
 
                 let claims = match id_token.claims(
@@ -364,15 +332,23 @@ impl AuthnBackend for AuthBackend {
                     &openidconnect::Nonce::new(nonce),
                 ) {
                     Ok(c) => c,
-                    Err(_) => return Ok(None),
+                    Err(e) => {
+                        tracing::warn!(provider = "google", error = ?e, "login_failure: claim verification");
+                        return Ok(None);
+                    }
                 };
 
                 let provider_user_id = claims.subject().to_string();
-                let email = claims.email().map(|e| e.to_string());
+                // Only treat the email as ours to link by if Google says it's verified.
+                let verified_email = claims
+                    .email()
+                    .filter(|_| claims.email_verified().unwrap_or(false))
+                    .map(|e| e.to_string());
 
                 let existing = sqlx::query_as!(
                     User,
-                    r#"SELECT u.* FROM users u
+                    r#"SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at
+                       FROM users u
                        JOIN oauth_accounts oa ON oa.user_id = u.id
                        WHERE oa.provider = 'google' AND oa.provider_user_id = $1"#,
                     provider_user_id,
@@ -381,29 +357,41 @@ impl AuthnBackend for AuthBackend {
                 .await?;
 
                 if let Some(user) = existing {
+                    tracing::info!(user_id = %user.id, provider = "google", "login_success");
                     return Ok(Some(user));
                 }
 
-                let email = email.unwrap_or_else(|| format!("google_{}", provider_user_id));
+                let (email, has_verified_email) = match verified_email {
+                    Some(real) => (real, true),
+                    None => (format!("google_{}", provider_user_id), false),
+                };
 
-                // Link to an existing user with this email (e.g. one created via GitHub OAuth)
-                // or create a new user.
-                let existing_by_email =
-                    sqlx::query_as!(User, "SELECT * FROM users WHERE email = $1", email)
-                        .fetch_optional(&self.pool)
-                        .await?;
-                let user = match existing_by_email {
-                    Some(user) => user,
+                let existing_by_email = if has_verified_email {
+                    sqlx::query_as!(
+                        User,
+                        r#"SELECT id, email, username, avatar_url, bio, country, created_at
+                           FROM users WHERE email = $1"#,
+                        email
+                    )
+                    .fetch_optional(&self.pool)
+                    .await?
+                } else {
+                    None
+                };
+                let (user, was_created) = match existing_by_email {
+                    Some(user) => (user, false),
                     None => {
                         let user_id = Uuid::new_v4();
-                        sqlx::query_as!(
+                        let new_user = sqlx::query_as!(
                             User,
-                            "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, NULL) RETURNING *",
+                            r#"INSERT INTO users (id, email) VALUES ($1, $2)
+                               RETURNING id, email, username, avatar_url, bio, country, created_at"#,
                             user_id,
                             email,
                         )
                         .fetch_one(&self.pool)
-                        .await?
+                        .await?;
+                        (new_user, true)
                     }
                 };
                 sqlx::query!(
@@ -414,15 +402,27 @@ impl AuthnBackend for AuthBackend {
                 .execute(&self.pool)
                 .await?;
 
+                if was_created {
+                    tracing::info!(user_id = %user.id, provider = "google", "account_created");
+                } else {
+                    tracing::info!(user_id = %user.id, provider = "google", "account_linked");
+                }
+                tracing::info!(user_id = %user.id, provider = "google", "login_success");
                 Ok(Some(user))
             }
         }
     }
 
+    #[tracing::instrument(skip(self), fields(user_id = %id))]
     async fn get_user(&self, id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
-        Ok(query_as!(User, "SELECT * FROM users WHERE id = $1", id)
-            .fetch_optional(&self.pool)
-            .await?)
+        Ok(query_as!(
+            User,
+            r#"SELECT id, email, username, avatar_url, bio, country, created_at
+               FROM users WHERE id = $1"#,
+            id
+        )
+        .fetch_optional(&self.pool)
+        .await?)
     }
 }
 
