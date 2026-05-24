@@ -5,6 +5,7 @@ pub mod components;
 pub mod game;
 pub mod matchmaking;
 pub mod pages;
+pub mod sound;
 pub mod websocket;
 
 #[cfg(feature = "ssr")]

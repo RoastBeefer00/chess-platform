@@ -16,6 +16,7 @@ use crate::components::{
     MatchmakingModal, RematchState,
 };
 use crate::game::get_game_info;
+use crate::sound::{self, sfx};
 
 #[component]
 pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
@@ -97,11 +98,23 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             if let Some(from) = m.from() {
                 last_move.set(Some((from, m.to())));
             }
+            let is_capture = m.is_capture();
             set_position.update(|pos| {
                 if let Ok(new_pos) = pos.clone().play(m) {
                     *pos = new_pos;
                 }
             });
+            let new_pos = position.get_untracked();
+            let sound_src = if matches!(new_pos.outcome(), shakmaty::Outcome::Known(_)) {
+                sfx::CHECKMATE
+            } else if new_pos.is_check() {
+                sfx::CHECK
+            } else if is_capture {
+                sfx::CAPTURE
+            } else {
+                sfx::MOVE
+            };
+            sound::play(sound_src);
             let uci = m.to_uci(shakmaty::CastlingMode::Standard).to_string();
             let _ = tx.unbounded_send(GameClientMessage::MoveMade { uci });
         })
@@ -110,6 +123,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     let on_premove = {
         Callback::new(move |(from, to): (shakmaty::Square, shakmaty::Square)| {
             premoves.update(|premoves| premoves.push((from, to)));
+            sound::play(sfx::MOVE);
         })
     };
 
@@ -149,8 +163,11 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                         set_position.set(chess);
                                     }
                                 }
-                                if Some(uuid) == user.await.ok().flatten().map(|u| u.id) {
+                                if Some(uuid) == user.await.ok().flatten().map(|u| u.id)
+                                    && player_role.get_untracked().is_none()
+                                {
                                     set_player_role.set(Some(role));
+                                    sound::play(sfx::GAME_START);
                                 }
                             }
                             GameServerMessage::UserLeft { username: _ } => {}
@@ -171,11 +188,24 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                         if let Some(from) = m.from() {
                                             last_move.set(Some((from, m.to())));
                                         }
+                                        let is_capture = m.is_capture();
                                         set_position.update(|pos| {
                                             if let Ok(new_pos) = pos.clone().play(m) {
                                                 *pos = new_pos;
                                             }
                                         });
+                                        let new_pos = position.get_untracked();
+                                        let sound_src =
+                                            if matches!(new_pos.outcome(), Outcome::Known(_)) {
+                                                sfx::CHECKMATE
+                                            } else if new_pos.is_check() {
+                                                sfx::CHECK
+                                            } else if is_capture {
+                                                sfx::CAPTURE
+                                            } else {
+                                                sfx::MOVE
+                                            };
+                                        sound::play(sound_src);
                                     }
                                 }
                                 let is_my_turn = player_role
@@ -215,6 +245,17 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     GameOverReason::Draw => set_game_result
                                         .set(Some(Outcome::Known(KnownOutcome::Draw))),
                                 }
+                                let my_side = player_role
+                                    .get_untracked()
+                                    .and_then(|r| r.color())
+                                    .map(shared::Side::from);
+                                let sound_src = match (winner, my_side) {
+                                    (None, _) => sfx::DRAW,
+                                    (Some(w), Some(mine)) if w == mine => sfx::VICTORY,
+                                    (Some(_), Some(_)) => sfx::DEFEAT,
+                                    (Some(_), None) => sfx::MOVE,
+                                };
+                                sound::play(sound_src);
                                 draw_offer_state.set(DrawOfferState::Idle);
                                 clock_running.set(false);
                             }
@@ -296,6 +337,47 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         }
     });
 
+    // Low-time warning: fire LOW_TIME sound once when my clock crosses 20s.
+    // Snapshot only updates on server pushes, so use a timer for accuracy.
+    #[cfg(feature = "hydrate")]
+    {
+        use gloo_timers::callback::Timeout;
+        use leptos::prelude::{LocalStorage, StoredValue};
+        let low_time_played = RwSignal::new(false);
+        let low_time_timer: StoredValue<Option<Timeout>, LocalStorage> =
+            StoredValue::new_local(None);
+        Effect::new(move || {
+            let ms = bottom_ms.get();
+            let sent = sent_at_ms.get();
+            let active = bottom_active.get();
+
+            // Reset the flag if clock returned above threshold (e.g. after increment).
+            if ms > 20_000 && low_time_played.get_untracked() {
+                low_time_played.set(false);
+            }
+            // Cancel previous timer; we'll re-schedule if appropriate.
+            low_time_timer.set_value(None);
+
+            if low_time_played.get_untracked() || !active || ms <= 0 {
+                return;
+            }
+            let now = js_sys::Date::now() as i64;
+            let elapsed = (now - sent).max(0);
+            let remaining = ms - elapsed;
+            if remaining <= 20_000 {
+                sound::play(sfx::LOW_TIME);
+                low_time_played.set(true);
+            } else {
+                let delay = (remaining - 20_000) as u32;
+                let timer = Timeout::new(delay, move || {
+                    sound::play(sfx::LOW_TIME);
+                    low_time_played.set(true);
+                });
+                low_time_timer.set_value(Some(timer));
+            }
+        });
+    }
+
     provide_context(player_role);
     provide_context(premoves);
 
@@ -332,87 +414,152 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     tc_label=tc_label
                 />
             </Show>
-            <div class="flex flex-row items-center justify-between w-[min(100vw,calc(100dvh-11.5rem))] pl-2 py-2">
-                <Transition fallback=|| view! { <div class="h-12"></div> }>
-                    {move || game_info.get().and_then(|res| res.ok()).map(|info| {
-                        let top = match perspective.get() {
-                            BoardPerspective::White => info.black.clone(),
-                            BoardPerspective::Black => info.white.clone(),
-                        };
-                        view! { <BoardUser player={top} /> }
-                    })}
-                </Transition>
-                <div class="flex flex-row items-center">
-                    <Transition fallback=|| view! { <div></div> }>
-                        {move || game_info.get().and_then(|r| r.ok()).map(|_| view! {
-                            <Clock
-                                snapshot_ms={top_ms}
-                                snapshot_sent_at_ms={sent_at_ms.into()}
-                                is_active={top_active}
-                            />
-                        })}
-                    </Transition>
+            <div class="relative w-[min(100vw,calc(100dvh-11.5rem))]">
+                <div class="flex flex-row items-center justify-between pl-2 py-2 gap-2 overflow-hidden">
+                    <div class="min-w-0 flex-1 overflow-hidden">
+                        <Transition fallback=|| view! { <div class="h-12"></div> }>
+                            {move || game_info.get().and_then(|res| res.ok()).map(|info| {
+                                let top = match perspective.get() {
+                                    BoardPerspective::White => info.black.clone(),
+                                    BoardPerspective::Black => info.white.clone(),
+                                };
+                                view! { <BoardUser player={top} /> }
+                            })}
+                        </Transition>
+                    </div>
+                    <div class="flex flex-row items-center flex-shrink-0">
+                        <Transition fallback=|| view! { <div></div> }>
+                            {move || game_info.get().and_then(|r| r.ok()).map(|_| view! {
+                                <Clock
+                                    snapshot_ms={top_ms}
+                                    snapshot_sent_at_ms={sent_at_ms.into()}
+                                    is_active={top_active}
+                                />
+                            })}
+                        </Transition>
+                    </div>
                 </div>
-            </div>
-            <ChessBoard
-                position={position}
-                perspective={perspective}
-                last_move={last_move}
-                on_move={on_move}
-                on_premove={on_premove}
-                can_drag_piece={can_drag_piece}
-            />
-            <div class="flex flex-row items-center justify-between w-[min(100vw,calc(100dvh-11.5rem))] pl-2 py-2">
-                <Transition fallback=|| view! { <div class="h-12"></div> }>
-                    {move || game_info.get().and_then(|res| res.ok()).map(|info| {
-                        let bottom = match perspective.get() {
-                            BoardPerspective::White => info.white.clone(),
-                            BoardPerspective::Black => info.black.clone(),
-                        };
-                        view! { <BoardUser player={bottom} /> }
-                    })}
-                </Transition>
-                <div class="flex flex-row items-center">
-                    <Transition fallback=|| view! { <div></div> }>
-                        {move || game_info.get().and_then(|r| r.ok()).map(|_| view! {
-                            <Clock
-                                snapshot_ms={bottom_ms}
-                                snapshot_sent_at_ms={sent_at_ms.into()}
-                                is_active={bottom_active}
-                            />
-                        })}
-                    </Transition>
+                <ChessBoard
+                    position={position}
+                    perspective={perspective}
+                    last_move={last_move}
+                    on_move={on_move}
+                    on_premove={on_premove}
+                    can_drag_piece={can_drag_piece}
+                />
+                <div class="flex flex-row items-center justify-between pl-2 py-2 gap-2 overflow-hidden">
+                    <div class="min-w-0 flex-1 overflow-hidden">
+                        <Transition fallback=|| view! { <div class="h-12"></div> }>
+                            {move || game_info.get().and_then(|res| res.ok()).map(|info| {
+                                let bottom = match perspective.get() {
+                                    BoardPerspective::White => info.white.clone(),
+                                    BoardPerspective::Black => info.black.clone(),
+                                };
+                                view! { <BoardUser player={bottom} /> }
+                            })}
+                        </Transition>
+                    </div>
+                    <div class="flex flex-row items-center gap-2 flex-shrink-0">
+                        <Show when=move || {
+                            game_result.get().is_none()
+                                && player_role.get().is_some_and(|r| matches!(r, PlayerRole::Player(_)))
+                        }>
+                            <div class="md:hidden flex flex-row items-center gap-1">
+                                {move || match draw_offer_state.get() {
+                                    DrawOfferState::Idle => view! {
+                                        <button
+                                            on:click=move |_| {
+                                                send.run(GameClientMessage::DrawOffer);
+                                                draw_offer_state.set(DrawOfferState::Offering);
+                                            }
+                                            title="Offer Draw"
+                                            class="px-2 py-1 text-xs font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
+                                        >
+                                            "½"
+                                        </button>
+                                    }.into_any(),
+                                    DrawOfferState::Offering => view! {
+                                        <button
+                                            disabled
+                                            title="Draw offered"
+                                            class="px-2 py-1 text-xs font-medium text-zinc-500 border border-zinc-800 rounded cursor-not-allowed"
+                                        >
+                                            "½…"
+                                        </button>
+                                    }.into_any(),
+                                    DrawOfferState::OfferedToUs => view! {
+                                        <button
+                                            on:click=move |_| {
+                                                send.run(GameClientMessage::DrawAccept);
+                                                draw_offer_state.set(DrawOfferState::Idle);
+                                            }
+                                            title="Accept draw"
+                                            class="px-2 py-1 text-xs font-medium bg-green-700 text-white rounded hover:bg-green-600 transition-colors cursor-pointer"
+                                        >
+                                            "✓½"
+                                        </button>
+                                    }.into_any(),
+                                }}
+                                <Show when=move || draw_offer_state.get() == DrawOfferState::OfferedToUs>
+                                    <button
+                                        on:click=move |_| {
+                                            send.run(GameClientMessage::DrawDecline);
+                                            draw_offer_state.set(DrawOfferState::Idle);
+                                        }
+                                        title="Decline draw"
+                                        class="px-2 py-1 text-xs font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
+                                    >
+                                        "✕"
+                                    </button>
+                                </Show>
+                                <button
+                                    on:click=move |_| send.run(GameClientMessage::Resign)
+                                    title="Resign"
+                                    class="px-2 py-1 text-xs font-medium text-red-400 border border-red-900 rounded hover:border-red-700 hover:text-red-300 transition-colors cursor-pointer"
+                                >
+                                    "⚑"
+                                </button>
+                            </div>
+                        </Show>
+                        <Transition fallback=|| view! { <div></div> }>
+                            {move || game_info.get().and_then(|r| r.ok()).map(|_| view! {
+                                <Clock
+                                    snapshot_ms={bottom_ms}
+                                    snapshot_sent_at_ms={sent_at_ms.into()}
+                                    is_active={bottom_active}
+                                />
+                            })}
+                        </Transition>
+                    </div>
                 </div>
-            </div>
-            <Show when=move || {
-                game_result.get().is_none()
-                    && player_role.get().is_some_and(|r| matches!(r, PlayerRole::Player(_)))
-            }>
-                <div class="flex flex-col items-center gap-2 w-[min(100vw,calc(100dvh-11.5rem))] px-2 pb-2">
-                    <Show when=move || draw_offer_state.get() == DrawOfferState::OfferedToUs>
-                        <div class="flex flex-row items-center gap-3 w-full px-3 py-2 rounded-md bg-zinc-800 border border-zinc-700">
-                            <span class="text-sm text-zinc-300 flex-1">"Opponent offers a draw"</span>
-                            <button
-                                on:click=move |_| {
-                                    send.run(GameClientMessage::DrawAccept);
-                                    draw_offer_state.set(DrawOfferState::Idle);
-                                }
-                                class="px-3 py-1 text-xs font-medium bg-green-700 text-white rounded hover:bg-green-600 transition-colors cursor-pointer"
-                            >
-                                "Accept"
-                            </button>
-                            <button
-                                on:click=move |_| {
-                                    send.run(GameClientMessage::DrawDecline);
-                                    draw_offer_state.set(DrawOfferState::Idle);
-                                }
-                                class="px-3 py-1 text-xs font-medium bg-zinc-700 text-zinc-300 rounded hover:bg-zinc-600 hover:text-white transition-colors cursor-pointer"
-                            >
-                                "Decline"
-                            </button>
-                        </div>
-                    </Show>
-                    <div class="flex flex-row gap-2">
+                <Show when=move || {
+                    game_result.get().is_none()
+                        && player_role.get().is_some_and(|r| matches!(r, PlayerRole::Player(_)))
+                }>
+                    <div class="hidden md:flex absolute top-1/2 -translate-y-1/2 left-full ml-4 flex-col gap-2">
+                        <Show when=move || draw_offer_state.get() == DrawOfferState::OfferedToUs>
+                            <div class="flex flex-col items-stretch gap-2 px-3 py-2 rounded-md bg-zinc-800 border border-zinc-700">
+                                <span class="text-sm text-zinc-300 whitespace-nowrap">"Opponent offers a draw"</span>
+                                <button
+                                    on:click=move |_| {
+                                        send.run(GameClientMessage::DrawAccept);
+                                        draw_offer_state.set(DrawOfferState::Idle);
+                                    }
+                                    class="px-3 py-1 text-xs font-medium bg-green-700 text-white rounded hover:bg-green-600 transition-colors cursor-pointer"
+                                >
+                                    "Accept"
+                                </button>
+                                <button
+                                    on:click=move |_| {
+                                        send.run(GameClientMessage::DrawDecline);
+                                        draw_offer_state.set(DrawOfferState::Idle);
+                                    }
+                                    class="px-3 py-1 text-xs font-medium bg-zinc-700 text-zinc-300 rounded hover:bg-zinc-600 hover:text-white transition-colors cursor-pointer"
+                                >
+                                    "Decline"
+                                </button>
+                            </div>
+                        </Show>
                         {move || match draw_offer_state.get() {
                             DrawOfferState::Idle => view! {
                                 <button
@@ -420,7 +567,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                         send.run(GameClientMessage::DrawOffer);
                                         draw_offer_state.set(DrawOfferState::Offering);
                                     }
-                                    class="px-4 py-1.5 text-xs font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
+                                    class="px-4 py-1.5 text-xs font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer whitespace-nowrap"
                                 >
                                     "Offer Draw"
                                 </button>
@@ -428,7 +575,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                             DrawOfferState::Offering => view! {
                                 <button
                                     disabled
-                                    class="px-4 py-1.5 text-xs font-medium text-zinc-500 border border-zinc-800 rounded cursor-not-allowed"
+                                    class="px-4 py-1.5 text-xs font-medium text-zinc-500 border border-zinc-800 rounded cursor-not-allowed whitespace-nowrap"
                                 >
                                     "Draw Offered…"
                                 </button>
@@ -439,13 +586,13 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                         }}
                         <button
                             on:click=move |_| send.run(GameClientMessage::Resign)
-                            class="px-4 py-1.5 text-xs font-medium text-red-400 border border-red-900 rounded hover:border-red-700 hover:text-red-300 transition-colors cursor-pointer"
+                            class="px-4 py-1.5 text-xs font-medium text-red-400 border border-red-900 rounded hover:border-red-700 hover:text-red-300 transition-colors cursor-pointer whitespace-nowrap"
                         >
                             "Resign"
                         </button>
                     </div>
-                </div>
-            </Show>
+                </Show>
+            </div>
         </div>
     }
 }
