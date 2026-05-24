@@ -14,7 +14,7 @@ pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
         .await
         .ok_or_else(|| ServerFnError::new("game not found"))?;
 
-    let (white_id, black_id, variant, white_ms_left, black_ms_left, clock_running) = {
+    let (white_id, black_id, variant, white_ms_left, black_ms_left, clock_running, config) = {
         let gr = game_room.lock().await;
         (
             gr.game.white_player,
@@ -23,6 +23,7 @@ pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
             gr.game.white_ms_left,
             gr.game.black_ms_left,
             gr.last_move_at.is_some(),
+            gr.game.config.clone(),
         )
     };
 
@@ -47,5 +48,6 @@ pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
         black_ms_left,
         sent_at_ms,
         clock_running,
+        config,
     })
 }

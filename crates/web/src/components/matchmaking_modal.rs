@@ -66,7 +66,7 @@ pub fn MatchmakingModal(
                     while let Some(msg) = messages.next().await {
                         let Ok(msg) = msg else { continue };
                         if let MatchmakingServerMessage::Matched { game, side: _ } = msg {
-                            nav(&format!("/play/{game}"), NavigateOptions::default());
+                            nav(&format!("/game/{game}"), NavigateOptions::default());
                             break;
                         }
                     }

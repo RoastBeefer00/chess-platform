@@ -43,6 +43,14 @@ pub enum GameServerMessage {
         winner: Option<Side>,
         reason: GameOverReason,
     },
+    RematchOffer {
+        from: Uuid,
+    },
+    RematchAccept {
+        new_game_id: Uuid,
+    },
+    RematchDecline,
+    RematchCancel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,4 +58,8 @@ pub enum GameClientMessage {
     UserJoined { game_id: Uuid },
     MoveMade { uci: String },
     Chat { text: String },
+    RematchOffer,
+    RematchAccept,
+    RematchDecline,
+    RematchCancel,
 }

@@ -53,6 +53,7 @@ pub struct GameRoom {
     tx: Sender<GameServerMessage>,
     pub last_move_at: Option<Instant>,
     pub timeout_task: Option<JoinHandle<()>>,
+    pub rematch_offer: Option<Uuid>,
 }
 
 impl GameRoom {
@@ -65,6 +66,7 @@ impl GameRoom {
             tx,
             last_move_at: None,
             timeout_task: None,
+            rematch_offer: None,
         }
     }
 
@@ -239,6 +241,10 @@ impl GameRoom {
             next_color,
             ms_until_flag,
         }))
+    }
+
+    pub fn clear_rematch_offer(&mut self) {
+        self.rematch_offer = None;
     }
 }
 
