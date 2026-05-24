@@ -71,6 +71,15 @@ pub enum RatingMode {
     Rated,
 }
 
+impl RatingMode {
+    pub fn is_rated(&self) -> bool {
+        match self {
+            RatingMode::Casual => false,
+            RatingMode::Rated => true,
+        }
+    }
+}
+
 impl std::fmt::Display for RatingMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {

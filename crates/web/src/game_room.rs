@@ -4,7 +4,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use shakmaty::{uci::UciMove, Chess, Color, KnownOutcome, Move, Outcome, Position as _};
+use shakmaty::{
+    fen::Fen, uci::UciMove, Chess, Color, EnPassantMode, KnownOutcome, Move, Outcome, Position as _,
+};
 use tokio::{
     sync::{
         broadcast::{self, Receiver, Sender},
@@ -18,6 +20,8 @@ use shared::{
     messages::GameOverReason, Game, GameServerMessage, GameStatus, PlayerRole, Side, TimeMode,
 };
 use uuid::Uuid;
+
+use crate::db::{GameFinalization, GameStore};
 
 const BROADCAST_CAPACITY: usize = 32;
 
@@ -42,7 +46,10 @@ pub enum MoveOutcome {
     /// Move applied normally; schedule a timeout for the next player.
     Continuing(TimeoutPlan),
     /// Move ended the game (checkmate, stalemate, insufficient material).
-    Ended,
+    /// Carries the finalization plan when this was the transition to Finished;
+    /// `None` if the game was already finished (defensive — shouldn't normally
+    /// happen on this code path).
+    Ended(Option<GameFinalization>),
 }
 
 #[derive(Debug)]
@@ -55,6 +62,7 @@ pub struct GameRoom {
     pub timeout_task: Option<JoinHandle<()>>,
     pub rematch_offer: Option<Uuid>,
     pub draw_offer: Option<Uuid>,
+    pub move_history: Vec<String>,
 }
 
 impl GameRoom {
@@ -69,6 +77,7 @@ impl GameRoom {
             timeout_task: None,
             rematch_offer: None,
             draw_offer: None,
+            move_history: Vec::new(),
         }
     }
 
@@ -135,8 +144,20 @@ impl GameRoom {
         }
     }
 
+    /// Transition the game to Finished, broadcast the final clock + outcome,
+    /// cancel any pending timeout, and return a finalization snapshot that
+    /// the caller should hand to `GameStore::finalize_game` (typically via
+    /// `tokio::spawn`). Returns `None` if the game was already finished —
+    /// nothing to broadcast or persist a second time.
     #[instrument(skip(self), fields(game_id = %self.game.id, ?outcome, ?reason))]
-    pub fn end_game(&mut self, outcome: KnownOutcome, reason: GameOverReason) {
+    pub fn end_game(
+        &mut self,
+        outcome: KnownOutcome,
+        reason: GameOverReason,
+    ) -> Option<GameFinalization> {
+        if matches!(self.status, GameStatus::Finished(_)) {
+            return None;
+        }
         self.status = GameStatus::Finished(Outcome::Known(outcome));
 
         // Push the final clock snapshot so clients display the true ending values
@@ -158,11 +179,28 @@ impl GameRoom {
             KnownOutcome::Decisive { winner } => Some(Side::from(winner)),
             KnownOutcome::Draw => None,
         };
-        self.broadcast(GameServerMessage::GameOver { winner, reason });
+        self.broadcast(GameServerMessage::GameOver {
+            winner,
+            reason: reason.clone(),
+        });
 
         if let Some(h) = self.timeout_task.take() {
             h.abort();
         }
+
+        Some(GameFinalization {
+            game_id: self.game.id,
+            white_id: self.game.white_player,
+            black_id: self.game.black_player,
+            category: self.game.config.time_control.category(),
+            rated: self.game.config.rated.is_rated(),
+            moves: self.move_history.clone(),
+            final_fen: Fen::from_position(&self.game.position, EnPassantMode::Legal).to_string(),
+            outcome,
+            reason,
+            is_stalemate: self.game.position.is_stalemate(),
+            is_insufficient_material: self.game.position.is_insufficient_material(),
+        })
     }
 
     #[instrument(skip(self), fields(game_id = %self.game.id))]
@@ -221,7 +259,7 @@ impl GameRoom {
             .unwrap_or(0);
 
         self.broadcast(GameServerMessage::MoveMade {
-            uci,
+            uci: uci.clone(),
             white_ms_left: self.game.white_ms_left,
             black_ms_left: self.game.black_ms_left,
             turn: self.game.position.turn().into(),
@@ -240,8 +278,8 @@ impl GameRoom {
                 KnownOutcome::Decisive { .. } => GameOverReason::Checkmate,
                 KnownOutcome::Draw => GameOverReason::Draw,
             };
-            self.end_game(known, reason);
-            return Ok(MoveOutcome::Ended);
+            let plan = self.end_game(known, reason);
+            return Ok(MoveOutcome::Ended(plan));
         }
 
         let next_color = self.game.position.turn();
@@ -249,6 +287,8 @@ impl GameRoom {
             Color::White => self.game.white_ms_left,
             Color::Black => self.game.black_ms_left,
         };
+
+        self.move_history.push(uci);
         Ok(MoveOutcome::Continuing(TimeoutPlan {
             next_color,
             ms_until_flag,
@@ -264,50 +304,63 @@ impl GameRoom {
     }
 }
 
-#[instrument(skip(room), fields(?color, ms_until))]
-pub async fn handle_timeout(room: Arc<Mutex<GameRoom>>, color: Color, ms_until: i64) {
+#[instrument(skip(room, game_store), fields(?color, ms_until))]
+pub async fn handle_timeout(
+    room: Arc<Mutex<GameRoom>>,
+    game_store: GameStore,
+    color: Color,
+    ms_until: i64,
+) {
     if ms_until <= 0 {
         return;
     }
     tokio::time::sleep(Duration::from_millis(ms_until as u64)).await;
 
-    let mut gr = room.lock().await;
+    let plan = {
+        let mut gr = room.lock().await;
 
-    // Bail if state changed while we slept.
-    if !matches!(gr.status, GameStatus::Ongoing) {
-        return;
-    }
-    if gr.game.position.turn() != color {
-        return;
-    }
+        // Bail if state changed while we slept.
+        if !matches!(gr.status, GameStatus::Ongoing) {
+            return;
+        }
+        if gr.game.position.turn() != color {
+            return;
+        }
 
-    // Recompute remaining (the player might still have ms left if we slept slightly less).
-    let now = Instant::now();
-    let elapsed = gr
-        .last_move_at
-        .map(|t| now.duration_since(t).as_millis() as i64)
-        .unwrap_or(0);
-    let ms_left = match color {
-        Color::White => gr.game.white_ms_left,
-        Color::Black => gr.game.black_ms_left,
-    } - elapsed;
-    if ms_left > 0 {
-        return;
-    }
+        // Recompute remaining (the player might still have ms left if we slept slightly less).
+        let now = Instant::now();
+        let elapsed = gr
+            .last_move_at
+            .map(|t| now.duration_since(t).as_millis() as i64)
+            .unwrap_or(0);
+        let ms_left = match color {
+            Color::White => gr.game.white_ms_left,
+            Color::Black => gr.game.black_ms_left,
+        } - elapsed;
+        if ms_left > 0 {
+            return;
+        }
 
-    // Flag fall confirmed.
-    match color {
-        Color::White => gr.game.white_ms_left = 0,
-        Color::Black => gr.game.black_ms_left = 0,
-    }
-    let winner_color = match color {
-        Color::White => Color::Black,
-        Color::Black => Color::White,
+        // Flag fall confirmed.
+        match color {
+            Color::White => gr.game.white_ms_left = 0,
+            Color::Black => gr.game.black_ms_left = 0,
+        }
+        let winner_color = match color {
+            Color::White => Color::Black,
+            Color::Black => Color::White,
+        };
+        gr.end_game(
+            KnownOutcome::Decisive {
+                winner: winner_color,
+            },
+            GameOverReason::Timeout,
+        )
     };
-    gr.end_game(
-        KnownOutcome::Decisive {
-            winner: winner_color,
-        },
-        GameOverReason::Timeout,
-    );
+
+    if let Some(plan) = plan {
+        if let Err(e) = game_store.finalize_game(plan).await {
+            tracing::warn!(?e, "finalize_game failed (timeout path)");
+        }
+    }
 }

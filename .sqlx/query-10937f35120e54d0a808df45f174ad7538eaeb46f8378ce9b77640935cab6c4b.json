@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE ratings\n                   SET rating = $3, games = games + 1, updated_at = now()\n                   WHERE user_id = $1 AND mode = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "10937f35120e54d0a808df45f174ad7538eaeb46f8378ce9b77640935cab6c4b"
+}

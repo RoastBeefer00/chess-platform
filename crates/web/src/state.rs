@@ -5,12 +5,13 @@ use fred::prelude::*;
 use futures::channel::mpsc::UnboundedSender;
 use leptos::config::LeptosOptions;
 use leptos::prelude::ServerFnError;
-use shared::{Game, GameConfig, MatchmakingServerMessage};
+use shared::{Game, GameConfig, GameStatus, MatchmakingServerMessage};
 use sqlx::PgPool;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::auth::AuthBackend;
+use crate::auth::{AuthBackend, AuthError};
+use crate::db::{GameStore, RatingStore, UserStore};
 use crate::game_room::GameRoom;
 
 pub type GameId = Uuid;
@@ -23,6 +24,9 @@ pub struct AppState {
     pub leptos_options: LeptosOptions,
     pub games: GameRooms,
     pub auth_backend: AuthBackend,
+    pub user_store: UserStore,
+    pub game_store: GameStore,
+    pub rating_store: RatingStore,
     pub redis_client: RedisClient,
     pub match_inboxes: MatchInbox,
 }
@@ -39,10 +43,17 @@ impl AppState {
             .build()
             .expect("failed to build reqwest client");
         let redis_client = RedisClient::new(redis_pool).await;
+        let user_store = UserStore::new(pool.clone());
+        let game_store = GameStore::new(pool.clone());
+        let rating_store = RatingStore::new(pool.clone());
+        let auth_backend = AuthBackend::new(pool, http_client).await;
         AppState {
             leptos_options,
             games: Arc::new(Mutex::new(HashMap::new())),
-            auth_backend: AuthBackend::new(pool, http_client).await,
+            auth_backend,
+            user_store,
+            game_store,
+            rating_store,
             redis_client,
             match_inboxes: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -54,13 +65,30 @@ impl AppState {
         game_config: GameConfig,
         white_player: Uuid,
         black_player: Uuid,
-    ) -> GameId {
-        let game = GameRoom::new(Game::new(game_config, white_player, black_player));
+    ) -> Result<GameId, AuthError> {
+        let game = GameRoom::new(Game::new(game_config.clone(), white_player, black_player));
         let game_id = game.game.id;
         let mut games = self.games.lock().await;
         games.insert(game_id, Arc::new(Mutex::new(game)));
+        let initial_time_seconds = (game_config.time_control.initial_time / 1000) as i32;
+        let time_increment_seconds = match game_config.time_control.mode {
+            shared::TimeMode::Increment(ms) => (ms / 1000) as i32,
+            shared::TimeMode::Delay(_) => 0_i32,
+        };
+        self.game_store
+            .insert_new_game(
+                &game_id,
+                &GameStatus::Ongoing,
+                &white_player,
+                &black_player,
+                &game_config.time_control.category(),
+                initial_time_seconds,
+                time_increment_seconds,
+                game_config.rated.is_rated(),
+            )
+            .await?;
         tracing::info!(%game_id, "game_created");
-        game_id
+        Ok(game_id)
     }
 
     pub async fn get_game_room(&self, game_id: &GameId) -> Option<Arc<Mutex<GameRoom>>> {

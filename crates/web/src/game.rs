@@ -28,10 +28,8 @@ pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
     };
 
     let (white, black) = tokio::try_join!(
-        state
-            .auth_backend
-            .get_player_info(&white_id, variant.clone()),
-        state.auth_backend.get_player_info(&black_id, variant),
+        state.user_store.get_player_info(&white_id, variant.clone()),
+        state.user_store.get_player_info(&black_id, variant),
     )
     .map_err(|e| ServerFnError::new(e.to_string()))?;
 

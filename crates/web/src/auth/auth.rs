@@ -22,7 +22,6 @@ type GoogleClient = CoreClient<
     EndpointMaybeSet,
 >;
 use serde::{Deserialize, Serialize};
-use shared::Category;
 use sqlx::{query_as, PgPool};
 use uuid::Uuid;
 
@@ -49,7 +48,7 @@ pub struct User {
     pub avatar_url: Option<String>,
     pub bio: Option<String>,
     pub country: Option<String>,
-    created_at: time::OffsetDateTime,
+    pub created_at: time::OffsetDateTime,
 }
 
 impl AuthUser for User {
@@ -128,72 +127,6 @@ impl AuthBackend {
             github_client,
             google_client,
         }
-    }
-}
-
-impl AuthBackend {
-    #[tracing::instrument(skip(self))]
-    pub async fn is_username_available(&self, username: String) -> Result<bool, AuthError> {
-        Ok(
-            sqlx::query_scalar!("SELECT 1 FROM users WHERE username = $1", username)
-                .fetch_optional(&self.pool)
-                .await?
-                .is_none(),
-        )
-    }
-
-    #[tracing::instrument(skip(self), fields(user_id = %user_id))]
-    pub async fn set_username(&self, user_id: Uuid, username: String) -> Result<(), AuthError> {
-        if self.is_username_available(username.clone()).await? {
-            sqlx::query!(
-                "UPDATE users SET username = $1 WHERE id = $2",
-                username,
-                user_id
-            )
-            .execute(&self.pool)
-            .await?;
-            Ok(())
-        } else {
-            Err(AuthError::UsernameTaken(username))
-        }
-    }
-
-    #[tracing::instrument(skip(self), fields(user_id = %id, ?category))]
-    pub async fn get_user_rating(&self, id: &Uuid, category: Category) -> Result<u32, AuthError> {
-        let rating = sqlx::query_scalar!(
-            "SELECT rating FROM ratings WHERE user_id = $1 AND mode = $2",
-            id,
-            &category.to_string()
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(rating as u32)
-    }
-
-    #[tracing::instrument(skip(self), fields(user_id = %id, ?category))]
-    pub async fn get_player_info(
-        &self,
-        id: &Uuid,
-        category: Category,
-    ) -> Result<shared::PlayerInfo, AuthError> {
-        let row = sqlx::query!(
-            r#"SELECT u.id, u.username, u.avatar_url, r.rating
-               FROM users u
-               INNER JOIN ratings r ON r.user_id = u.id AND r.mode = $2
-               WHERE u.id = $1"#,
-            id,
-            &category.to_string()
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(shared::PlayerInfo {
-            id: row.id,
-            username: row.username,
-            avatar_url: row.avatar_url,
-            rating: row.rating,
-        })
     }
 }
 

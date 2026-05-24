@@ -5,13 +5,12 @@ use uuid::Uuid;
 
 #[server]
 pub async fn get_user_rating(id: Uuid, category: Category) -> Result<u32, ServerFnError> {
-    use crate::auth::AuthBackend;
-    use axum_login::AuthSession;
+    use crate::state::AppState;
 
-    let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
-
-    auth.backend
-        .get_user_rating(&id, category)
+    let state = expect_context::<AppState>();
+    state
+        .rating_store
+        .get_rating(&id, category)
         .await
         .map_err(ServerFnError::new)
 }
@@ -56,9 +55,9 @@ pub async fn matchmaking_websocket(
             let key = time_control.bucket(rating_mode);
             queued_key = Some(key.clone());
 
-            let player_rating = match auth
-                .backend
-                .get_user_rating(&player_id, time_control.category())
+            let player_rating = match state
+                .rating_store
+                .get_rating(&player_id, time_control.category())
                 .await
             {
                 Ok(r) => r,
@@ -103,7 +102,14 @@ pub async fn matchmaking_websocket(
                         variant: Variant::Standard,
                         rated: rating_mode,
                     };
-                    let game_id = state.create_game(game_config, white, black).await;
+                    let game_id = match state.create_game(game_config, white, black).await {
+                        Ok(id) => id,
+                        Err(e) => {
+                            tracing::warn!(?e, "matchmaking: create_game failed");
+                            let _ = tx.unbounded_send(Err(ServerFnError::new(e.to_string())));
+                            return Err(());
+                        }
+                    };
                     // Notify opponent via their inbox.
                     state
                         .notify_match(
