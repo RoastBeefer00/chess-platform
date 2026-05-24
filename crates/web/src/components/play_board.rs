@@ -1,8 +1,15 @@
 use leptos::prelude::*;
-use shakmaty::{Color, KnownOutcome, Outcome, Position as _, Role};
+use shakmaty::{Color, KnownOutcome, Outcome, Position as _};
 use shared::messages::GameOverReason;
 use shared::PlayerRole;
 use uuid::Uuid;
+
+#[derive(Clone, PartialEq)]
+enum DrawOfferState {
+    Idle,
+    Offering,
+    OfferedToUs,
+}
 
 use crate::components::{
     move_target, use_current_user, BoardPerspective, BoardUser, ChessBoard, Clock, GameOverModal,
@@ -24,6 +31,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
 
     let (tx, rx) = mpsc::unbounded::<GameClientMessage>();
     let rematch_state = RwSignal::new(RematchState::Idle);
+    let draw_offer_state = RwSignal::new(DrawOfferState::Idle);
     let searching = RwSignal::new(None::<(shared::TimeControl, shared::RatingMode)>);
     let tx_send = tx.clone();
     let send = Callback::new(move |msg: GameClientMessage| {
@@ -198,7 +206,8 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                 match reason {
                                     GameOverReason::Abort
                                     | GameOverReason::Checkmate
-                                    | GameOverReason::Timeout => set_game_result.set(Some(
+                                    | GameOverReason::Timeout
+                                    | GameOverReason::Resignation => set_game_result.set(Some(
                                         Outcome::Known(KnownOutcome::Decisive {
                                             winner: winner.unwrap().into(),
                                         }),
@@ -206,6 +215,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     GameOverReason::Draw => set_game_result
                                         .set(Some(Outcome::Known(KnownOutcome::Draw))),
                                 }
+                                draw_offer_state.set(DrawOfferState::Idle);
                                 clock_running.set(false);
                             }
                             GameServerMessage::ClockSync {
@@ -235,6 +245,14 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                             }
                             GameServerMessage::RematchCancel => {
                                 rematch_state.set(RematchState::Idle);
+                            }
+                            GameServerMessage::DrawOffer { from: id } => {
+                                if id != my_uuid {
+                                    draw_offer_state.set(DrawOfferState::OfferedToUs);
+                                }
+                            }
+                            GameServerMessage::DrawDecline => {
+                                draw_offer_state.set(DrawOfferState::Idle);
                             }
                         }
                     }
@@ -366,6 +384,68 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     </Transition>
                 </div>
             </div>
+            <Show when=move || {
+                game_result.get().is_none()
+                    && player_role.get().is_some_and(|r| matches!(r, PlayerRole::Player(_)))
+            }>
+                <div class="flex flex-col items-center gap-2 w-[min(100vw,calc(100dvh-11.5rem))] px-2 pb-2">
+                    <Show when=move || draw_offer_state.get() == DrawOfferState::OfferedToUs>
+                        <div class="flex flex-row items-center gap-3 w-full px-3 py-2 rounded-md bg-zinc-800 border border-zinc-700">
+                            <span class="text-sm text-zinc-300 flex-1">"Opponent offers a draw"</span>
+                            <button
+                                on:click=move |_| {
+                                    send.run(GameClientMessage::DrawAccept);
+                                    draw_offer_state.set(DrawOfferState::Idle);
+                                }
+                                class="px-3 py-1 text-xs font-medium bg-green-700 text-white rounded hover:bg-green-600 transition-colors cursor-pointer"
+                            >
+                                "Accept"
+                            </button>
+                            <button
+                                on:click=move |_| {
+                                    send.run(GameClientMessage::DrawDecline);
+                                    draw_offer_state.set(DrawOfferState::Idle);
+                                }
+                                class="px-3 py-1 text-xs font-medium bg-zinc-700 text-zinc-300 rounded hover:bg-zinc-600 hover:text-white transition-colors cursor-pointer"
+                            >
+                                "Decline"
+                            </button>
+                        </div>
+                    </Show>
+                    <div class="flex flex-row gap-2">
+                        {move || match draw_offer_state.get() {
+                            DrawOfferState::Idle => view! {
+                                <button
+                                    on:click=move |_| {
+                                        send.run(GameClientMessage::DrawOffer);
+                                        draw_offer_state.set(DrawOfferState::Offering);
+                                    }
+                                    class="px-4 py-1.5 text-xs font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
+                                >
+                                    "Offer Draw"
+                                </button>
+                            }.into_any(),
+                            DrawOfferState::Offering => view! {
+                                <button
+                                    disabled
+                                    class="px-4 py-1.5 text-xs font-medium text-zinc-500 border border-zinc-800 rounded cursor-not-allowed"
+                                >
+                                    "Draw Offered…"
+                                </button>
+                            }.into_any(),
+                            DrawOfferState::OfferedToUs => view! {
+                                <span></span>
+                            }.into_any(),
+                        }}
+                        <button
+                            on:click=move |_| send.run(GameClientMessage::Resign)
+                            class="px-4 py-1.5 text-xs font-medium text-red-400 border border-red-900 rounded hover:border-red-700 hover:text-red-300 transition-colors cursor-pointer"
+                        >
+                            "Resign"
+                        </button>
+                    </div>
+                </div>
+            </Show>
         </div>
     }
 }

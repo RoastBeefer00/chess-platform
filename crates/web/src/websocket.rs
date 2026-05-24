@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use server_fn::{codec::JsonEncoding, BoxedStream, Websocket};
-use shared::{GameClientMessage, GameServerMessage, PlayerRole};
+use shared::{GameClientMessage, GameServerMessage};
 
 #[server(protocol = Websocket<JsonEncoding, JsonEncoding>)]
 pub async fn game_websocket(
@@ -169,6 +169,55 @@ pub async fn game_websocket(
                         }
                     }
                     GameClientMessage::Chat { text: _ } => todo!(),
+                    GameClientMessage::Resign => {
+                        let my_side = match &player_role {
+                            shared::PlayerRole::Player(side) => *side,
+                            shared::PlayerRole::Spectator => continue,
+                        };
+                        if !matches!(gr.status, shared::GameStatus::Ongoing) {
+                            continue;
+                        }
+                        let winner_color: shakmaty::Color = my_side.opposite().into();
+                        gr.end_game(
+                            shakmaty::KnownOutcome::Decisive { winner: winner_color },
+                            GameOverReason::Resignation,
+                        );
+                    }
+                    GameClientMessage::DrawOffer => {
+                        if !matches!(player_role, shared::PlayerRole::Player(_)) {
+                            continue;
+                        }
+                        if !matches!(gr.status, shared::GameStatus::Ongoing) {
+                            continue;
+                        }
+                        if gr.draw_offer.is_some() {
+                            continue;
+                        }
+                        gr.draw_offer = Some(user.id);
+                        gr.broadcast(GameServerMessage::DrawOffer { from: user.id });
+                    }
+                    GameClientMessage::DrawAccept => {
+                        if !matches!(player_role, shared::PlayerRole::Player(_)) {
+                            continue;
+                        }
+                        if let Some(offerer) = gr.draw_offer {
+                            if offerer != user.id {
+                                gr.clear_draw_offer();
+                                gr.end_game(shakmaty::KnownOutcome::Draw, GameOverReason::Draw);
+                            }
+                        }
+                    }
+                    GameClientMessage::DrawDecline => {
+                        if !matches!(player_role, shared::PlayerRole::Player(_)) {
+                            continue;
+                        }
+                        if let Some(offerer) = gr.draw_offer {
+                            if offerer != user.id {
+                                gr.clear_draw_offer();
+                                gr.broadcast(GameServerMessage::DrawDecline);
+                            }
+                        }
+                    }
                     GameClientMessage::RematchOffer => {
                         if player_role == PlayerRole::Spectator {
                             return;
@@ -240,6 +289,10 @@ pub async fn game_websocket(
         if gr.rematch_offer.is_some() {
             gr.clear_rematch_offer();
             gr.broadcast(GameServerMessage::RematchCancel);
+        }
+        if gr.draw_offer.is_some() {
+            gr.clear_draw_offer();
+            gr.broadcast(GameServerMessage::DrawDecline);
         }
         gr.broadcast(GameServerMessage::UserLeft {
             username: user.username.unwrap_or_default(),
