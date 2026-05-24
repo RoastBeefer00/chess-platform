@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use server_fn::{codec::JsonEncoding, BoxedStream, Websocket};
-use shared::{GameClientMessage, GameServerMessage};
+use shared::{GameClientMessage, GameServerMessage, PlayerRole};
 
 #[server(protocol = Websocket<JsonEncoding, JsonEncoding>)]
 pub async fn game_websocket(
@@ -179,7 +179,9 @@ pub async fn game_websocket(
                         }
                         let winner_color: shakmaty::Color = my_side.opposite().into();
                         gr.end_game(
-                            shakmaty::KnownOutcome::Decisive { winner: winner_color },
+                            shakmaty::KnownOutcome::Decisive {
+                                winner: winner_color,
+                            },
                             GameOverReason::Resignation,
                         );
                     }

@@ -241,7 +241,7 @@ pub fn Square(
                     draggable="false"
                     class="relative z-10 w-full h-full cursor-grab select-none touch-none"
                     class:cursor-grabbing=move || is_dragging.get()
-                    style=move || if is_dragging.get() {
+                    style=move || if is_dragging.get() && selected_square.get().is_some() {
                         let (w, h) = drag_size.get();
                         format!("position: fixed; {} pointer-events: none; width: {}px; height: {}px; z-index: 50;", style.get(), w, h)
                     } else {
