@@ -114,8 +114,12 @@ pub fn Square(
                     // (finger lifted off-screen). Every step below can fail
                     // legitimately; bail with a log instead of panicking the
                     // drag handler (which would block all future drags).
-                    let Some(window) = web_sys::window() else { return };
-                    let Some(document) = window.document() else { return };
+                    let Some(window) = web_sys::window() else {
+                        return;
+                    };
+                    let Some(document) = window.document() else {
+                        return;
+                    };
                     let Some(dom_element) = document.element_from_point(x, y) else {
                         selected_square.set(None);
                         return;
@@ -221,12 +225,12 @@ pub fn Square(
     view! {
         <div
             class="relative w-full h-full select-none touch-none"
-            class:bg-white=move || (rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
-            class:bg-green-800=move || !(rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
-            class:bg-green-300=move || (rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
-            class:bg-green-600=move || !(rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
-            class:bg-gray-300=move || (rank + file).is_multiple_of(2) && is_premove_square.get()
-            class:bg-gray-500=move || !(rank + file).is_multiple_of(2) && is_premove_square.get()
+            class:bg-white=move || !(rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
+            class:bg-green-800=move || (rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
+            class:bg-green-300=move || !(rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
+            class:bg-green-600=move || (rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
+            class:bg-gray-300=move || !(rank + file).is_multiple_of(2) && is_premove_square.get()
+            class:bg-gray-500=move || (rank + file).is_multiple_of(2) && is_premove_square.get()
             data-square=format!("{}{}", file_to_char(file), rank_to_char(rank))
             on:click=on_click
         >
