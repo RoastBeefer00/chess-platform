@@ -30,13 +30,21 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
 
     let user = use_current_user();
 
-    let (tx, rx) = mpsc::unbounded::<GameClientMessage>();
+    // Holds the sender for the current websocket connection. Replaced on every
+    // reconnect — so `send` / `on_move` dispatch through whichever connection
+    // is currently live. Mobile Safari kills backgrounded WebSockets within
+    // ~30s, so this is the load-bearing piece for the reconnect loop below.
+    let current_tx: StoredValue<Option<mpsc::UnboundedSender<GameClientMessage>>, LocalStorage> =
+        StoredValue::new_local(None);
     let rematch_state = RwSignal::new(RematchState::Idle);
     let draw_offer_state = RwSignal::new(DrawOfferState::Idle);
     let searching = RwSignal::new(None::<(shared::TimeControl, shared::RatingMode)>);
-    let tx_send = tx.clone();
     let send = Callback::new(move |msg: GameClientMessage| {
-        let _ = tx_send.unbounded_send(msg);
+        current_tx.with_value(|opt| {
+            if let Some(tx) = opt {
+                let _ = tx.unbounded_send(msg);
+            }
+        });
     });
 
     let (position, set_position) = signal(shakmaty::Chess::default());
@@ -85,40 +93,37 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     });
 
     // on_move: gate by turn ownership, apply optimistically, send to server via WS.
-    let on_move = {
-        let tx = tx.clone();
-        Callback::new(move |m: shakmaty::Move| {
-            use shakmaty::Position as _;
-            let pos = position.get_untracked();
-            let my_color = player_role.get_untracked().and_then(|r| r.color());
-            if my_color != Some(pos.turn()) {
-                leptos::logging::warn!("attempted move out of turn");
-                return;
+    let on_move = Callback::new(move |m: shakmaty::Move| {
+        use shakmaty::Position as _;
+        let pos = position.get_untracked();
+        let my_color = player_role.get_untracked().and_then(|r| r.color());
+        if my_color != Some(pos.turn()) {
+            leptos::logging::warn!("attempted move out of turn");
+            return;
+        }
+        if let Some(from) = m.from() {
+            last_move.set(Some((from, m.to())));
+        }
+        let is_capture = m.is_capture();
+        set_position.update(|pos| {
+            if let Ok(new_pos) = pos.clone().play(m) {
+                *pos = new_pos;
             }
-            if let Some(from) = m.from() {
-                last_move.set(Some((from, m.to())));
-            }
-            let is_capture = m.is_capture();
-            set_position.update(|pos| {
-                if let Ok(new_pos) = pos.clone().play(m) {
-                    *pos = new_pos;
-                }
-            });
-            let new_pos = position.get_untracked();
-            let sound_src = if matches!(new_pos.outcome(), shakmaty::Outcome::Known(_)) {
-                sfx::CHECKMATE
-            } else if new_pos.is_check() {
-                sfx::CHECK
-            } else if is_capture {
-                sfx::CAPTURE
-            } else {
-                sfx::MOVE
-            };
-            sound::play(sound_src);
-            let uci = m.to_uci(shakmaty::CastlingMode::Standard).to_string();
-            let _ = tx.unbounded_send(GameClientMessage::MoveMade { uci });
-        })
-    };
+        });
+        let new_pos = position.get_untracked();
+        let sound_src = if matches!(new_pos.outcome(), shakmaty::Outcome::Known(_)) {
+            sfx::CHECKMATE
+        } else if new_pos.is_check() {
+            sfx::CHECK
+        } else if is_capture {
+            sfx::CAPTURE
+        } else {
+            sfx::MOVE
+        };
+        sound::play(sound_src);
+        let uci = m.to_uci(shakmaty::CastlingMode::Standard).to_string();
+        send.run(GameClientMessage::MoveMade { uci });
+    });
 
     let on_premove = {
         Callback::new(move |(from, to): (shakmaty::Square, shakmaty::Square)| {
@@ -135,8 +140,6 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             .is_some_and(|c| c == p.color)
     });
 
-    let tx_join = tx.clone();
-
     if cfg!(feature = "hydrate") {
         spawn_local(async move {
             let Some(my_uuid) = user.await.ok().flatten().map(|u| u.id) else {
@@ -144,11 +147,29 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                 return;
             };
 
-            let _ = tx_join.unbounded_send(GameClientMessage::UserJoined { game_id });
+            // Reconnect loop. Mobile Safari/Opera (and any backgrounded tab)
+            // kills idle WebSockets; without this the user reconnects to a
+            // dead WS and never sees subsequent moves or the GameOver event.
+            // Each iteration creates a fresh (tx, rx) pair, parks the tx in
+            // current_tx (visible to `send` / `on_move`), sends UserJoined as
+            // the first message, then drains the broadcast stream until it
+            // ends or errors. Exponential backoff in case the server is down.
+            let mut backoff_ms: u32 = 500;
+            loop {
+                let (tx, rx) = mpsc::unbounded::<GameClientMessage>();
+                current_tx.set_value(Some(tx.clone()));
+                if tx
+                    .unbounded_send(GameClientMessage::UserJoined { game_id })
+                    .is_err()
+                {
+                    // tx dropped before we could send — unrecoverable from here.
+                    return;
+                }
 
-            match game_websocket(rx.map(Ok).into()).await {
-                Ok(mut messages) => {
-                    while let Some(msg) = messages.next().await {
+                match game_websocket(rx.map(Ok).into()).await {
+                    Ok(mut messages) => {
+                        backoff_ms = 500; // reset after a successful connect
+                        while let Some(msg) = messages.next().await {
                         let Ok(msg) = msg else { continue };
                         match msg {
                             GameServerMessage::UserJoined {
@@ -233,18 +254,31 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                             }
                             GameServerMessage::Chat { user: _, text: _ } => {}
                             GameServerMessage::GameOver { winner, reason } => {
-                                match reason {
+                                let outcome = match reason {
                                     GameOverReason::Abort
                                     | GameOverReason::Checkmate
                                     | GameOverReason::Timeout
-                                    | GameOverReason::Resignation => set_game_result.set(Some(
-                                        Outcome::Known(KnownOutcome::Decisive {
-                                            winner: winner.unwrap().into(),
-                                        }),
-                                    )),
-                                    GameOverReason::Draw => set_game_result
-                                        .set(Some(Outcome::Known(KnownOutcome::Draw))),
-                                }
+                                    | GameOverReason::Resignation => {
+                                        // Defensive: a decisive reason without a winner is a
+                                        // server bug. Fall back to the side opposite the
+                                        // current turn so the modal still renders something
+                                        // sensible instead of panicking the whole WS loop.
+                                        let w = match winner {
+                                            Some(w) => w,
+                                            None => {
+                                                leptos::logging::warn!(
+                                                    "GameOver missing winner for decisive reason"
+                                                );
+                                                shared::Side::from(
+                                                    position.get_untracked().turn().other(),
+                                                )
+                                            }
+                                        };
+                                        Outcome::Known(KnownOutcome::Decisive { winner: w.into() })
+                                    }
+                                    GameOverReason::Draw => Outcome::Known(KnownOutcome::Draw),
+                                };
+                                set_game_result.set(Some(outcome));
                                 let my_side = player_role
                                     .get_untracked()
                                     .and_then(|r| r.color())
@@ -298,7 +332,17 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                         }
                     }
                 }
-                Err(e) => leptos::logging::warn!("websocket error: {e}"),
+                    Err(e) => {
+                        leptos::logging::warn!("websocket error: {e}");
+                    }
+                }
+
+                // The connection ended. Drop our reference to the dead tx so
+                // any callbacks that fire mid-disconnect become silent no-ops
+                // instead of pushing into a void.
+                current_tx.set_value(None);
+                gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
+                backoff_ms = (backoff_ms * 2).min(30_000);
             }
         });
     }

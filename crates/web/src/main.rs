@@ -40,14 +40,15 @@ async fn main() {
         .expect("failed to install rustls crypto provider");
 
     tracing_subscriber::registry()
-        .with(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "web=debug,tower_http=info".parse().unwrap()),
-        )
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            "web=debug,tower_http=info"
+                .parse()
+                .expect("hardcoded EnvFilter must parse")
+        }))
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let conf = get_configuration(None).unwrap();
+    let conf = get_configuration(None).expect("failed to load Leptos configuration");
     let addr = conf.leptos_options.site_addr;
     let leptos_options = conf.leptos_options;
 
@@ -60,10 +61,10 @@ async fn main() {
         .test_before_acquire(true)
         .connect(&std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"))
         .await
-        .unwrap();
+        .expect("failed to connect to Postgres");
 
     let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
-    let redis_config = Config::from_url(&redis_url).unwrap();
+    let redis_config = Config::from_url(&redis_url).expect("invalid REDIS_URL");
     let redis_conn_cfg = ConnectionConfig {
         connection_timeout: Duration::from_secs(10),
         internal_command_timeout: Duration::from_secs(10),
@@ -77,9 +78,12 @@ async fn main() {
         Some(redis_policy),
         6,
     )
-    .unwrap();
+    .expect("failed to build Redis pool");
     redis.connect();
-    redis.wait_for_connect().await.unwrap();
+    redis
+        .wait_for_connect()
+        .await
+        .expect("Redis pool failed initial connect");
     let session_store = RedisStore::new(redis.clone());
     let env = std::env::var("ENV").expect("ENV must be set to 'development' or 'production'");
     let is_prod = env == "production";
@@ -239,13 +243,15 @@ async fn main() {
     let app = app.with_state(app_state);
 
     info!("listening on http://{}", &addr);
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .expect("failed to bind site_addr");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await
-    .unwrap();
+    .expect("axum::serve exited with error");
 }
 
 #[cfg(not(feature = "ssr"))]

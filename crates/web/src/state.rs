@@ -126,9 +126,15 @@ const FIND_PAIR_SCRIPT: &str = include_str!("matchmaking/find_pair.lua");
 impl RedisClient {
     pub async fn new(pool: fred::clients::Pool) -> Self {
         let hash = fred::util::sha1_hash(FIND_PAIR_SCRIPT);
-        let exists: Vec<bool> = pool.script_exists(&hash).await.unwrap();
+        let exists: Vec<bool> = pool
+            .script_exists(&hash)
+            .await
+            .expect("SCRIPT EXISTS on Redis failed at startup");
         if !exists.first().copied().unwrap_or(false) {
-            let _: () = pool.script_load(FIND_PAIR_SCRIPT).await.unwrap();
+            let _: () = pool
+                .script_load(FIND_PAIR_SCRIPT)
+                .await
+                .expect("SCRIPT LOAD on Redis failed at startup");
         }
 
         Self { pool, hash }

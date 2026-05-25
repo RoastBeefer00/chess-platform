@@ -1,12 +1,13 @@
 use leptos::{html::Img, prelude::*};
 #[cfg(feature = "hydrate")]
 use leptos_use::UseDraggableReturn;
-#[cfg(feature = "hydrate")]
-use shakmaty::Chess as _;
 use shakmaty::{Color, Piece, Square};
+#[cfg(feature = "hydrate")]
 use shared::PlayerRole;
 
-use crate::components::{move_target, BoardPerspective};
+#[cfg(feature = "hydrate")]
+use crate::components::move_target;
+use crate::components::BoardPerspective;
 
 #[component]
 pub fn Square(
@@ -15,6 +16,7 @@ pub fn Square(
     piece: Signal<Option<Piece>>,
     perspective: Signal<BoardPerspective>,
 ) -> impl IntoView {
+    #[cfg(feature = "hydrate")]
     let player_role = expect_context::<ReadSignal<Option<PlayerRole>>>();
     let valid_move_targets = expect_context::<Signal<Vec<shakmaty::Square>>>();
     let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
@@ -28,6 +30,7 @@ pub fn Square(
     let can_drag_piece = expect_context::<Callback<shakmaty::Piece, bool>>();
     let premoves_ctx = use_context::<RwSignal<Vec<(shakmaty::Square, shakmaty::Square)>>>();
 
+    #[cfg(feature = "hydrate")]
     let is_my_turn = Signal::derive(move || {
         use shakmaty::Position as _;
         match player_role.get() {
@@ -106,41 +109,58 @@ pub fn Square(
                 })
                 .on_end(move |args: UseDraggableCallbackArgs| {
                     let (x, y) = (args.event.client_x() as f32, args.event.client_y() as f32);
-                    let dom_element = web_sys::window()
-                        .unwrap()
-                        .document()
-                        .unwrap()
-                        .element_from_point(x, y)
-                        .unwrap();
 
-                    let data = dom_element.closest("[data-square]").unwrap();
-                    if let Some(el) = data {
-                        use std::str::FromStr;
+                    // Mobile Safari can produce drops outside the viewport
+                    // (finger lifted off-screen). Every step below can fail
+                    // legitimately; bail with a log instead of panicking the
+                    // drag handler (which would block all future drags).
+                    let Some(window) = web_sys::window() else {
+                        return;
+                    };
+                    let Some(document) = window.document() else {
+                        return;
+                    };
+                    let Some(dom_element) = document.element_from_point(x, y) else {
+                        selected_square.set(None);
+                        return;
+                    };
+                    let Ok(Some(el)) = dom_element.closest("[data-square]") else {
+                        selected_square.set(None);
+                        return;
+                    };
+                    let Some(attr) = el.get_attribute("data-square") else {
+                        selected_square.set(None);
+                        return;
+                    };
 
-                        let attr = el.get_attribute("data-square").unwrap();
-                        if let Ok(dropped_square) = Square::from_str(&attr) {
-                            if valid_move_targets.get().contains(&dropped_square) {
-                                use shakmaty::{Position as _, Role};
-                                let from_sq = selected_square.get_untracked().unwrap();
-                                if is_my_turn.get() {
-                                    let legal = position.get_untracked().legal_moves();
-                                    // For promotions, default to queen
-                                    if let Some(m) = legal.iter().find(|m| {
-                                        m.from() == Some(from_sq)
-                                            && move_target(m) == dropped_square
-                                            && m.promotion().is_none_or(|r| r == Role::Queen)
-                                    }) {
-                                        selected_square.set(None);
-                                        on_move.run(*m);
-                                    }
-                                } else {
-                                    selected_square.set(None);
-                                    on_premove.run((from_sq, dropped_square))
-                                }
-                            }
+                    use std::str::FromStr;
+                    let Ok(dropped_square) = Square::from_str(&attr) else {
+                        selected_square.set(None);
+                        return;
+                    };
+
+                    if !valid_move_targets.get().contains(&dropped_square) {
+                        return;
+                    }
+
+                    use shakmaty::{Position as _, Role};
+                    let Some(from_sq) = selected_square.get_untracked() else {
+                        return;
+                    };
+                    if is_my_turn.get() {
+                        let legal = position.get_untracked().legal_moves();
+                        // For promotions, default to queen
+                        if let Some(m) = legal.iter().find(|m| {
+                            m.from() == Some(from_sq)
+                                && move_target(m) == dropped_square
+                                && m.promotion().is_none_or(|r| r == Role::Queen)
+                        }) {
+                            selected_square.set(None);
+                            on_move.run(*m);
                         }
                     } else {
-                        leptos::logging::log!("dropped outside of board");
+                        selected_square.set(None);
+                        on_premove.run((from_sq, dropped_square));
                     }
                 }),
         )
@@ -157,7 +177,7 @@ pub fn Square(
     #[cfg(not(feature = "hydrate"))]
     let (is_dragging, style, drag_size) = (
         Signal::derive(|| false),
-        Signal::derive(|| String::new()),
+        Signal::derive(String::new),
         Signal::derive(|| (0.0_f64, 0.0_f64)),
     );
 
@@ -205,12 +225,12 @@ pub fn Square(
     view! {
         <div
             class="relative w-full h-full select-none touch-none"
-            class:bg-white=move || (rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
-            class:bg-green-800=move || !(rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
-            class:bg-green-300=move || (rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
-            class:bg-green-600=move || !(rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
-            class:bg-gray-300=move || (rank + file).is_multiple_of(2) && is_premove_square.get()
-            class:bg-gray-500=move || !(rank + file).is_multiple_of(2) && is_premove_square.get()
+            class:bg-white=move || !(rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
+            class:bg-green-800=move || (rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
+            class:bg-green-300=move || !(rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
+            class:bg-green-600=move || (rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
+            class:bg-gray-300=move || !(rank + file).is_multiple_of(2) && is_premove_square.get()
+            class:bg-gray-500=move || (rank + file).is_multiple_of(2) && is_premove_square.get()
             data-square=format!("{}{}", file_to_char(file), rank_to_char(rank))
             on:click=on_click
         >
