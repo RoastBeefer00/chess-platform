@@ -46,6 +46,9 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     let rematch_state = RwSignal::new(RematchState::Idle);
     let draw_offer_state = RwSignal::new(DrawOfferState::Idle);
     let searching = RwSignal::new(None::<(shared::TimeControl, shared::RatingMode)>);
+    // First click on resign arms the button; second click within 3s sends.
+    // Shared between desktop side-panel and mobile inline-row buttons.
+    let confirming_resign = RwSignal::new(false);
     let send = Callback::new(move |msg: GameClientMessage| {
         #[cfg(feature = "hydrate")]
         current_tx.with_value(|opt| {
@@ -56,6 +59,22 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         #[cfg(not(feature = "hydrate"))]
         let _ = msg;
     });
+
+    let resign_click = move |_| {
+        if confirming_resign.get_untracked() {
+            send.run(GameClientMessage::Resign);
+            confirming_resign.set(false);
+        } else {
+            confirming_resign.set(true);
+            #[cfg(feature = "hydrate")]
+            leptos::task::spawn_local(async move {
+                gloo_timers::future::TimeoutFuture::new(3_000).await;
+                if confirming_resign.get_untracked() {
+                    confirming_resign.set(false);
+                }
+            });
+        }
+    };
 
     let (position, set_position) = signal(shakmaty::Chess::default());
     let (viewing_ply, set_viewing_ply) = signal(None::<usize>);
@@ -606,11 +625,18 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     </button>
                                 </Show>
                                 <button
-                                    on:click=move |_| send.run(GameClientMessage::Resign)
-                                    title="Resign"
-                                    class="px-2 py-1 text-xs font-medium text-red-400 border border-red-900 rounded hover:border-red-700 hover:text-red-300 transition-colors cursor-pointer"
+                                    on:click=resign_click
+                                    title=move || if confirming_resign.get() { "Click again to confirm" } else { "Resign" }
+                                    class="px-2 py-1 text-xs font-medium border rounded transition-colors cursor-pointer whitespace-nowrap"
+                                    class:text-red-400=move || !confirming_resign.get()
+                                    class:border-red-900=move || !confirming_resign.get()
+                                    class:hover:border-red-700=move || !confirming_resign.get()
+                                    class:hover:text-red-300=move || !confirming_resign.get()
+                                    class:bg-red-700=move || confirming_resign.get()
+                                    class:border-red-700=move || confirming_resign.get()
+                                    class:text-white=move || confirming_resign.get()
                                 >
-                                    "⚑"
+                                    {move || if confirming_resign.get() { "Sure?" } else { "⚑" }}
                                 </button>
                             </div>
                         </Show>
@@ -707,12 +733,19 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     }.into_any(),
                                 }}
                                 <button
-                                    on:click=move |_| send.run(GameClientMessage::Resign)
-                                    title="Resign"
-                                    aria-label="Resign"
-                                    class="flex-1 px-2 py-1.5 text-base font-medium text-red-400 border border-red-900 rounded hover:border-red-700 hover:text-red-300 transition-colors cursor-pointer"
+                                    on:click=resign_click
+                                    title=move || if confirming_resign.get() { "Click again to confirm" } else { "Resign" }
+                                    aria-label=move || if confirming_resign.get() { "Confirm resign" } else { "Resign" }
+                                    class="flex-1 px-2 py-1.5 text-base font-medium border rounded transition-colors cursor-pointer whitespace-nowrap"
+                                    class:text-red-400=move || !confirming_resign.get()
+                                    class:border-red-900=move || !confirming_resign.get()
+                                    class:hover:border-red-700=move || !confirming_resign.get()
+                                    class:hover:text-red-300=move || !confirming_resign.get()
+                                    class:bg-red-700=move || confirming_resign.get()
+                                    class:border-red-700=move || confirming_resign.get()
+                                    class:text-white=move || confirming_resign.get()
                                 >
-                                    "⚑"
+                                    {move || if confirming_resign.get() { "Sure?" } else { "⚑" }}
                                 </button>
                             </div>
                         </div>

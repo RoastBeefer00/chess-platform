@@ -3,6 +3,13 @@ use server_fn::{codec::JsonEncoding, BoxedStream, Websocket};
 use shared::{Category, MatchmakingClientMessage, MatchmakingServerMessage};
 use uuid::Uuid;
 
+/// Rating window for matchmaking pairing (±points). Wider = matches faster
+/// but less skill-balanced. Lichess uses adaptive widening starting around
+/// ±50; we hardcode a single wider window for now since concurrent users
+/// are low. Revisit when queue depth grows.
+#[cfg(feature = "ssr")]
+const RATING_WINDOW: u32 = 500;
+
 #[server]
 pub async fn get_user_rating(id: Uuid, category: Category) -> Result<u32, ServerFnError> {
     use crate::state::AppState;
@@ -26,10 +33,17 @@ pub async fn matchmaking_websocket(
     use tokio_stream::StreamExt as _;
 
     let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
-    let player_id = auth
+    let user = auth
         .user
-        .ok_or_else(|| ServerFnError::new("unauthenticated"))?
-        .id;
+        .ok_or_else(|| ServerFnError::new("unauthenticated"))?;
+    // Defense in depth: the home page redirects no-username users to the
+    // onboarding form before they can click matchmaking, but a hand-crafted
+    // WS request could still try. Without this gate, a no-username user gets
+    // queued and their opponent ends up in a game against "Anonymous".
+    if user.username.is_none() {
+        return Err(ServerFnError::new("complete onboarding first"));
+    }
+    let player_id = user.id;
     let state = expect_context::<AppState>();
 
     let (tx, rx) =
@@ -83,7 +97,7 @@ pub async fn matchmaking_websocket(
 
             match state
                 .redis_client
-                .find_pair(&key, player_id, player_rating, 100)
+                .find_pair(&key, player_id, player_rating, RATING_WINDOW)
                 .await
             {
                 Err(e) => {
