@@ -270,15 +270,15 @@ pub fn Square(
             <Show when=move || perspective.get() == BoardPerspective::White && rank == 0 || perspective.get() == BoardPerspective::Black && rank == 7>
                 <span
                     class="absolute bottom-0 left-0.5 font-bold text-sm"
-                    class:text-white=move || !(rank + file).is_multiple_of(2)
-                    class:text-green-800=move || (rank + file).is_multiple_of(2)
+                    class:text-white=move || (rank + file).is_multiple_of(2)
+                    class:text-green-800=move || !(rank + file).is_multiple_of(2)
                 >{file_to_char(file)}</span>
             </Show>
             <Show when=move || perspective.get() == BoardPerspective::White && file == 7 || perspective.get() == BoardPerspective::Black && file == 0>
                 <span
                     class="absolute top-0 right-0.5 font-bold text-sm"
-                    class:text-white=move || !(rank + file).is_multiple_of(2)
-                    class:text-green-800=move || (rank + file).is_multiple_of(2)
+                    class:text-white=move || (rank + file).is_multiple_of(2)
+                    class:text-green-800=move || !(rank + file).is_multiple_of(2)
                 >{rank_to_char(rank)}</span>
             </Show>
         </div>
