@@ -33,7 +33,10 @@ pub fn GameOverModal(
     let card_ref = NodeRef::<Div>::new();
 
     #[cfg(feature = "hydrate")]
-    leptos_use::on_click_outside(card_ref, move |_| on_close.run(()));
+    {
+        let stop = leptos_use::on_click_outside(card_ref, move |_| on_close.run(()));
+        on_cleanup(stop);
+    }
 
     #[cfg(feature = "hydrate")]
     Effect::new(move || {

@@ -1,4 +1,3 @@
-use crate::game_room::TimeoutPlan;
 use shakmaty::KnownOutcome;
 use shared::{messages::GameOverReason, Category, GameStatus, Side};
 use sqlx::PgPool;
@@ -35,6 +34,7 @@ impl GameStore {
         Self { pool }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(
         skip(self),
         fields(game_id = %id, white = %white_id, black = %black_id, ?category, rated)

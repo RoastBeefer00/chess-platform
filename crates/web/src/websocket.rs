@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use server_fn::{codec::JsonEncoding, BoxedStream, Websocket};
-use shared::{GameClientMessage, GameServerMessage, PlayerRole};
+use shared::{GameClientMessage, GameServerMessage};
 
 #[server(protocol = Websocket<JsonEncoding, JsonEncoding>)]
 pub async fn game_websocket(
@@ -14,6 +14,7 @@ pub async fn game_websocket(
     use futures::StreamExt;
     use shakmaty::Position as _;
     use shared::messages::GameOverReason;
+    use shared::PlayerRole;
     use tokio_stream::wrappers::BroadcastStream;
 
     let mut input = input;
@@ -66,6 +67,7 @@ pub async fn game_websocket(
             black_ms_left,
             turn,
             clock_running,
+            finished_replay,
             receiver,
         ) = {
             use shakmaty::fen::Fen;
@@ -74,15 +76,33 @@ pub async fn game_websocket(
             let fen =
                 Fen::from_position(&gr.get_position(), shakmaty::EnPassantMode::Legal).to_string();
 
+            // If the game already finished, capture the outcome+reason so we can
+            // replay GameOver to this reconnecting client (mobile WS suspension
+            // commonly causes the original broadcast to be missed).
+            let finished_replay: Option<(Option<shared::Side>, GameOverReason)> = match &gr.status {
+                shared::GameStatus::Finished(shakmaty::Outcome::Known(known)) => {
+                    let winner = match known {
+                        shakmaty::KnownOutcome::Decisive { winner } => Some(shared::Side::from(*winner)),
+                        shakmaty::KnownOutcome::Draw => None,
+                    };
+                    let reason = gr.end_reason.clone().unwrap_or(GameOverReason::Draw);
+                    Some((winner, reason))
+                }
+                _ => None,
+            };
+
             // Compute live remaining time for the side-to-move (their clock has
-            // been ticking since last_move_at on the server).
+            // been ticking since last_move_at on the server). Skip when the game
+            // is finished — the stored values are already the final snapshot.
             let mut white_ms = gr.game.white_ms_left;
             let mut black_ms = gr.game.black_ms_left;
-            if let Some(last) = gr.last_move_at {
-                let elapsed = Instant::now().duration_since(last).as_millis() as i64;
-                match gr.game.position.turn() {
-                    shakmaty::Color::White => white_ms = (white_ms - elapsed).max(0),
-                    shakmaty::Color::Black => black_ms = (black_ms - elapsed).max(0),
+            if finished_replay.is_none() {
+                if let Some(last) = gr.last_move_at {
+                    let elapsed = Instant::now().duration_since(last).as_millis() as i64;
+                    match gr.game.position.turn() {
+                        shakmaty::Color::White => white_ms = (white_ms - elapsed).max(0),
+                        shakmaty::Color::Black => black_ms = (black_ms - elapsed).max(0),
+                    }
                 }
             }
 
@@ -92,7 +112,8 @@ pub async fn game_websocket(
                 white_ms,
                 black_ms,
                 gr.game.position.turn().into(),
-                gr.last_move_at.is_some(),
+                finished_replay.is_none() && gr.last_move_at.is_some(),
+                finished_replay,
                 gr.subscribe(),
             )
         };
@@ -115,6 +136,10 @@ pub async fn game_websocket(
             sent_at_ms,
             clock_running,
         }));
+
+        if let Some((winner, reason)) = finished_replay {
+            let _ = tx.unbounded_send(Ok(GameServerMessage::GameOver { winner, reason }));
+        }
 
         let mut broadcast = BroadcastStream::new(receiver);
         let tx2 = tx.clone();

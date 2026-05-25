@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -56,13 +56,21 @@ pub enum MoveOutcome {
 pub struct GameRoom {
     pub game: Game,
     pub status: GameStatus,
-    connected: HashSet<Uuid>,
+    /// Refcounted set of connected users. Multiple WebSocket sessions per user
+    /// (e.g. laptop + phone for the same account) each `add_player` on connect
+    /// and `remove_player` on disconnect; the user only counts as "left" when
+    /// the count reaches zero.
+    connected: HashMap<Uuid, u32>,
     tx: Sender<GameServerMessage>,
     pub last_move_at: Option<Instant>,
     pub timeout_task: Option<JoinHandle<()>>,
     pub rematch_offer: Option<Uuid>,
     pub draw_offer: Option<Uuid>,
     pub move_history: Vec<String>,
+    /// Set when `end_game` runs; allows the websocket join handler to replay
+    /// the `GameOver` event to a client that reconnects after the game
+    /// finished (otherwise they'd see a frozen board with no modal).
+    pub end_reason: Option<GameOverReason>,
 }
 
 impl GameRoom {
@@ -71,13 +79,14 @@ impl GameRoom {
         GameRoom {
             game,
             status: GameStatus::WaitingForOpponent,
-            connected: HashSet::new(),
+            connected: HashMap::new(),
             tx,
             last_move_at: None,
             timeout_task: None,
             rematch_offer: None,
             draw_offer: None,
             move_history: Vec::new(),
+            end_reason: None,
         }
     }
 
@@ -89,6 +98,7 @@ impl GameRoom {
         let _ = self.tx.send(msg);
     }
 
+    /// Number of distinct connected users (not number of sessions).
     pub fn player_count(&self) -> usize {
         self.connected.len()
     }
@@ -100,17 +110,17 @@ impl GameRoom {
     #[instrument(skip(self))]
     pub fn add_player(&mut self, player_id: Uuid) -> PlayerRole {
         let role = if player_id == self.game.white_player {
-            self.connected.insert(player_id);
+            *self.connected.entry(player_id).or_insert(0) += 1;
             PlayerRole::Player(Color::White.into())
         } else if player_id == self.game.black_player {
-            self.connected.insert(player_id);
+            *self.connected.entry(player_id).or_insert(0) += 1;
             PlayerRole::Player(Color::Black.into())
         } else {
             PlayerRole::Spectator
         };
 
-        if self.connected.contains(&self.game.white_player)
-            && self.connected.contains(&self.game.black_player)
+        if self.connected.contains_key(&self.game.white_player)
+            && self.connected.contains_key(&self.game.black_player)
         {
             self.status = GameStatus::Ongoing;
         }
@@ -118,9 +128,16 @@ impl GameRoom {
         role
     }
 
+    /// Decrement the session count for this user; remove the entry when it
+    /// hits zero. Safe to call for unknown UUIDs (spectators) — it's a no-op.
     #[instrument(skip(self))]
     pub fn remove_player(&mut self, id: Uuid) {
-        self.connected.remove(&id);
+        if let Some(count) = self.connected.get_mut(&id) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.connected.remove(&id);
+            }
+        }
     }
 
     pub fn current_player(&self) -> Option<Uuid> {
@@ -129,7 +146,7 @@ impl GameRoom {
             Color::Black => self.game.black_player,
         };
         // Only consider it "their turn" if they're actually connected.
-        self.connected.contains(&id).then_some(id)
+        self.connected.contains_key(&id).then_some(id)
     }
 
     #[instrument(skip(self))]
@@ -159,6 +176,7 @@ impl GameRoom {
             return None;
         }
         self.status = GameStatus::Finished(Outcome::Known(outcome));
+        self.end_reason = Some(reason.clone());
 
         // Push the final clock snapshot so clients display the true ending values
         // (e.g. 0.0 for the side that flagged) instead of whatever their local

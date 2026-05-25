@@ -1,7 +1,7 @@
-pub mod matchmaking;
+pub mod search;
 pub mod start;
 pub mod websocket;
 
-pub use matchmaking::*;
+pub use search::*;
 pub use start::*;
 pub use websocket::*;
