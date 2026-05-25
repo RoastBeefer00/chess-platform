@@ -21,7 +21,7 @@ pub fn Square(
     let valid_move_targets = expect_context::<Signal<Vec<shakmaty::Square>>>();
     let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
     let last_move = expect_context::<RwSignal<Option<(shakmaty::Square, shakmaty::Square)>>>();
-    let position = expect_context::<ReadSignal<shakmaty::Chess>>();
+    let position = expect_context::<Signal<shakmaty::Chess>>();
     #[cfg(feature = "hydrate")]
     let on_move = expect_context::<Callback<shakmaty::Move>>();
     #[cfg(feature = "hydrate")]

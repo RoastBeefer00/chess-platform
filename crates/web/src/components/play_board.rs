@@ -1,5 +1,8 @@
 use leptos::prelude::*;
-use shakmaty::{Color, KnownOutcome, Outcome, Position as _};
+#[cfg(feature = "hydrate")]
+use shakmaty::KnownOutcome;
+use shakmaty::{Color, Outcome, Position as _};
+#[cfg(feature = "hydrate")]
 use shared::messages::GameOverReason;
 use shared::PlayerRole;
 use uuid::Uuid;
@@ -11,43 +14,52 @@ enum DrawOfferState {
     OfferedToUs,
 }
 
+#[cfg(feature = "hydrate")]
+use crate::components::move_target;
 use crate::components::{
-    move_target, use_current_user, BoardPerspective, BoardUser, ChessBoard, Clock, GameOverModal,
-    MatchmakingModal, RematchState,
+    BoardPerspective, BoardUser, ChessBoard, Clock, GameOverModal, MatchmakingModal, MovesPanel,
+    RematchState,
 };
 use crate::game::get_game_info;
 use crate::sound::{self, sfx};
 
 #[component]
+#[cfg_attr(not(feature = "hydrate"), allow(unused_variables))]
 pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
+    #[cfg(feature = "hydrate")]
     use futures::channel::mpsc;
-    use futures::StreamExt;
-    use leptos::task::spawn_local;
-    use shakmaty::fen::Fen;
-    use shared::{GameClientMessage, GameServerMessage};
-
-    use crate::websocket::game_websocket;
-
-    let user = use_current_user();
+    use shared::GameClientMessage;
 
     // Holds the sender for the current websocket connection. Replaced on every
     // reconnect — so `send` / `on_move` dispatch through whichever connection
     // is currently live. Mobile Safari kills backgrounded WebSockets within
     // ~30s, so this is the load-bearing piece for the reconnect loop below.
-    let current_tx: StoredValue<Option<mpsc::UnboundedSender<GameClientMessage>>, LocalStorage> =
-        StoredValue::new_local(None);
+    //
+    // Gated to hydrate-only because LocalStorage wraps in SendWrapper, which
+    // panics on drop if dropped from a different thread than it was created
+    // on. Under multi-threaded tokio SSR that fires every render.
+    #[cfg(feature = "hydrate")]
+    let current_tx: StoredValue<
+        Option<mpsc::UnboundedSender<GameClientMessage>>,
+        LocalStorage,
+    > = StoredValue::new_local(None);
     let rematch_state = RwSignal::new(RematchState::Idle);
     let draw_offer_state = RwSignal::new(DrawOfferState::Idle);
     let searching = RwSignal::new(None::<(shared::TimeControl, shared::RatingMode)>);
     let send = Callback::new(move |msg: GameClientMessage| {
+        #[cfg(feature = "hydrate")]
         current_tx.with_value(|opt| {
             if let Some(tx) = opt {
                 let _ = tx.unbounded_send(msg);
             }
         });
+        #[cfg(not(feature = "hydrate"))]
+        let _ = msg;
     });
 
     let (position, set_position) = signal(shakmaty::Chess::default());
+    let (viewing_ply, set_viewing_ply) = signal(None::<usize>);
+    let (move_history, set_move_history) = signal(Vec::<String>::new());
     let last_move = RwSignal::new(None::<(shakmaty::Square, shakmaty::Square)>);
     let premoves = RwSignal::new(Vec::<(shakmaty::Square, shakmaty::Square)>::new());
     let (player_role, set_player_role) = signal(None::<PlayerRole>);
@@ -90,6 +102,27 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             BoardPerspective::Black => Color::Black,
         };
         turn == bottom_color
+    });
+    let display_position = Signal::derive(move || {
+        match viewing_ply.get() {
+            None => position.get(), // live
+            Some(target_ply) => {
+                use shakmaty::{uci::UciMove, Chess};
+
+                let history = move_history.get();
+                let mut pos = Chess::default();
+                for uci_str in history.iter().take(target_ply) {
+                    if let Ok(uci) = uci_str.parse::<UciMove>() {
+                        if let Ok(mv) = uci.to_move(&pos) {
+                            if let Ok(next) = pos.clone().play(mv) {
+                                pos = next;
+                            }
+                        }
+                    }
+                }
+                pos
+            }
+        }
     });
 
     // on_move: gate by turn ownership, apply optimistically, send to server via WS.
@@ -140,7 +173,16 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             .is_some_and(|c| c == p.color)
     });
 
-    if cfg!(feature = "hydrate") {
+    #[cfg(feature = "hydrate")]
+    {
+        use crate::components::use_current_user;
+        use crate::websocket::game_websocket;
+        use futures::StreamExt;
+        use leptos::task::spawn_local;
+        use shakmaty::fen::Fen;
+        use shared::GameServerMessage;
+
+        let user = use_current_user();
         spawn_local(async move {
             let Some(my_uuid) = user.await.ok().flatten().map(|u| u.id) else {
                 leptos::logging::warn!("PlayBoard mounted without authenticated user");
@@ -170,168 +212,175 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     Ok(mut messages) => {
                         backoff_ms = 500; // reset after a successful connect
                         while let Some(msg) = messages.next().await {
-                        let Ok(msg) = msg else { continue };
-                        match msg {
-                            GameServerMessage::UserJoined {
-                                uuid,
-                                position_fen,
-                                player_role: role,
-                            } => {
-                                if let Ok(fen) = position_fen.parse::<Fen>() {
-                                    if let Ok(chess) = fen.into_position::<shakmaty::Chess>(
-                                        shakmaty::CastlingMode::Standard,
-                                    ) {
-                                        set_position.set(chess);
+                            let Ok(msg) = msg else { continue };
+                            match msg {
+                                GameServerMessage::UserJoined {
+                                    uuid,
+                                    position_fen,
+                                    player_role: role,
+                                    moves,
+                                } => {
+                                    if let Ok(fen) = position_fen.parse::<Fen>() {
+                                        if let Ok(chess) = fen.into_position::<shakmaty::Chess>(
+                                            shakmaty::CastlingMode::Standard,
+                                        ) {
+                                            set_position.set(chess);
+                                        }
+                                    }
+                                    if Some(uuid) == user.await.ok().flatten().map(|u| u.id)
+                                        && player_role.get_untracked().is_none()
+                                    {
+                                        set_player_role.set(Some(role));
+                                        set_move_history.set(moves);
+                                        sound::play(sfx::GAME_START);
                                     }
                                 }
-                                if Some(uuid) == user.await.ok().flatten().map(|u| u.id)
-                                    && player_role.get_untracked().is_none()
-                                {
-                                    set_player_role.set(Some(role));
-                                    sound::play(sfx::GAME_START);
-                                }
-                            }
-                            GameServerMessage::UserLeft { username: _ } => {}
-                            GameServerMessage::MoveMade {
-                                uci,
-                                white_ms_left,
-                                black_ms_left,
-                                turn: _,
-                                sent_at_ms: server_sent_at,
-                            } => {
-                                use shakmaty::{uci::UciMove, Position as _};
-                                white_ms.set(white_ms_left);
-                                black_ms.set(black_ms_left);
-                                sent_at_ms.set(server_sent_at);
-                                clock_running.set(true);
-                                if let Ok(uci_move) = uci.parse::<UciMove>() {
-                                    if let Ok(m) = uci_move.to_move(&position.get_untracked()) {
-                                        if let Some(from) = m.from() {
-                                            last_move.set(Some((from, m.to())));
-                                        }
-                                        let is_capture = m.is_capture();
-                                        set_position.update(|pos| {
-                                            if let Ok(new_pos) = pos.clone().play(m) {
-                                                *pos = new_pos;
+                                GameServerMessage::UserLeft { username: _ } => {}
+                                GameServerMessage::MoveMade {
+                                    uci,
+                                    white_ms_left,
+                                    black_ms_left,
+                                    turn: _,
+                                    sent_at_ms: server_sent_at,
+                                } => {
+                                    use shakmaty::{uci::UciMove, Position as _};
+                                    white_ms.set(white_ms_left);
+                                    black_ms.set(black_ms_left);
+                                    sent_at_ms.set(server_sent_at);
+                                    clock_running.set(true);
+                                    set_move_history.update(|history| history.push(uci.clone()));
+
+                                    if let Ok(uci_move) = uci.parse::<UciMove>() {
+                                        if let Ok(m) = uci_move.to_move(&position.get_untracked()) {
+                                            if let Some(from) = m.from() {
+                                                last_move.set(Some((from, m.to())));
                                             }
-                                        });
-                                        let new_pos = position.get_untracked();
-                                        let sound_src =
-                                            if matches!(new_pos.outcome(), Outcome::Known(_)) {
-                                                sfx::CHECKMATE
-                                            } else if new_pos.is_check() {
-                                                sfx::CHECK
-                                            } else if is_capture {
-                                                sfx::CAPTURE
-                                            } else {
-                                                sfx::MOVE
-                                            };
-                                        sound::play(sound_src);
+                                            let is_capture = m.is_capture();
+                                            set_position.update(|pos| {
+                                                if let Ok(new_pos) = pos.clone().play(m) {
+                                                    *pos = new_pos;
+                                                }
+                                            });
+                                            let new_pos = position.get_untracked();
+                                            let sound_src =
+                                                if matches!(new_pos.outcome(), Outcome::Known(_)) {
+                                                    sfx::CHECKMATE
+                                                } else if new_pos.is_check() {
+                                                    sfx::CHECK
+                                                } else if is_capture {
+                                                    sfx::CAPTURE
+                                                } else {
+                                                    sfx::MOVE
+                                                };
+                                            sound::play(sound_src);
+                                        }
                                     }
-                                }
-                                let is_my_turn = player_role
-                                    .get_untracked()
-                                    .and_then(|r| r.color())
-                                    .is_some_and(|c| c == position.get_untracked().turn());
-                                if is_my_turn {
-                                    let mut queue = premoves.get_untracked();
-                                    if let Some((from, to)) = queue.first().copied() {
-                                        use shakmaty::{Position as _, Role};
-                                        let legal = position.get_untracked().legal_moves();
-                                        if let Some(m) = legal.iter().find(|m| {
-                                            m.from() == Some(from)
-                                                && move_target(m) == to
-                                                && m.promotion().is_none_or(|r| r == Role::Queen)
-                                        }) {
-                                            queue.remove(0);
-                                            premoves.set(queue);
-                                            on_move.run(*m);
-                                        } else {
-                                            premoves.set(vec![]);
+                                    let is_my_turn = player_role
+                                        .get_untracked()
+                                        .and_then(|r| r.color())
+                                        .is_some_and(|c| c == position.get_untracked().turn());
+                                    if is_my_turn {
+                                        let mut queue = premoves.get_untracked();
+                                        if let Some((from, to)) = queue.first().copied() {
+                                            use shakmaty::{Position as _, Role};
+                                            let legal = position.get_untracked().legal_moves();
+                                            if let Some(m) = legal.iter().find(|m| {
+                                                m.from() == Some(from)
+                                                    && move_target(m) == to
+                                                    && m.promotion()
+                                                        .is_none_or(|r| r == Role::Queen)
+                                            }) {
+                                                queue.remove(0);
+                                                premoves.set(queue);
+                                                on_move.run(*m);
+                                            } else {
+                                                premoves.set(vec![]);
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            GameServerMessage::Chat { user: _, text: _ } => {}
-                            GameServerMessage::GameOver { winner, reason } => {
-                                let outcome = match reason {
-                                    GameOverReason::Abort
-                                    | GameOverReason::Checkmate
-                                    | GameOverReason::Timeout
-                                    | GameOverReason::Resignation => {
-                                        // Defensive: a decisive reason without a winner is a
-                                        // server bug. Fall back to the side opposite the
-                                        // current turn so the modal still renders something
-                                        // sensible instead of panicking the whole WS loop.
-                                        let w = match winner {
-                                            Some(w) => w,
-                                            None => {
-                                                leptos::logging::warn!(
+                                GameServerMessage::Chat { user: _, text: _ } => {}
+                                GameServerMessage::GameOver { winner, reason } => {
+                                    let outcome = match reason {
+                                        GameOverReason::Abort
+                                        | GameOverReason::Checkmate
+                                        | GameOverReason::Timeout
+                                        | GameOverReason::Resignation => {
+                                            // Defensive: a decisive reason without a winner is a
+                                            // server bug. Fall back to the side opposite the
+                                            // current turn so the modal still renders something
+                                            // sensible instead of panicking the whole WS loop.
+                                            let w = match winner {
+                                                Some(w) => w,
+                                                None => {
+                                                    leptos::logging::warn!(
                                                     "GameOver missing winner for decisive reason"
                                                 );
-                                                shared::Side::from(
-                                                    position.get_untracked().turn().other(),
-                                                )
-                                            }
-                                        };
-                                        Outcome::Known(KnownOutcome::Decisive { winner: w.into() })
+                                                    shared::Side::from(
+                                                        position.get_untracked().turn().other(),
+                                                    )
+                                                }
+                                            };
+                                            Outcome::Known(KnownOutcome::Decisive {
+                                                winner: w.into(),
+                                            })
+                                        }
+                                        GameOverReason::Draw => Outcome::Known(KnownOutcome::Draw),
+                                    };
+                                    set_game_result.set(Some(outcome));
+                                    let my_side = player_role
+                                        .get_untracked()
+                                        .and_then(|r| r.color())
+                                        .map(shared::Side::from);
+                                    let sound_src = match (winner, my_side) {
+                                        (None, _) => sfx::DRAW,
+                                        (Some(w), Some(mine)) if w == mine => sfx::VICTORY,
+                                        (Some(_), Some(_)) => sfx::DEFEAT,
+                                        (Some(_), None) => sfx::MOVE,
+                                    };
+                                    sound::play(sound_src);
+                                    draw_offer_state.set(DrawOfferState::Idle);
+                                    clock_running.set(false);
+                                }
+                                GameServerMessage::ClockSync {
+                                    white_ms_left: w_ms,
+                                    black_ms_left: b_ms,
+                                    turn: _,
+                                    sent_at_ms: server_sent_at,
+                                    clock_running: running,
+                                } => {
+                                    white_ms.set(w_ms);
+                                    black_ms.set(b_ms);
+                                    sent_at_ms.set(server_sent_at);
+                                    clock_running.set(running);
+                                }
+                                GameServerMessage::RematchOffer { from: id } => {
+                                    if id != my_uuid {
+                                        rematch_state.set(RematchState::OfferedToUs);
                                     }
-                                    GameOverReason::Draw => Outcome::Known(KnownOutcome::Draw),
-                                };
-                                set_game_result.set(Some(outcome));
-                                let my_side = player_role
-                                    .get_untracked()
-                                    .and_then(|r| r.color())
-                                    .map(shared::Side::from);
-                                let sound_src = match (winner, my_side) {
-                                    (None, _) => sfx::DRAW,
-                                    (Some(w), Some(mine)) if w == mine => sfx::VICTORY,
-                                    (Some(_), Some(_)) => sfx::DEFEAT,
-                                    (Some(_), None) => sfx::MOVE,
-                                };
-                                sound::play(sound_src);
-                                draw_offer_state.set(DrawOfferState::Idle);
-                                clock_running.set(false);
-                            }
-                            GameServerMessage::ClockSync {
-                                white_ms_left: w_ms,
-                                black_ms_left: b_ms,
-                                turn: _,
-                                sent_at_ms: server_sent_at,
-                                clock_running: running,
-                            } => {
-                                white_ms.set(w_ms);
-                                black_ms.set(b_ms);
-                                sent_at_ms.set(server_sent_at);
-                                clock_running.set(running);
-                            }
-                            GameServerMessage::RematchOffer { from: id } => {
-                                if id != my_uuid {
-                                    rematch_state.set(RematchState::OfferedToUs);
                                 }
-                            }
-                            GameServerMessage::RematchAccept { new_game_id } => {
-                                let url = format!("/game/{new_game_id}");
-                                let _ = web_sys::window()
-                                    .and_then(|w| w.location().set_href(&url).ok());
-                            }
-                            GameServerMessage::RematchDecline => {
-                                rematch_state.set(RematchState::Declined);
-                            }
-                            GameServerMessage::RematchCancel => {
-                                rematch_state.set(RematchState::Idle);
-                            }
-                            GameServerMessage::DrawOffer { from: id } => {
-                                if id != my_uuid {
-                                    draw_offer_state.set(DrawOfferState::OfferedToUs);
+                                GameServerMessage::RematchAccept { new_game_id } => {
+                                    let url = format!("/game/{new_game_id}");
+                                    let _ = web_sys::window()
+                                        .and_then(|w| w.location().set_href(&url).ok());
                                 }
-                            }
-                            GameServerMessage::DrawDecline => {
-                                draw_offer_state.set(DrawOfferState::Idle);
+                                GameServerMessage::RematchDecline => {
+                                    rematch_state.set(RematchState::Declined);
+                                }
+                                GameServerMessage::RematchCancel => {
+                                    rematch_state.set(RematchState::Idle);
+                                }
+                                GameServerMessage::DrawOffer { from: id } => {
+                                    if id != my_uuid {
+                                        draw_offer_state.set(DrawOfferState::OfferedToUs);
+                                    }
+                                }
+                                GameServerMessage::DrawDecline => {
+                                    draw_offer_state.set(DrawOfferState::Idle);
+                                }
                             }
                         }
                     }
-                }
                     Err(e) => {
                         leptos::logging::warn!("websocket error: {e}");
                     }
@@ -426,7 +475,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     provide_context(premoves);
 
     view! {
-        <div class="flex flex-col items-center justify-center w-full h-[calc(100dvh-3.5rem)]">
+        <div class="flex flex-col items-center justify-center w-full py-2 h-[calc(100dvh-3.5rem)]">
             <Show when=move || searching.get().is_some()>
                 {move || searching.get().map(|(time_control, rating_mode)| view! {
                     <MatchmakingModal
@@ -458,7 +507,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     tc_label=tc_label
                 />
             </Show>
-            <div class="relative w-[min(100vw,calc(100dvh-11.5rem))]">
+            <div class="relative w-[min(100vw,calc(100dvh-15rem))] md:w-[min(100vw,calc(100dvh-12.5rem))]">
                 <div class="flex flex-row items-center justify-between pl-2 py-2 gap-2 overflow-hidden">
                     <div class="min-w-0 flex-1 overflow-hidden">
                         <Transition fallback=|| view! { <div class="h-12"></div> }>
@@ -484,7 +533,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     </div>
                 </div>
                 <ChessBoard
-                    position={position}
+                    position={display_position}
                     perspective={perspective}
                     last_move={last_move}
                     on_move={on_move}
@@ -576,66 +625,99 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                         </Transition>
                     </div>
                 </div>
-                <Show when=move || {
-                    game_result.get().is_none()
-                        && player_role.get().is_some_and(|r| matches!(r, PlayerRole::Player(_)))
-                }>
-                    <div class="hidden md:flex absolute top-1/2 -translate-y-1/2 left-full ml-4 flex-col gap-2">
-                        <Show when=move || draw_offer_state.get() == DrawOfferState::OfferedToUs>
-                            <div class="flex flex-col items-stretch gap-2 px-3 py-2 rounded-md bg-zinc-800 border border-zinc-700">
-                                <span class="text-sm text-zinc-300 whitespace-nowrap">"Opponent offers a draw"</span>
+                // Mobile-only compact moves strip below the bottom clock.
+                // Single horizontal scrolling row with nav buttons at each end.
+                <div class="md:hidden px-2 pb-1">
+                    <MovesPanel
+                        moves={move_history}
+                        viewing_ply={viewing_ply}
+                        set_viewing_ply={set_viewing_ply}
+                        compact=true
+                    />
+                </div>
+                // Side column (desktop+): scrolling move list on top, live-game
+                // draw/resign controls beneath. Anchored to the board's full
+                // height so the move list takes whatever vertical space is left
+                // after the buttons.
+                <div class="hidden md:flex absolute top-0 bottom-0 left-full ml-4 w-64 flex-col gap-3">
+                    <div class="flex-1 min-h-0 flex flex-col rounded-md bg-zinc-900/60 border border-zinc-800 p-2">
+                        <MovesPanel moves={move_history} viewing_ply={viewing_ply} set_viewing_ply={set_viewing_ply} />
+                    </div>
+                    <Show when=move || {
+                        game_result.get().is_none()
+                            && player_role.get().is_some_and(|r| matches!(r, PlayerRole::Player(_)))
+                    }>
+                        <div class="flex flex-col gap-2 flex-shrink-0">
+                            <Show when=move || draw_offer_state.get() == DrawOfferState::OfferedToUs>
+                                <div class="flex flex-col items-stretch gap-2 px-3 py-2 rounded-md bg-zinc-800 border border-zinc-700">
+                                    <span class="text-sm text-zinc-300 whitespace-nowrap">"Opponent offers a draw"</span>
+                                    <div class="flex flex-row gap-2">
+                                        <button
+                                            on:click=move |_| {
+                                                send.run(GameClientMessage::DrawAccept);
+                                                draw_offer_state.set(DrawOfferState::Idle);
+                                            }
+                                            title="Accept draw"
+                                            aria-label="Accept draw"
+                                            class="flex-1 px-3 py-1 text-base font-medium bg-green-700 text-white rounded hover:bg-green-600 transition-colors cursor-pointer"
+                                        >
+                                            "✓"
+                                        </button>
+                                        <button
+                                            on:click=move |_| {
+                                                send.run(GameClientMessage::DrawDecline);
+                                                draw_offer_state.set(DrawOfferState::Idle);
+                                            }
+                                            title="Decline draw"
+                                            aria-label="Decline draw"
+                                            class="flex-1 px-3 py-1 text-base font-medium bg-zinc-700 text-zinc-300 rounded hover:bg-zinc-600 hover:text-white transition-colors cursor-pointer"
+                                        >
+                                            "✕"
+                                        </button>
+                                    </div>
+                                </div>
+                            </Show>
+                            <div class="flex flex-row items-stretch gap-1">
+                                {move || match draw_offer_state.get() {
+                                    DrawOfferState::Idle => view! {
+                                        <button
+                                            on:click=move |_| {
+                                                send.run(GameClientMessage::DrawOffer);
+                                                draw_offer_state.set(DrawOfferState::Offering);
+                                            }
+                                            title="Offer draw"
+                                            aria-label="Offer draw"
+                                            class="flex-1 px-2 py-1.5 text-base font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
+                                        >
+                                            "½"
+                                        </button>
+                                    }.into_any(),
+                                    DrawOfferState::Offering => view! {
+                                        <button
+                                            disabled
+                                            title="Draw offered"
+                                            aria-label="Draw offered"
+                                            class="flex-1 px-2 py-1.5 text-base font-medium text-zinc-500 border border-zinc-800 rounded cursor-not-allowed"
+                                        >
+                                            "½…"
+                                        </button>
+                                    }.into_any(),
+                                    DrawOfferState::OfferedToUs => view! {
+                                        <div class="flex-1"></div>
+                                    }.into_any(),
+                                }}
                                 <button
-                                    on:click=move |_| {
-                                        send.run(GameClientMessage::DrawAccept);
-                                        draw_offer_state.set(DrawOfferState::Idle);
-                                    }
-                                    class="px-3 py-1 text-xs font-medium bg-green-700 text-white rounded hover:bg-green-600 transition-colors cursor-pointer"
+                                    on:click=move |_| send.run(GameClientMessage::Resign)
+                                    title="Resign"
+                                    aria-label="Resign"
+                                    class="flex-1 px-2 py-1.5 text-base font-medium text-red-400 border border-red-900 rounded hover:border-red-700 hover:text-red-300 transition-colors cursor-pointer"
                                 >
-                                    "Accept"
-                                </button>
-                                <button
-                                    on:click=move |_| {
-                                        send.run(GameClientMessage::DrawDecline);
-                                        draw_offer_state.set(DrawOfferState::Idle);
-                                    }
-                                    class="px-3 py-1 text-xs font-medium bg-zinc-700 text-zinc-300 rounded hover:bg-zinc-600 hover:text-white transition-colors cursor-pointer"
-                                >
-                                    "Decline"
+                                    "⚑"
                                 </button>
                             </div>
-                        </Show>
-                        {move || match draw_offer_state.get() {
-                            DrawOfferState::Idle => view! {
-                                <button
-                                    on:click=move |_| {
-                                        send.run(GameClientMessage::DrawOffer);
-                                        draw_offer_state.set(DrawOfferState::Offering);
-                                    }
-                                    class="px-4 py-1.5 text-xs font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer whitespace-nowrap"
-                                >
-                                    "Offer Draw"
-                                </button>
-                            }.into_any(),
-                            DrawOfferState::Offering => view! {
-                                <button
-                                    disabled
-                                    class="px-4 py-1.5 text-xs font-medium text-zinc-500 border border-zinc-800 rounded cursor-not-allowed whitespace-nowrap"
-                                >
-                                    "Draw Offered…"
-                                </button>
-                            }.into_any(),
-                            DrawOfferState::OfferedToUs => view! {
-                                <span></span>
-                            }.into_any(),
-                        }}
-                        <button
-                            on:click=move |_| send.run(GameClientMessage::Resign)
-                            class="px-4 py-1.5 text-xs font-medium text-red-400 border border-red-900 rounded hover:border-red-700 hover:text-red-300 transition-colors cursor-pointer whitespace-nowrap"
-                        >
-                            "Resign"
-                        </button>
-                    </div>
-                </Show>
+                        </div>
+                    </Show>
+                </div>
             </div>
         </div>
     }

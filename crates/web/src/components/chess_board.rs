@@ -42,7 +42,7 @@ impl From<Option<PlayerRole>> for BoardPerspective {
 
 #[component]
 pub fn ChessBoard(
-    position: ReadSignal<shakmaty::Chess>,
+    #[prop(into)] position: Signal<shakmaty::Chess>,
     perspective: Signal<BoardPerspective>,
     last_move: RwSignal<Option<(shakmaty::Square, shakmaty::Square)>>,
     #[prop(into)] on_move: Callback<shakmaty::Move>,

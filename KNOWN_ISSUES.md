@@ -25,12 +25,15 @@ UCI strings, chat (not yet implemented), and small rematch/draw markers.
 **Planned fix**: when chat ships, swap to a hand-rolled `axum::extract::ws`
 route with explicit `max_message_size`.
 
-## CSP allows `'unsafe-inline'` for scripts
+## CSP allows `'unsafe-inline'` and `'unsafe-eval'` for scripts
 
 Leptos's hydration emits inline `<script>` blocks containing the initial app
-state. CSP without `'unsafe-inline'` blocks them, breaking the app. We allow
-`'unsafe-inline'` and rely on Leptos's default HTML escaping (`view!` macro)
-to prevent XSS.
+state, so `'unsafe-inline'` is required. wasm-bindgen's generated JS glue
+additionally uses `new Function(...)` in some code paths (notably triggered
+when dynamic views like modals mount), so `'unsafe-eval'` is also required.
+
+We rely on Leptos's default HTML escaping (`view!` macro) to prevent XSS
+since CSP no longer blocks injected `<script>` tags or string-evaluated JS.
 
 **Action**: never render user-controlled strings as raw HTML
 (`inner_html=`, `<div inner_html=...>`, manually-constructed `view!`
