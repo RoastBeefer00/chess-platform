@@ -92,23 +92,29 @@ pub fn GameOverModal(
                             </button>
                         }.into_any(),
                         RematchState::OfferedToUs => view! {
-                            <button
-                                on:click=move |_| {
-                                    send.run(GameClientMessage::RematchAccept);
-                                }
-                                class="px-5 py-2.5 text-sm font-medium bg-green-600 text-white rounded-md hover:bg-green-500 transition-colors cursor-pointer whitespace-nowrap"
-                            >
-                                "Accept"
-                            </button>
-                            <button
-                                on:click=move |_| {
-                                    send.run(GameClientMessage::RematchDecline);
-                                    rematch_state.set(RematchState::Idle);
-                                }
-                                class="px-5 py-2.5 text-sm font-medium bg-red-800 text-white rounded-md hover:bg-red-700 transition-colors cursor-pointer whitespace-nowrap"
-                            >
-                                "Decline"
-                            </button>
+                            <div class="flex flex-row">
+                                <button
+                                    on:click=move |_| {
+                                        send.run(GameClientMessage::RematchAccept);
+                                    }
+                                    title="Accept rematch"
+                                    aria-label="Accept rematch"
+                                    class="px-5 py-2.5 text-base font-medium bg-green-600 text-white rounded-l-md hover:bg-green-500 transition-colors cursor-pointer"
+                                >
+                                    "✓"
+                                </button>
+                                <button
+                                    on:click=move |_| {
+                                        send.run(GameClientMessage::RematchDecline);
+                                        rematch_state.set(RematchState::Idle);
+                                    }
+                                    title="Decline rematch"
+                                    aria-label="Decline rematch"
+                                    class="px-5 py-2.5 text-base font-medium bg-red-800 text-white rounded-r-md hover:bg-red-700 transition-colors cursor-pointer"
+                                >
+                                    "✕"
+                                </button>
+                            </div>
                         }.into_any(),
                         RematchState::Declined => view! {
                             <span class="px-5 py-2.5 text-sm font-medium text-red-400 cursor-default">

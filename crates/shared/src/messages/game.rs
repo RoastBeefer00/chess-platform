@@ -18,6 +18,7 @@ pub enum GameServerMessage {
         uuid: Uuid,
         position_fen: String,
         player_role: PlayerRole,
+        moves: Vec<String>,
     },
     UserLeft {
         username: String,

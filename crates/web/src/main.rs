@@ -174,6 +174,9 @@ async fn main() {
 
     // CSP allowances:
     //   wasm-unsafe-eval — Leptos hydrate WASM bundle
+    //   'unsafe-eval' — wasm-bindgen's generated JS glue uses `new Function(...)`
+    //     in spots; without this, dynamic view rendering (e.g. modal mounts)
+    //     throws an EvalError at runtime in some Leptos code paths.
     //   script-src 'unsafe-inline' — Leptos emits inline hydration <script> tags;
     //     XSS protection then relies on Leptos's auto-escaping (default for view!).
     //     Avoid rendering user-controlled strings as raw HTML.
@@ -182,7 +185,7 @@ async fn main() {
     //   connect-src ws: wss: — game/matchmaking WebSocket
     //   frame-ancestors 'none' — clickjacking protection (doubles X-Frame-Options)
     let csp = "default-src 'self'; \
-               script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
+               script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; \
                style-src 'self' 'unsafe-inline'; \
                img-src 'self' data: https:; \
                connect-src 'self' ws: wss:; \

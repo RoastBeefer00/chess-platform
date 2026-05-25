@@ -67,6 +67,7 @@ pub async fn game_websocket(
             black_ms_left,
             turn,
             clock_running,
+            move_history,
             finished_replay,
             receiver,
         ) = {
@@ -82,7 +83,9 @@ pub async fn game_websocket(
             let finished_replay: Option<(Option<shared::Side>, GameOverReason)> = match &gr.status {
                 shared::GameStatus::Finished(shakmaty::Outcome::Known(known)) => {
                     let winner = match known {
-                        shakmaty::KnownOutcome::Decisive { winner } => Some(shared::Side::from(*winner)),
+                        shakmaty::KnownOutcome::Decisive { winner } => {
+                            Some(shared::Side::from(*winner))
+                        }
                         shakmaty::KnownOutcome::Draw => None,
                     };
                     let reason = gr.end_reason.clone().unwrap_or(GameOverReason::Draw);
@@ -113,6 +116,7 @@ pub async fn game_websocket(
                 black_ms,
                 gr.game.position.turn().into(),
                 finished_replay.is_none() && gr.last_move_at.is_some(),
+                gr.move_history.clone(),
                 finished_replay,
                 gr.subscribe(),
             )
@@ -127,6 +131,7 @@ pub async fn game_websocket(
             uuid: user.id,
             position_fen,
             player_role: player_role.clone(),
+            moves: move_history,
         }));
 
         let _ = tx.unbounded_send(Ok(GameServerMessage::ClockSync {
