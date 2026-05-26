@@ -313,6 +313,38 @@ impl GameRoom {
         }))
     }
 
+    /// Build a full state snapshot for sending a Resync to a single client.
+    /// Mirrors the live-clock extrapolation done at WS-join time so the
+    /// client's clocks land where the server thinks they should be.
+    pub fn build_resync(&self) -> GameServerMessage {
+        let fen = Fen::from_position(&self.game.position, EnPassantMode::Legal).to_string();
+        let mut white_ms = self.game.white_ms_left;
+        let mut black_ms = self.game.black_ms_left;
+        let finished = matches!(self.status, GameStatus::Finished(_));
+        if !finished {
+            if let Some(last) = self.last_move_at {
+                let elapsed = Instant::now().duration_since(last).as_millis() as i64;
+                match self.game.position.turn() {
+                    Color::White => white_ms = (white_ms - elapsed).max(0),
+                    Color::Black => black_ms = (black_ms - elapsed).max(0),
+                }
+            }
+        }
+        let sent_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        GameServerMessage::Resync {
+            position_fen: fen,
+            moves: self.move_history.clone(),
+            white_ms_left: white_ms,
+            black_ms_left: black_ms,
+            turn: self.game.position.turn().into(),
+            sent_at_ms,
+            clock_running: !finished && self.last_move_at.is_some(),
+        }
+    }
+
     pub fn clear_rematch_offer(&mut self) {
         self.rematch_offer = None;
     }

@@ -1,5 +1,26 @@
 use leptos::prelude::*;
-use shakmaty::{san::San, uci::UciMove, Chess, Position};
+use shakmaty::{san::SanPlus, uci::UciMove, Chess, Position};
+
+use crate::sound;
+
+/// Pick the sound that should accompany navigating *to* `ply` (1-indexed
+/// number of half-moves to replay). Returns `None` for the initial position
+/// (ply 0 — nothing to sound) or when the move history can't be replayed.
+fn sound_for_ply(moves: &[String], ply: usize) -> Option<&'static str> {
+    if ply == 0 {
+        return None;
+    }
+    let mut pos = Chess::default();
+    let mut last_m: Option<shakmaty::Move> = None;
+    for uci_str in moves.iter().take(ply) {
+        let uci = uci_str.parse::<UciMove>().ok()?;
+        let m = uci.to_move(&pos).ok()?;
+        pos = pos.clone().play(m).ok()?;
+        last_m = Some(m);
+    }
+    let m = last_m?;
+    Some(sound::for_move(&pos, &m))
+}
 
 /// Replay UCI history into SAN strings. Each SAN is rendered against the
 /// position *before* the move was played — which is what shakmaty requires.
@@ -15,12 +36,10 @@ fn uci_history_to_san(uci_moves: &[String]) -> Vec<String> {
             out.push(uci_str.clone());
             continue;
         };
-        out.push(San::from_move(&pos, mv).to_string());
-        // play() consumes pos and returns the new one; ignore illegal (shouldn't
-        // happen if the history is valid — we already proved it parses).
-        if let Ok(next) = pos.clone().play(mv) {
-            pos = next;
-        }
+        // SanPlus appends "+" / "#" by inspecting the resulting position,
+        // so it both renders the move and advances `pos` in one shot.
+        let san_plus = SanPlus::from_move_and_play_unchecked(&mut pos, mv);
+        out.push(san_plus.to_string());
     }
     out
 }
@@ -59,17 +78,34 @@ pub fn MovesPanel(
     let can_back = Signal::derive(move || selected_move.get() > 0);
     let can_forward = Signal::derive(move || viewing_ply.get().is_some());
 
+    let play_sound_for_ply = move |ply: usize| {
+        if let Some(src) = sound_for_ply(&moves.get_untracked(), ply) {
+            sound::play(src);
+        }
+    };
+
     let go_back = move |_| {
         let cur = selected_move.get_untracked();
         if cur > 0 {
-            set_viewing_ply.set(Some(cur - 1));
+            let target = cur - 1;
+            set_viewing_ply.set(Some(target));
+            play_sound_for_ply(target);
         }
     };
-    let go_live = move |_| set_viewing_ply.set(None);
+    let go_live = move |_| {
+        // Only the initial transition out of review mode is meaningful.
+        if viewing_ply.get_untracked().is_some() {
+            set_viewing_ply.set(None);
+            play_sound_for_ply(total.get_untracked());
+        }
+    };
     let go_beginning = move |_| set_viewing_ply.set(Some(0));
     let go_forward = move |_| {
         let cur = selected_move.get_untracked();
         let max = total.get_untracked();
+        if cur >= max {
+            return;
+        }
         let next = cur + 1;
         if next >= max {
             // Moving forward past the latest move = live view.
@@ -77,10 +113,15 @@ pub fn MovesPanel(
         } else {
             set_viewing_ply.set(Some(next));
         }
+        play_sound_for_ply(next);
     };
 
+    // Both desktop (full) and mobile (compact) MovesPanel instances mount at
+    // once and are toggled via CSS, so registering a window-level keydown
+    // listener in each would fire navigation twice per press. Only the
+    // non-compact instance owns the keyboard.
     #[cfg(feature = "hydrate")]
-    {
+    if !compact {
         use leptos::ev;
         use leptos::prelude::window_event_listener;
         use wasm_bindgen::JsCast as _;
@@ -129,6 +170,7 @@ pub fn MovesPanel(
             go_back,
             go_forward,
             go_live,
+            play_sound_for_ply,
         )
         .into_any()
     } else {
@@ -144,6 +186,7 @@ pub fn MovesPanel(
             go_back,
             go_forward,
             go_live,
+            play_sound_for_ply,
         )
         .into_any()
     }
@@ -162,6 +205,7 @@ fn full_view(
     go_back: impl Fn(()) + Copy + Send + Sync + 'static,
     go_forward: impl Fn(()) + Copy + Send + Sync + 'static,
     go_live: impl Fn(()) + Copy + Send + Sync + 'static,
+    play_sound_for_ply: impl Fn(usize) + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let nav_btn_class = "flex-1 px-2 py-1.5 text-sm font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-700 disabled:hover:text-zinc-300";
     view! {
@@ -191,7 +235,10 @@ fn full_view(
                                     <button
                                         class="flex-1 text-left px-1 rounded hover:bg-zinc-700 cursor-pointer"
                                         class:bg-zinc-700=move || selected_move.get() == white_ply
-                                        on:click=move |_| set_viewing_ply.set(Some(white_ply))
+                                        on:click=move |_| {
+                                            set_viewing_ply.set(Some(white_ply));
+                                            play_sound_for_ply(white_ply);
+                                        }
                                     >
                                         {white}
                                     </button>
@@ -200,7 +247,10 @@ fn full_view(
                                             <button
                                                 class="flex-1 text-left px-1 rounded hover:bg-zinc-700 cursor-pointer"
                                                 class:bg-zinc-700=move || selected_move.get() == black_ply
-                                                on:click=move |_| set_viewing_ply.set(Some(black_ply))
+                                                on:click=move |_| {
+                                                    set_viewing_ply.set(Some(black_ply));
+                                                    play_sound_for_ply(black_ply);
+                                                }
                                             >
                                                 {b}
                                             </button>
@@ -235,6 +285,7 @@ fn compact_view(
     go_back: impl Fn(()) + Copy + Send + Sync + 'static,
     go_forward: impl Fn(()) + Copy + Send + Sync + 'static,
     go_live: impl Fn(()) + Copy + Send + Sync + 'static,
+    play_sound_for_ply: impl Fn(usize) + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let nav_btn_class = "px-1.5 py-1 text-xs font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-700 disabled:hover:text-zinc-300 flex-shrink-0";
 
@@ -282,7 +333,10 @@ fn compact_view(
                                 <button
                                     class="px-1 rounded hover:bg-zinc-700 cursor-pointer"
                                     class:bg-zinc-700=move || selected_move.get() == white_ply
-                                    on:click=move |_| set_viewing_ply.set(Some(white_ply))
+                                    on:click=move |_| {
+                                        set_viewing_ply.set(Some(white_ply));
+                                        play_sound_for_ply(white_ply);
+                                    }
                                 >
                                     {white}
                                 </button>
@@ -290,7 +344,10 @@ fn compact_view(
                                     <button
                                         class="px-1 rounded hover:bg-zinc-700 cursor-pointer"
                                         class:bg-zinc-700=move || selected_move.get() == black_ply
-                                        on:click=move |_| set_viewing_ply.set(Some(black_ply))
+                                        on:click=move |_| {
+                                            set_viewing_ply.set(Some(black_ply));
+                                            play_sound_for_ply(black_ply);
+                                        }
                                     >
                                         {b}
                                     </button>

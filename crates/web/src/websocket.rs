@@ -148,11 +148,25 @@ pub async fn game_websocket(
 
         let mut broadcast = BroadcastStream::new(receiver);
         let tx2 = tx.clone();
+        let room_for_lag = game_room.clone();
         tokio::spawn(async move {
             while let Some(msg) = broadcast.next().await {
-                let result = msg.map_err(|e| ServerFnError::new(e.to_string()));
-                if tx2.unbounded_send(result).is_err() {
-                    break;
+                match msg {
+                    Ok(m) => {
+                        if tx2.unbounded_send(Ok(m)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_lagged) => {
+                        // Subscriber fell behind the broadcast buffer. Without
+                        // this, the client silently misses moves and desyncs
+                        // (highlight without piece movement). Push an
+                        // authoritative snapshot so the client recovers.
+                        let resync = room_for_lag.lock().await.build_resync();
+                        if tx2.unbounded_send(Ok(resync)).is_err() {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -199,7 +213,15 @@ pub async fn game_websocket(
                                 );
                                 spawn_finalize(state.game_store.clone(), plan);
                             }
-                            Err(e) => tracing::warn!(?e, "move rejected"),
+                            Err(e) => {
+                                tracing::warn!(?e, "move rejected");
+                                // Client optimistically applied this move
+                                // locally; without telling them we rejected
+                                // it they stay diverged until refresh. Push
+                                // an authoritative snapshot just to this
+                                // client.
+                                let _ = tx.unbounded_send(Ok(gr.build_resync()));
+                            }
                         }
                     }
                     GameClientMessage::Chat { text: _ } => todo!(),

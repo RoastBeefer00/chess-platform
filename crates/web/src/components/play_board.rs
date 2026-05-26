@@ -43,6 +43,13 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         Option<mpsc::UnboundedSender<GameClientMessage>>,
         LocalStorage,
     > = StoredValue::new_local(None);
+    // The UCI of the move we most recently sent. The server echoes every
+    // applied move back via broadcast — without this, the echo of our own
+    // move fails `to_move()` (piece already advanced locally) and trips the
+    // desync-reconnect path on every move. Cleared once the matching echo
+    // arrives.
+    #[cfg(feature = "hydrate")]
+    let last_sent_uci: StoredValue<Option<String>, LocalStorage> = StoredValue::new_local(None);
     let rematch_state = RwSignal::new(RematchState::Idle);
     let draw_offer_state = RwSignal::new(DrawOfferState::Idle);
     let searching = RwSignal::new(None::<(shared::TimeControl, shared::RatingMode)>);
@@ -153,27 +160,22 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             leptos::logging::warn!("attempted move out of turn");
             return;
         }
+        let Ok(new_pos) = pos.clone().play(m) else {
+            // Local view rejected the move — don't highlight or send.
+            // Server Resync will correct us if our view was stale.
+            leptos::logging::warn!("local play() rejected move");
+            return;
+        };
+        set_position.set(new_pos.clone());
         if let Some(from) = m.from() {
             last_move.set(Some((from, m.to())));
         }
-        let is_capture = m.is_capture();
-        set_position.update(|pos| {
-            if let Ok(new_pos) = pos.clone().play(m) {
-                *pos = new_pos;
-            }
-        });
-        let new_pos = position.get_untracked();
-        let sound_src = if matches!(new_pos.outcome(), shakmaty::Outcome::Known(_)) {
-            sfx::CHECKMATE
-        } else if new_pos.is_check() {
-            sfx::CHECK
-        } else if is_capture {
-            sfx::CAPTURE
-        } else {
-            sfx::MOVE
-        };
+        let sound_src = sound::for_move(&new_pos, &m);
+        leptos::logging::log!("move sound (own): {sound_src}");
         sound::play(sound_src);
         let uci = m.to_uci(shakmaty::CastlingMode::Standard).to_string();
+        #[cfg(feature = "hydrate")]
+        last_sent_uci.set_value(Some(uci.clone()));
         send.run(GameClientMessage::MoveMade { uci });
     });
 
@@ -231,7 +233,16 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     Ok(mut messages) => {
                         backoff_ms = 500; // reset after a successful connect
                         while let Some(msg) = messages.next().await {
-                            let Ok(msg) = msg else { continue };
+                            let msg = match msg {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    // Stream Err (incl. BroadcastStream::Lagged) means
+                                    // we may have missed messages. Bail out so the
+                                    // reconnect loop pulls a fresh authoritative state.
+                                    leptos::logging::warn!("ws stream error: {e}");
+                                    break;
+                                }
+                            };
                             match msg {
                                 GameServerMessage::UserJoined {
                                     uuid,
@@ -269,31 +280,39 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     clock_running.set(true);
                                     set_move_history.update(|history| history.push(uci.clone()));
 
-                                    if let Ok(uci_move) = uci.parse::<UciMove>() {
-                                        if let Ok(m) = uci_move.to_move(&position.get_untracked()) {
-                                            if let Some(from) = m.from() {
-                                                last_move.set(Some((from, m.to())));
-                                            }
-                                            let is_capture = m.is_capture();
-                                            set_position.update(|pos| {
-                                                if let Ok(new_pos) = pos.clone().play(m) {
-                                                    *pos = new_pos;
-                                                }
-                                            });
-                                            let new_pos = position.get_untracked();
-                                            let sound_src =
-                                                if matches!(new_pos.outcome(), Outcome::Known(_)) {
-                                                    sfx::CHECKMATE
-                                                } else if new_pos.is_check() {
-                                                    sfx::CHECK
-                                                } else if is_capture {
-                                                    sfx::CAPTURE
-                                                } else {
-                                                    sfx::MOVE
-                                                };
-                                            sound::play(sound_src);
-                                        }
+                                    // Server broadcasts every applied move to all subscribers,
+                                    // including the mover. Recognise the echo of our own send
+                                    // so we don't try to re-apply (position already advanced
+                                    // locally) and don't replay the move sound we already
+                                    // triggered in on_move.
+                                    let is_echo = last_sent_uci.with_value(|v| v.as_deref() == Some(uci.as_str()));
+                                    if is_echo {
+                                        last_sent_uci.set_value(None);
+                                        continue;
                                     }
+
+                                    let applied = uci.parse::<UciMove>().ok().and_then(|u| {
+                                        let cur = position.get_untracked();
+                                        let m = u.to_move(&cur).ok()?;
+                                        let new_pos = cur.clone().play(m).ok()?;
+                                        Some((m, new_pos))
+                                    });
+                                    let Some((m, new_pos)) = applied else {
+                                        // Server move didn't apply on our local position —
+                                        // we've diverged. Bail to reconnect; server replays
+                                        // authoritative state on UserJoined.
+                                        leptos::logging::warn!(
+                                            "failed to apply server move {uci}; reconnecting"
+                                        );
+                                        break;
+                                    };
+                                    set_position.set(new_pos.clone());
+                                    if let Some(from) = m.from() {
+                                        last_move.set(Some((from, m.to())));
+                                    }
+                                    let sound_src = sound::for_move(&new_pos, &m);
+                                    leptos::logging::log!("move sound (incoming): {sound_src}");
+                                    sound::play(sound_src);
                                     let is_my_turn = player_role
                                         .get_untracked()
                                         .and_then(|r| r.color())
@@ -368,6 +387,33 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     sent_at_ms: server_sent_at,
                                     clock_running: running,
                                 } => {
+                                    white_ms.set(w_ms);
+                                    black_ms.set(b_ms);
+                                    sent_at_ms.set(server_sent_at);
+                                    clock_running.set(running);
+                                }
+                                GameServerMessage::Resync {
+                                    position_fen,
+                                    moves,
+                                    white_ms_left: w_ms,
+                                    black_ms_left: b_ms,
+                                    turn: _,
+                                    sent_at_ms: server_sent_at,
+                                    clock_running: running,
+                                } => {
+                                    // Authoritative snapshot — server detected a desync
+                                    // (rejected our move, or broadcast lag). Replace
+                                    // local state and drop any optimistic premoves so
+                                    // the board stops diverging.
+                                    if let Ok(fen) = position_fen.parse::<Fen>() {
+                                        if let Ok(chess) = fen.into_position::<shakmaty::Chess>(
+                                            shakmaty::CastlingMode::Standard,
+                                        ) {
+                                            set_position.set(chess);
+                                        }
+                                    }
+                                    set_move_history.set(moves);
+                                    premoves.set(vec![]);
                                     white_ms.set(w_ms);
                                     black_ms.set(b_ms);
                                     sent_at_ms.set(server_sent_at);
