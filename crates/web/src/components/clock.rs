@@ -9,6 +9,12 @@ pub fn Clock(
     snapshot_ms: Signal<i64>,
     snapshot_sent_at_ms: Signal<i64>,
     is_active: Signal<bool>,
+    /// Client→server clock offset in ms (server ≈ client + offset), from the
+    /// ping/pong handshake. Added to `Date::now()` so elapsed is measured in
+    /// server time rather than the (possibly skewed) browser wall clock.
+    /// Defaults to 0 — identical to pre-handshake behavior until it converges.
+    #[prop(into, optional)]
+    offset_ms: Signal<i64>,
 ) -> impl IntoView {
     let displayed_ms = RwSignal::new(snapshot_ms.get_untracked());
 
@@ -17,11 +23,12 @@ pub fn Clock(
         move || {
             let snap = snapshot_ms.get_untracked();
             if is_active.get_untracked() {
-                // Use server's sent_at as the time origin. Assumes browser and
-                // server wall clocks are NTP-synced (~50ms in practice).
-                // This accounts for network lag so the displayed countdown
-                // matches server reality, instead of lagging behind by RTT.
-                let elapsed = Date::now() as i64 - snapshot_sent_at_ms.get_untracked();
+                // Measure elapsed in *server* time: Date::now() + offset maps the
+                // browser clock onto the server clock (offset from the ping/pong
+                // handshake), so a skewed browser wall clock no longer throws the
+                // countdown off and the visual 0:00 lines up with the server flag.
+                let server_now = Date::now() as i64 + offset_ms.get_untracked();
+                let elapsed = server_now - snapshot_sent_at_ms.get_untracked();
                 displayed_ms.set((snap - elapsed).max(0));
             } else {
                 displayed_ms.set(snap);

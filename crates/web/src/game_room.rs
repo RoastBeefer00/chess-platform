@@ -234,7 +234,7 @@ impl GameRoom {
     }
 
     #[instrument(skip(self), fields(game_id = %self.game.id))]
-    pub fn update_clock(&mut self) -> Result<(), MoveError> {
+    pub fn update_clock(&mut self, lag_ms: i64) -> Result<(), MoveError> {
         let now = Instant::now();
         let elapsed = match self.last_move_at {
             Some(t) => now.duration_since(t).as_millis() as i64,
@@ -245,7 +245,7 @@ impl GameRoom {
             Color::Black => self.game.black_ms_left,
             Color::White => self.game.white_ms_left,
         };
-        mover_ms -= elapsed;
+        mover_ms -= (elapsed - lag_ms).max(0);
         if let TimeMode::Increment(i) = self.game.config.time_control.mode {
             mover_ms += i;
         }
@@ -265,12 +265,13 @@ impl GameRoom {
         &mut self,
         uci: String,
         mover_id: uuid::Uuid,
+        lag_ms: i64,
     ) -> Result<MoveOutcome, MoveError> {
         if self.current_player() != Some(mover_id) {
             return Err(MoveError::NotYourTurn);
         }
         self.parse_and_apply_move(&uci)?;
-        self.update_clock()?;
+        self.update_clock(lag_ms)?;
         let sent_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)

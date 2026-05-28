@@ -70,12 +70,19 @@ pub enum GameServerMessage {
         from: Uuid,
     },
     DrawDecline,
+    /// Reply to a client `Ping`. Echoes the client's send timestamp and
+    /// carries the server's wall-clock time so the client can estimate the
+    /// client↔server clock offset (NTP-style) for accurate clock display.
+    Pong {
+        client_time_ms: i64,
+        server_time_ms: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GameClientMessage {
     UserJoined { game_id: Uuid },
-    MoveMade { uci: String },
+    MoveMade { uci: String, client_time_ms: i64 },
     Chat { text: String },
     Resign,
     DrawOffer,
@@ -85,4 +92,7 @@ pub enum GameClientMessage {
     RematchAccept,
     RematchDecline,
     RematchCancel,
+    /// Clock-offset probe. `client_time_ms` is the client's `Date.now()` at
+    /// send; the server echoes it in `Pong` so the client can compute RTT.
+    Ping { client_time_ms: i64 },
 }
