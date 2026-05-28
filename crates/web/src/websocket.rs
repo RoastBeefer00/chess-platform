@@ -2,6 +2,9 @@ use leptos::prelude::*;
 use server_fn::{codec::JsonEncoding, BoxedStream, Websocket};
 use shared::{GameClientMessage, GameServerMessage};
 
+#[cfg(feature = "ssr")]
+const LAG_CAP_MS: i64 = 100;
+
 #[server(protocol = Websocket<JsonEncoding, JsonEncoding>)]
 pub async fn game_websocket(
     input: BoxedStream<GameClientMessage, ServerFnError>,
@@ -171,17 +174,49 @@ pub async fn game_websocket(
             }
         });
 
+        // Running minimum of (server_recv_ms - client_send_ms) over Pings.
+        // min(recv - send) ≈ true clock offset (best-case one-way lag → 0).
+        // Connection-local so the lock-free Ping fast-path stays lock-free.
+        let mut offset_est: Option<i64> = None;
+
         while let Some(msg) = input.next().await {
             if let Ok(msg) = msg {
                 tracing::debug!(?msg, "received message from client");
+                // Clock-offset probe: pure timestamp echo, no game state. Handle
+                // before taking the game-room lock so a flood of pings can't
+                // contend on the mutex with actual gameplay.
+                if let GameClientMessage::Ping { client_time_ms } = &msg {
+                    let client_time_ms = *client_time_ms;
+                    let server_time_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(0);
+                    let d = server_time_ms - client_time_ms;
+                    offset_est = Some(offset_est.map_or(d, |e| e.min(d)));
+                    let _ = tx.unbounded_send(Ok(GameServerMessage::Pong {
+                        client_time_ms,
+                        server_time_ms,
+                    }));
+                    continue;
+                }
                 let mut gr = game_room.lock().await;
                 match msg {
                     GameClientMessage::UserJoined { game_id: _ } => {
                         tracing::warn!(%user.id, "ignoring duplicate UserJoined");
                     }
-                    GameClientMessage::MoveMade { uci } => {
+                    GameClientMessage::MoveMade { uci, client_time_ms } => {
+                        let lag = match offset_est {
+                            Some(offset) => {
+                                let recv = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as i64)
+                                    .unwrap_or(0);
+                                (recv - (client_time_ms + offset)).clamp(0, LAG_CAP_MS)
+                            }
+                            None => 0,
+                        };
                         use crate::game_room::MoveOutcome;
-                        match gr.handle_move_made(uci, user.id) {
+                        match gr.handle_move_made(uci, user.id, lag) {
                             Ok(MoveOutcome::Continuing(plan)) => {
                                 if let Some(h) = gr.timeout_task.take() {
                                     h.abort();
@@ -356,6 +391,8 @@ pub async fn game_websocket(
                             }
                         }
                     }
+                    // Handled before the lock above; never reached here.
+                    GameClientMessage::Ping { .. } => {}
                 }
             }
         }

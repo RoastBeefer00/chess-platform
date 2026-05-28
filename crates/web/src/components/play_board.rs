@@ -95,6 +95,42 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     let black_ms = RwSignal::new(0_i64);
     let sent_at_ms = RwSignal::new(0_i64);
     let clock_running = RwSignal::new(false);
+    // Client->server clock offset (server ≈ client + offset), converged via the
+    // ping/pong handshake below. Plain RwSignal (not LocalStorage) so it's safe
+    // on SSR and readable by the Clock children.
+    let clock_offset_ms = RwSignal::new(0_i64);
+    // Rolling buffer of recent (rtt, offset) samples from pong replies. We apply
+    // the offset of the lowest-rtt sample (least jitter = most accurate).
+    // Hydrate-only: LocalStorage StoredValue panics if dropped off-thread on SSR.
+    #[cfg(feature = "hydrate")]
+    let offset_samples: StoredValue<Vec<(i64, i64)>, LocalStorage> =
+        StoredValue::new_local(Vec::new());
+
+    // Clock-offset handshake: probe the server periodically with Ping; the Pong
+    // handler above converges `clock_offset_ms`. `send` is a no-op while
+    // disconnected (current_tx is None), so this is safe across reconnects.
+    #[cfg(feature = "hydrate")]
+    {
+        use leptos_use::use_interval_fn;
+        // Steady cadence keeps the estimate fresh and tracks slow drift.
+        use_interval_fn(
+            move || {
+                send.run(GameClientMessage::Ping {
+                    client_time_ms: js_sys::Date::now() as i64,
+                });
+            },
+            3_000,
+        );
+        // Initial burst for fast convergence in the first couple seconds.
+        leptos::task::spawn_local(async move {
+            for _ in 0..8 {
+                send.run(GameClientMessage::Ping {
+                    client_time_ms: js_sys::Date::now() as i64,
+                });
+                gloo_timers::future::TimeoutFuture::new(250).await;
+            }
+        });
+    }
 
     let perspective = Signal::derive(move || BoardPerspective::from(player_role.get()));
 
@@ -166,6 +202,28 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             leptos::logging::warn!("local play() rejected move");
             return;
         };
+
+        // Optimistically update the clock to match the board flip below.
+        // Flipping the turn makes the opponent's clock become active; without
+        // this it would re-anchor to the stale `sent_at_ms` (set when the
+        // opponent last moved = start of our turn) and lurch *down* by our
+        // entire think-time until the server echo arrives. We deduct our
+        // think-time from our own clock and reset the anchor to now, so the
+        // opponent's clock starts ticking from its full remaining instead.
+        // Guarded on `clock_running`: before the first move the clocks aren't
+        // running yet, and `sent_at_ms` is the join-time anchor — deducting
+        // against it would wrongly drain time.
+        #[cfg(feature = "hydrate")]
+        if clock_running.get_untracked() {
+            let now = js_sys::Date::now() as i64;
+            let elapsed = (now - sent_at_ms.get_untracked()).max(0);
+            match pos.turn() {
+                Color::White => white_ms.update(|ms| *ms = (*ms - elapsed).max(0)),
+                Color::Black => black_ms.update(|ms| *ms = (*ms - elapsed).max(0)),
+            }
+            sent_at_ms.set(now);
+        }
+
         set_position.set(new_pos.clone());
         if let Some(from) = m.from() {
             last_move.set(Some((from, m.to())));
@@ -176,7 +234,13 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         let uci = m.to_uci(shakmaty::CastlingMode::Standard).to_string();
         #[cfg(feature = "hydrate")]
         last_sent_uci.set_value(Some(uci.clone()));
-        send.run(GameClientMessage::MoveMade { uci });
+        let client_time_ms = {
+            #[cfg(feature = "hydrate")]
+            { js_sys::Date::now() as i64 }
+            #[cfg(not(feature = "hydrate"))]
+            { 0_i64 }
+        };
+        send.run(GameClientMessage::MoveMade { uci, client_time_ms });
     });
 
     let on_premove = {
@@ -443,6 +507,33 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                 GameServerMessage::DrawDecline => {
                                     draw_offer_state.set(DrawOfferState::Idle);
                                 }
+                                #[cfg(feature = "hydrate")]
+                                GameServerMessage::Pong {
+                                    client_time_ms,
+                                    server_time_ms,
+                                } => {
+                                    let now = js_sys::Date::now() as i64;
+                                    let rtt = now - client_time_ms;
+                                    // NTP-style: server time at midpoint of the round-trip
+                                    let offset = server_time_ms - (client_time_ms + rtt / 2);
+                                    offset_samples.update_value(|samples| {
+                                        samples.push((rtt, offset));
+                                        // Keep only the 16 most recent samples
+                                        if samples.len() > 16 {
+                                            samples.drain(..samples.len() - 16);
+                                        }
+                                    });
+                                    // Best estimate = offset from the lowest-RTT sample (least jitter)
+                                    if let Some((_, best_offset)) = offset_samples
+                                        .get_value()
+                                        .into_iter()
+                                        .min_by_key(|(rtt, _)| *rtt)
+                                    {
+                                        clock_offset_ms.set(best_offset);
+                                    }
+                                }
+                                #[cfg(not(feature = "hydrate"))]
+                                GameServerMessage::Pong { .. } => {}
                             }
                         }
                     }
@@ -592,6 +683,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     snapshot_ms={top_ms}
                                     snapshot_sent_at_ms={sent_at_ms.into()}
                                     is_active={top_active}
+                                    offset_ms={clock_offset_ms}
                                 />
                             })}
                         </Transition>
@@ -692,6 +784,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     snapshot_ms={bottom_ms}
                                     snapshot_sent_at_ms={sent_at_ms.into()}
                                     is_active={bottom_active}
+                                    offset_ms={clock_offset_ms}
                                 />
                             })}
                         </Transition>
