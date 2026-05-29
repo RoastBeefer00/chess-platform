@@ -17,8 +17,8 @@ enum DrawOfferState {
 #[cfg(feature = "hydrate")]
 use crate::components::move_target;
 use crate::components::{
-    BoardPerspective, BoardUser, ChessBoard, Clock, GameOverModal, MatchmakingModal, MovesPanel,
-    RematchState,
+    material_advantage, BoardPerspective, BoardUser, CapturedPieces, ChessBoard, Clock,
+    GameOverModal, MatchmakingModal, MovesPanel, RematchState,
 };
 use crate::game::get_game_info;
 use crate::sound::{self, sfx};
@@ -134,6 +134,15 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
 
     let perspective = Signal::derive(move || BoardPerspective::from(player_role.get()));
 
+    let top_advantage = Signal::derive(move || {
+        let top_color = match perspective.get() {
+            BoardPerspective::White => Color::Black,
+            BoardPerspective::Black => Color::White,
+        };
+        material_advantage(&position.get(), top_color)
+    });
+    let bottom_advantage = Signal::derive(move || -top_advantage.get());
+
     // Derived per-position signals.
     let top_ms = Signal::derive(move || match perspective.get() {
         BoardPerspective::White => black_ms.get(),
@@ -236,11 +245,18 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         last_sent_uci.set_value(Some(uci.clone()));
         let client_time_ms = {
             #[cfg(feature = "hydrate")]
-            { js_sys::Date::now() as i64 }
+            {
+                js_sys::Date::now() as i64
+            }
             #[cfg(not(feature = "hydrate"))]
-            { 0_i64 }
+            {
+                0_i64
+            }
         };
-        send.run(GameClientMessage::MoveMade { uci, client_time_ms });
+        send.run(GameClientMessage::MoveMade {
+            uci,
+            client_time_ms,
+        });
     });
 
     let on_premove = {
@@ -252,10 +268,11 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
 
     // can_drag_piece: only the side this player controls.
     let can_drag_piece = Callback::new(move |p: shakmaty::Piece| {
-        player_role
-            .get()
-            .and_then(|r| r.color())
-            .is_some_and(|c| c == p.color)
+        viewing_ply.get().is_none()
+            && player_role
+                .get()
+                .and_then(|r| r.color())
+                .is_some_and(|c| c == p.color)
     });
 
     #[cfg(feature = "hydrate")]
@@ -266,6 +283,9 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         use leptos::task::spawn_local;
         use shakmaty::fen::Fen;
         use shared::GameServerMessage;
+
+        const HEARTBEAT_CHECK_MS: u32 = 3_000;
+        const HEARTBEAT_TIMEOUT_MS: i64 = 6_000;
 
         let user = use_current_user();
         spawn_local(async move {
@@ -296,7 +316,33 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                 match game_websocket(rx.map(Ok).into()).await {
                     Ok(mut messages) => {
                         backoff_ms = 500; // reset after a successful connect
-                        while let Some(msg) = messages.next().await {
+                                          // Heartbeat: a silently-dead socket (mobile handoff, NAT
+                                          // timeout) leaves messages.next() Pending forever, so the
+                                          // reconnect loop never fires and the board freezes. Race
+                                          // each read against a timer; if no message of ANY kind
+                                          // arrives within HEARTBEAT_TIMEOUT_MS, treat the socket as
+                                          // a zombie and break to reconnect. The 3s Ping/Pong keeps
+                                          // a healthy-but-idle connection's timestamp fresh.
+                        let mut last_message_at = js_sys::Date::now() as i64;
+                        loop {
+                            let heartbeat =
+                                gloo_timers::future::TimeoutFuture::new(HEARTBEAT_CHECK_MS);
+                            let msg =
+                                match futures::future::select(messages.next(), heartbeat).await {
+                                    futures::future::Either::Left((msg, _)) => msg,
+                                    futures::future::Either::Right((_, _)) => {
+                                        if js_sys::Date::now() as i64 - last_message_at
+                                            > HEARTBEAT_TIMEOUT_MS
+                                        {
+                                            leptos::logging::warn!(
+                                                "websocket heartbeat timeout; reconnecting"
+                                            );
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                };
+                            let Some(msg) = msg else { break };
                             let msg = match msg {
                                 Ok(m) => m,
                                 Err(e) => {
@@ -307,6 +353,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     break;
                                 }
                             };
+                            last_message_at = js_sys::Date::now() as i64;
                             match msg {
                                 GameServerMessage::UserJoined {
                                     uuid,
@@ -349,7 +396,8 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     // so we don't try to re-apply (position already advanced
                                     // locally) and don't replay the move sound we already
                                     // triggered in on_move.
-                                    let is_echo = last_sent_uci.with_value(|v| v.as_deref() == Some(uci.as_str()));
+                                    let is_echo = last_sent_uci
+                                        .with_value(|v| v.as_deref() == Some(uci.as_str()));
                                     if is_echo {
                                         last_sent_uci.set_value(None);
                                         continue;
@@ -664,8 +712,8 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                 />
             </Show>
             <div class="relative w-[min(100vw,calc(100dvh-15rem))] md:w-[min(100vw,calc(100dvh-12.5rem))]">
-                <div class="flex flex-row items-center justify-between pl-2 py-2 gap-2 overflow-hidden">
-                    <div class="min-w-0 flex-1 overflow-hidden">
+                <div class="flex flex-row items-center pl-2 py-2 gap-2 overflow-hidden">
+                    <div class="min-w-0 overflow-hidden">
                         <Transition fallback=|| view! { <div class="h-12"></div> }>
                             {move || game_info.get().and_then(|res| res.ok()).map(|info| {
                                 let top = match perspective.get() {
@@ -676,7 +724,18 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                             })}
                         </Transition>
                     </div>
-                    <div class="flex flex-row items-center flex-shrink-0">
+                    {move || view! {
+                        <CapturedPieces position={position} color={match perspective.get() {
+                            BoardPerspective::White => Color::White,
+                            BoardPerspective::Black => Color::Black,
+                        }} />
+                    }}
+                    {move || (top_advantage.get() > 0).then(|| view! {
+                        <span class="text-xs font-semibold text-zinc-400 flex-shrink-0">
+                            {format!("+{}", top_advantage.get())}
+                        </span>
+                    })}
+                    <div class="flex flex-row items-center flex-shrink-0 ml-auto">
                         <Transition fallback=|| view! { <div></div> }>
                             {move || game_info.get().and_then(|r| r.ok()).map(|_| view! {
                                 <Clock
@@ -697,8 +756,8 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     on_premove={on_premove}
                     can_drag_piece={can_drag_piece}
                 />
-                <div class="flex flex-row items-center justify-between pl-2 py-2 gap-2 overflow-hidden">
-                    <div class="min-w-0 flex-1 overflow-hidden">
+                <div class="flex flex-row items-center pl-2 py-2 gap-2 overflow-hidden">
+                    <div class="min-w-0 overflow-hidden">
                         <Transition fallback=|| view! { <div class="h-12"></div> }>
                             {move || game_info.get().and_then(|res| res.ok()).map(|info| {
                                 let bottom = match perspective.get() {
@@ -709,7 +768,18 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                             })}
                         </Transition>
                     </div>
-                    <div class="flex flex-row items-center gap-2 flex-shrink-0">
+                    {move || view! {
+                        <CapturedPieces position={position} color={match perspective.get() {
+                            BoardPerspective::White => Color::Black,
+                            BoardPerspective::Black => Color::White,
+                        }} />
+                    }}
+                    {move || (bottom_advantage.get() > 0).then(|| view! {
+                        <span class="text-xs font-semibold text-zinc-400 flex-shrink-0">
+                            {format!("+{}", bottom_advantage.get())}
+                        </span>
+                    })}
+                    <div class="flex flex-row items-center gap-2 flex-shrink-0 ml-auto">
                         <Show when=move || {
                             game_result.get().is_none()
                                 && player_role.get().is_some_and(|r| matches!(r, PlayerRole::Player(_)))
