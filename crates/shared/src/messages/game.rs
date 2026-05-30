@@ -19,6 +19,8 @@ pub enum GameServerMessage {
         position_fen: String,
         player_role: PlayerRole,
         moves: Vec<String>,
+        white_wins: u32,
+        black_wins: u32,
     },
     UserLeft {
         username: String,
@@ -53,10 +55,14 @@ pub enum GameServerMessage {
         turn: Side,
         sent_at_ms: i64,
         clock_running: bool,
+        white_wins: u32,
+        black_wins: u32,
     },
     GameOver {
         winner: Option<Side>,
         reason: GameOverReason,
+        white_wins: u32,
+        black_wins: u32,
     },
     RematchOffer {
         from: Uuid,

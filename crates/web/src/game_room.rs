@@ -71,10 +71,12 @@ pub struct GameRoom {
     /// the `GameOver` event to a client that reconnects after the game
     /// finished (otherwise they'd see a frozen board with no modal).
     pub end_reason: Option<GameOverReason>,
+    /// Cumulative wins across all games in this rematch series (white, black).
+    pub session_score: (u32, u32),
 }
 
 impl GameRoom {
-    pub fn new(game: Game) -> Self {
+    pub fn new(game: Game, session_score: (u32, u32)) -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         GameRoom {
             game,
@@ -87,6 +89,7 @@ impl GameRoom {
             draw_offer: None,
             move_history: Vec::new(),
             end_reason: None,
+            session_score,
         }
     }
 
@@ -178,6 +181,12 @@ impl GameRoom {
         self.status = GameStatus::Finished(Outcome::Known(outcome));
         self.end_reason = Some(reason.clone());
 
+        match outcome {
+            KnownOutcome::Decisive { winner: Color::White } => self.session_score.0 += 1,
+            KnownOutcome::Decisive { winner: Color::Black } => self.session_score.1 += 1,
+            KnownOutcome::Draw => {}
+        }
+
         // Push the final clock snapshot so clients display the true ending values
         // (e.g. 0.0 for the side that flagged) instead of whatever their local
         // interval extrapolated to.
@@ -197,9 +206,12 @@ impl GameRoom {
             KnownOutcome::Decisive { winner } => Some(Side::from(winner)),
             KnownOutcome::Draw => None,
         };
+        let (white_wins, black_wins) = self.session_score;
         self.broadcast(GameServerMessage::GameOver {
             winner,
             reason: reason.clone(),
+            white_wins,
+            black_wins,
         });
 
         if let Some(h) = self.timeout_task.take() {
@@ -335,6 +347,7 @@ impl GameRoom {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
+        let (white_wins, black_wins) = self.session_score;
         GameServerMessage::Resync {
             position_fen: fen,
             moves: self.move_history.clone(),
@@ -343,6 +356,8 @@ impl GameRoom {
             turn: self.game.position.turn().into(),
             sent_at_ms,
             clock_running: !finished && self.last_move_at.is_some(),
+            white_wins,
+            black_wins,
         }
     }
 

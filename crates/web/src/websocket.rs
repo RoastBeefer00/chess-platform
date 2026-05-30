@@ -72,6 +72,7 @@ pub async fn game_websocket(
             clock_running,
             move_history,
             finished_replay,
+            session_score,
             receiver,
         ) = {
             use shakmaty::fen::Fen;
@@ -121,6 +122,7 @@ pub async fn game_websocket(
                 finished_replay.is_none() && gr.last_move_at.is_some(),
                 gr.move_history.clone(),
                 finished_replay,
+                gr.session_score,
                 gr.subscribe(),
             )
         };
@@ -130,11 +132,14 @@ pub async fn game_websocket(
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
 
+        let (white_wins, black_wins) = session_score;
         let _ = tx.unbounded_send(Ok(GameServerMessage::UserJoined {
             uuid: user.id,
             position_fen,
             player_role: player_role.clone(),
             moves: move_history,
+            white_wins,
+            black_wins,
         }));
 
         let _ = tx.unbounded_send(Ok(GameServerMessage::ClockSync {
@@ -146,7 +151,12 @@ pub async fn game_websocket(
         }));
 
         if let Some((winner, reason)) = finished_replay {
-            let _ = tx.unbounded_send(Ok(GameServerMessage::GameOver { winner, reason }));
+            let _ = tx.unbounded_send(Ok(GameServerMessage::GameOver {
+                winner,
+                reason,
+                white_wins,
+                black_wins,
+            }));
         }
 
         let mut broadcast = BroadcastStream::new(receiver);
@@ -323,11 +333,13 @@ pub async fn game_websocket(
                             if user.id == id {
                                 return;
                             } else if gr.game.black_player == id {
+                                let score = gr.session_score;
                                 let new_game_id = match state
                                     .create_game(
                                         gr.game.config.clone(),
                                         gr.game.black_player,
                                         gr.game.white_player,
+                                        score,
                                     )
                                     .await
                                 {
@@ -350,11 +362,13 @@ pub async fn game_websocket(
                             return;
                         }
 
+                        let score = gr.session_score;
                         let new_game_id = match state
                             .create_game(
                                 gr.game.config.clone(),
                                 gr.game.black_player,
                                 gr.game.white_player,
+                                score,
                             )
                             .await
                         {
