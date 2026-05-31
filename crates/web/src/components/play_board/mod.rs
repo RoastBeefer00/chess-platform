@@ -64,6 +64,9 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     let premoves = RwSignal::new(Vec::<(shakmaty::Square, shakmaty::Square)>::new());
     let (player_role, set_player_role) = signal(None::<PlayerRole>);
     let (game_result, set_game_result) = signal(None::<Outcome>);
+    let (end_reason, set_end_reason) = signal(None::<shared::messages::GameOverReason>);
+    let abort_side = RwSignal::new(None::<shared::Side>);
+    let abort_deadline_ms = RwSignal::new(None::<i64>);
 
     let white_ms = RwSignal::new(0_i64);
     let black_ms = RwSignal::new(0_i64);
@@ -144,6 +147,30 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             BoardPerspective::White => turn == Color::White,
             BoardPerspective::Black => turn == Color::Black,
         }
+    });
+
+    let white_abort_deadline = Signal::derive(move || {
+        if abort_side.get() == Some(shared::Side::White) {
+            abort_deadline_ms.get()
+        } else {
+            None
+        }
+    });
+    let black_abort_deadline = Signal::derive(move || {
+        if abort_side.get() == Some(shared::Side::Black) {
+            abort_deadline_ms.get()
+        } else {
+            None
+        }
+    });
+    // Perspective-adjusted abort deadlines for the top/bottom clock widgets.
+    let top_abort_deadline = Signal::derive(move || match perspective.get() {
+        BoardPerspective::White => black_abort_deadline.get(),
+        BoardPerspective::Black => white_abort_deadline.get(),
+    });
+    let bottom_abort_deadline = Signal::derive(move || match perspective.get() {
+        BoardPerspective::White => white_abort_deadline.get(),
+        BoardPerspective::Black => black_abort_deadline.get(),
     });
 
     let display_position = Signal::derive(move || match viewing_ply.get() {
@@ -251,6 +278,9 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             draw_offer_state,
             clock_offset_ms,
             set_game_result,
+            set_end_reason,
+            abort_side,
+            abort_deadline_ms,
             on_move,
             white_wins,
             black_wins,
@@ -367,6 +397,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             <Show when=move || game_result.get().is_some() && !modal_dismissed.get()>
                 <GameOverModal
                     outcome=game_result.get().unwrap()
+                    reason=end_reason.get()
                     on_close=move |_| modal_dismissed.set(true)
                     on_new_game=on_new_game_cb
                     rematch_state=rematch_state
@@ -412,6 +443,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     snapshot_sent_at_ms={sent_at_ms.into()}
                                     is_active={top_active}
                                     offset_ms={clock_offset_ms}
+                                    abort_deadline_ms={top_abort_deadline}
                                 />
                             })}
                         </Transition>
@@ -484,6 +516,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                     snapshot_sent_at_ms={sent_at_ms.into()}
                                     is_active={bottom_active}
                                     offset_ms={clock_offset_ms}
+                                    abort_deadline_ms={bottom_abort_deadline}
                                 />
                             })}
                         </Transition>

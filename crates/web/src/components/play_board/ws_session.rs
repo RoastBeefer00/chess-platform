@@ -27,6 +27,9 @@ pub(super) struct SessionState {
     pub draw_offer_state: RwSignal<DrawOfferState>,
     pub clock_offset_ms: RwSignal<i64>,
     pub set_game_result: WriteSignal<Option<Outcome>>,
+    pub set_end_reason: WriteSignal<Option<shared::messages::GameOverReason>>,
+    pub abort_side: RwSignal<Option<shared::Side>>,
+    pub abort_deadline_ms: RwSignal<Option<i64>>,
     pub on_move: Callback<shakmaty::Move>,
     pub white_wins: RwSignal<f32>,
     pub black_wins: RwSignal<f32>,
@@ -190,9 +193,18 @@ pub(super) async fn run_session(
                         GameServerMessage::GameOver { winner, reason, white_wins, black_wins } => {
                             s.white_wins.set(white_wins);
                             s.black_wins.set(black_wins);
+                            s.set_end_reason.set(Some(reason.clone()));
                             let outcome = match reason {
-                                GameOverReason::Abort
-                                | GameOverReason::Checkmate
+                                GameOverReason::Abort => {
+                                    // No winner — use Draw as the sentinel outcome.
+                                    // The modal reads end_reason to display the correct text.
+                                    sound::play(sfx::DRAW);
+                                    s.draw_offer_state.set(DrawOfferState::Idle);
+                                    s.clock_running.set(false);
+                                    s.set_game_result.set(Some(Outcome::Known(KnownOutcome::Draw)));
+                                    continue;
+                                }
+                                GameOverReason::Checkmate
                                 | GameOverReason::Timeout
                                 | GameOverReason::Resignation => {
                                     let w = match winner {
@@ -227,6 +239,10 @@ pub(super) async fn run_session(
                             sound::play(sound_src);
                             s.draw_offer_state.set(DrawOfferState::Idle);
                             s.clock_running.set(false);
+                        }
+                        GameServerMessage::AbortCountdown { side, deadline_ms } => {
+                            s.abort_side.set(side);
+                            s.abort_deadline_ms.set(deadline_ms);
                         }
                         GameServerMessage::ClockSync {
                             white_ms_left: w_ms,
