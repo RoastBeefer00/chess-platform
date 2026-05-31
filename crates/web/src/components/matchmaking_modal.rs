@@ -35,6 +35,7 @@ pub fn MatchmakingModal(
         use crate::matchmaking::matchmaking_websocket;
         use futures::channel::mpsc;
         use futures::StreamExt;
+        use gloo_timers::future::TimeoutFuture;
         use leptos::task::spawn_local;
         use leptos_router::NavigateOptions;
         use leptos_use::use_interval_fn;
@@ -42,48 +43,61 @@ pub fn MatchmakingModal(
 
         let navigate = leptos_router::hooks::use_navigate();
 
-        // Channel for sending messages to the server. We hold tx in a
-        // StoredValue so the cleanup hook can drop it; dropping tx closes the
-        // channel, which causes matchmaking_websocket to terminate server-side
-        // and the spawned task to exit naturally.
-        let (tx, rx) = mpsc::channel::<MatchmakingClientMessage>(1);
-        let tx_holder: StoredValue<Option<mpsc::Sender<MatchmakingClientMessage>>> =
-            StoredValue::new(Some(tx));
-
-        // Send Join immediately.
-        if let Some(mut tx) = tx_holder.get_value() {
-            let _ = tx.try_send(MatchmakingClientMessage::Join {
-                time_control: time_control.clone(),
-                rating_mode,
-            });
-            tx_holder.set_value(Some(tx));
-        }
+        let tx_store: StoredValue<Option<mpsc::Sender<MatchmakingClientMessage>>> =
+            StoredValue::new(None);
+        let cancelled = StoredValue::new(false);
 
         let nav = navigate.clone();
         spawn_local(async move {
-            match matchmaking_websocket(rx.map(Ok).into()).await {
-                Ok(mut messages) => {
-                    while let Some(msg) = messages.next().await {
-                        let Ok(msg) = msg else { continue };
-                        if let MatchmakingServerMessage::Matched { game, side: _ } = msg {
-                            nav(&format!("/game/{game}"), NavigateOptions::default());
+            let mut backoff_ms = 500u32;
+            loop {
+                if cancelled.get_value() {
+                    break;
+                }
+
+                let (mut tx, rx) = mpsc::channel::<MatchmakingClientMessage>(1);
+                let _ = tx.try_send(MatchmakingClientMessage::Join {
+                    time_control: time_control.clone(),
+                    rating_mode,
+                });
+                tx_store.set_value(Some(tx));
+
+                match matchmaking_websocket(rx.map(Ok).into()).await {
+                    Ok(mut messages) => {
+                        backoff_ms = 500;
+                        let mut matched = false;
+                        while let Some(msg) = messages.next().await {
+                            let Ok(msg) = msg else { continue };
+                            if let MatchmakingServerMessage::Matched { game, side: _ } = msg {
+                                nav(&format!("/game/{game}"), NavigateOptions::default());
+                                matched = true;
+                                break;
+                            }
+                        }
+                        if matched || cancelled.get_value() {
                             break;
                         }
                     }
+                    Err(e) => leptos::logging::warn!("matchmaking websocket error: {e}"),
                 }
-                Err(e) => leptos::logging::warn!("matchmaking websocket error: {e}"),
+
+                tx_store.set_value(None);
+                if cancelled.get_value() {
+                    break;
+                }
+                TimeoutFuture::new(backoff_ms).await;
+                backoff_ms = (backoff_ms * 2).min(5000);
             }
         });
 
-        // Elapsed-seconds counter for the UI.
         use_interval_fn(
             move || elapsed.update(|v| *v += 1),
             1000,
         );
 
-        // Drop the tx holder when the modal unmounts. Channel closes → WS ends.
         on_cleanup(move || {
-            tx_holder.set_value(None);
+            cancelled.set_value(true);
+            tx_store.set_value(None);
         });
     }
 

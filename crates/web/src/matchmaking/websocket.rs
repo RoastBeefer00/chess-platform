@@ -50,6 +50,14 @@ pub async fn matchmaking_websocket(
         futures::channel::mpsc::unbounded::<Result<MatchmakingServerMessage, ServerFnError>>();
     state.add_match_inbox(player_id, tx.clone()).await;
 
+    // Reconnect path: if this player was already matched but their previous
+    // WS died before they received the notification, deliver it now.
+    if let Some((game_id, side)) = state.take_pending_match(&player_id).await {
+        let _ = tx.unbounded_send(Ok(MatchmakingServerMessage::Matched { game: game_id, side }));
+        state.remove_match_inbox(&player_id).await;
+        return Ok(rx.into());
+    }
+
     tokio::spawn(async move {
         let mut input = input;
         // Holds the bucket key once we know it, so cleanup can ZREM regardless of path.
@@ -124,6 +132,9 @@ pub async fn matchmaking_websocket(
                             return Err(());
                         }
                     };
+                    // Persist assignment before notify so the opponent can recover
+                    // it if their WS is dead. notify_match clears it on success.
+                    state.set_pending_match(opponent_id, game_id, my_side.opposite()).await;
                     // Notify opponent via their inbox.
                     state
                         .notify_match(

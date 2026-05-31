@@ -5,7 +5,7 @@ use fred::prelude::*;
 use futures::channel::mpsc::UnboundedSender;
 use leptos::config::LeptosOptions;
 use leptos::prelude::ServerFnError;
-use shared::{Game, GameConfig, GameStatus, MatchmakingServerMessage};
+use shared::{Game, GameConfig, GameStatus, MatchmakingServerMessage, Side};
 use sqlx::PgPool;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -19,6 +19,14 @@ pub type GameRooms = Arc<Mutex<HashMap<GameId, Arc<Mutex<GameRoom>>>>>;
 pub type MatchInboxSender = UnboundedSender<Result<MatchmakingServerMessage, ServerFnError>>;
 pub type MatchInbox = Arc<Mutex<HashMap<Uuid, MatchInboxSender>>>;
 
+#[derive(Debug)]
+pub struct PendingMatch {
+    pub game_id: GameId,
+    pub side: Side,
+    created_at: std::time::Instant,
+}
+pub type PendingMatches = Arc<Mutex<HashMap<Uuid, PendingMatch>>>;
+
 #[derive(FromRef, Clone, Debug)]
 pub struct AppState {
     pub leptos_options: LeptosOptions,
@@ -29,6 +37,7 @@ pub struct AppState {
     pub rating_store: RatingStore,
     pub redis_client: RedisClient,
     pub match_inboxes: MatchInbox,
+    pub pending_matches: PendingMatches,
 }
 
 impl AppState {
@@ -56,6 +65,7 @@ impl AppState {
             rating_store,
             redis_client,
             match_inboxes: Arc::new(Mutex::new(HashMap::new())),
+            pending_matches: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -111,7 +121,28 @@ impl AppState {
     pub async fn notify_match(&self, id: Uuid, message: MatchmakingServerMessage) {
         let tx = self.match_inboxes.lock().await.get(&id).cloned();
         if let Some(tx) = tx {
-            let _ = tx.unbounded_send(Ok(message));
+            if tx.unbounded_send(Ok(message)).is_ok() {
+                // Message successfully enqueued — consume pending match so a
+                // requeue after a fast game doesn't re-navigate to this game.
+                self.pending_matches.lock().await.remove(&id);
+            }
+        }
+    }
+
+    pub async fn set_pending_match(&self, player_id: Uuid, game_id: GameId, side: Side) {
+        self.pending_matches.lock().await.insert(
+            player_id,
+            PendingMatch { game_id, side, created_at: std::time::Instant::now() },
+        );
+    }
+
+    pub async fn take_pending_match(&self, player_id: &Uuid) -> Option<(GameId, Side)> {
+        let mut map = self.pending_matches.lock().await;
+        match map.remove(player_id) {
+            Some(pm) if pm.created_at.elapsed() < std::time::Duration::from_secs(60) => {
+                Some((pm.game_id, pm.side))
+            }
+            _ => None,
         }
     }
 }
