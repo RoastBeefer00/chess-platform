@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use strum::EnumIter;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GameConfig {
@@ -7,7 +8,7 @@ pub struct GameConfig {
     pub rated: RatingMode,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, EnumIter)]
 pub enum Category {
     Bullet,
     Blitz,
