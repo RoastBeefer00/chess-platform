@@ -11,7 +11,7 @@ pub async fn game_websocket(
 ) -> Result<BoxedStream<GameServerMessage, ServerFnError>, ServerFnError> {
     use crate::auth::AuthBackend;
     use crate::db::spawn_finalize;
-    use crate::game_room::{handle_timeout, MoveError};
+    use crate::game_room::{handle_abort_timeout, handle_timeout, MoveError};
     use crate::state::AppState;
     use axum_login::AuthSession;
     use futures::StreamExt;
@@ -73,11 +73,22 @@ pub async fn game_websocket(
             move_history,
             finished_replay,
             session_score,
+            abort_countdown_snapshot,
             receiver,
         ) = {
             use shakmaty::fen::Fen;
             let mut gr = game_room.lock().await;
-            let role = gr.add_player(user.id);
+            let (role, started) = gr.add_player(user.id);
+
+            if started {
+                gr.start_abort_window(shared::Side::White);
+                let handle = tokio::spawn(handle_abort_timeout(
+                    game_room.clone(),
+                    state.game_store.clone(),
+                    shakmaty::Color::White,
+                ));
+                gr.abort_task = Some(handle);
+            }
             let fen =
                 Fen::from_position(&gr.get_position(), shakmaty::EnPassantMode::Legal).to_string();
 
@@ -123,6 +134,7 @@ pub async fn game_websocket(
                 gr.move_history.clone(),
                 finished_replay,
                 gr.session_score,
+                (gr.abort_side, gr.abort_deadline_ms),
                 gr.subscribe(),
             )
         };
@@ -149,6 +161,16 @@ pub async fn game_websocket(
             sent_at_ms,
             clock_running,
         }));
+
+        // Reconnect: if an abort window was active, restore the countdown for
+        // this client (broadcast already fired when the window started, but
+        // this client joined late or reconnected).
+        if let (Some(side), Some(deadline_ms)) = abort_countdown_snapshot {
+            let _ = tx.unbounded_send(Ok(GameServerMessage::AbortCountdown {
+                side: Some(side),
+                deadline_ms: Some(deadline_ms),
+            }));
+        }
 
         if let Some((winner, reason)) = finished_replay {
             let _ = tx.unbounded_send(Ok(GameServerMessage::GameOver {
@@ -239,6 +261,29 @@ pub async fn game_websocket(
                                     plan.ms_until_flag,
                                 ));
                                 gr.timeout_task = Some(handle);
+
+                                // Abort window transitions based on move count.
+                                match gr.move_history.len() {
+                                    1 => {
+                                        // White just moved — cancel white's abort task
+                                        // and start black's window.
+                                        if let Some(h) = gr.abort_task.take() {
+                                            h.abort();
+                                        }
+                                        gr.start_abort_window(shared::Side::Black);
+                                        let handle = tokio::spawn(handle_abort_timeout(
+                                            game_room.clone(),
+                                            state.game_store.clone(),
+                                            shakmaty::Color::Black,
+                                        ));
+                                        gr.abort_task = Some(handle);
+                                    }
+                                    2 => {
+                                        // Black just moved — both have moved; no more abort.
+                                        gr.clear_abort_window();
+                                    }
+                                    _ => {}
+                                }
                             }
                             Ok(MoveOutcome::Ended(plan)) => {
                                 // end_game already broadcast + cancelled timer.

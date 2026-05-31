@@ -64,6 +64,9 @@ pub struct GameRoom {
     tx: Sender<GameServerMessage>,
     pub last_move_at: Option<Instant>,
     pub timeout_task: Option<JoinHandle<()>>,
+    pub abort_task: Option<JoinHandle<()>>,
+    pub abort_side: Option<Side>,
+    pub abort_deadline_ms: Option<i64>,
     pub rematch_offer: Option<Uuid>,
     pub draw_offer: Option<Uuid>,
     pub move_history: Vec<String>,
@@ -85,6 +88,9 @@ impl GameRoom {
             tx,
             last_move_at: None,
             timeout_task: None,
+            abort_task: None,
+            abort_side: None,
+            abort_deadline_ms: None,
             rematch_offer: None,
             draw_offer: None,
             move_history: Vec::new(),
@@ -111,7 +117,9 @@ impl GameRoom {
     }
 
     #[instrument(skip(self))]
-    pub fn add_player(&mut self, player_id: Uuid) -> PlayerRole {
+    pub fn add_player(&mut self, player_id: Uuid) -> (PlayerRole, bool) {
+        let was_waiting = matches!(self.status, GameStatus::WaitingForOpponent);
+
         let role = if player_id == self.game.white_player {
             *self.connected.entry(player_id).or_insert(0) += 1;
             PlayerRole::Player(Color::White.into())
@@ -128,7 +136,13 @@ impl GameRoom {
             self.status = GameStatus::Ongoing;
         }
 
-        role
+        // True only on the exact WaitingForOpponent → Ongoing transition with no
+        // moves yet (not on reconnects or when the game has already progressed).
+        let started = was_waiting
+            && matches!(self.status, GameStatus::Ongoing)
+            && self.move_history.is_empty();
+
+        (role, started)
     }
 
     /// Decrement the session count for this user; remove the entry when it
@@ -220,6 +234,11 @@ impl GameRoom {
         if let Some(h) = self.timeout_task.take() {
             h.abort();
         }
+        if let Some(h) = self.abort_task.take() {
+            h.abort();
+        }
+        self.abort_side = None;
+        self.abort_deadline_ms = None;
 
         Some(GameFinalization {
             game_id: self.game.id,
@@ -364,6 +383,40 @@ impl GameRoom {
         }
     }
 
+    /// Start the first-move abort countdown for `side`. Broadcasts the deadline
+    /// to all subscribers and returns the deadline_ms so the caller can pass it
+    /// to `handle_abort_timeout`. The caller is responsible for spawning the
+    /// task and storing the handle on `abort_task`.
+    pub fn start_abort_window(&mut self, side: Side) -> i64 {
+        let deadline_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+            + 15_000;
+        self.abort_side = Some(side);
+        self.abort_deadline_ms = Some(deadline_ms);
+        self.broadcast(GameServerMessage::AbortCountdown {
+            side: Some(side),
+            deadline_ms: Some(deadline_ms),
+        });
+        deadline_ms
+    }
+
+    /// Cancel the active abort window (called when a move is made that ends
+    /// the window, not from `end_game` which cleans up inline without a
+    /// superfluous clear-broadcast).
+    pub fn clear_abort_window(&mut self) {
+        if let Some(h) = self.abort_task.take() {
+            h.abort();
+        }
+        self.abort_side = None;
+        self.abort_deadline_ms = None;
+        self.broadcast(GameServerMessage::AbortCountdown {
+            side: None,
+            deadline_ms: None,
+        });
+    }
+
     pub fn clear_rematch_offer(&mut self) {
         self.rematch_offer = None;
     }
@@ -430,6 +483,43 @@ pub async fn handle_timeout(
     if let Some(plan) = plan {
         if let Err(e) = game_store.finalize_game(plan).await {
             tracing::warn!(?e, "finalize_game failed (timeout path)");
+        }
+    }
+}
+
+#[instrument(skip(room, game_store), fields(?expected_side))]
+pub async fn handle_abort_timeout(
+    room: Arc<Mutex<GameRoom>>,
+    game_store: GameStore,
+    expected_side: Color,
+) {
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    let plan = {
+        let mut gr = room.lock().await;
+
+        if !matches!(gr.status, GameStatus::Ongoing) {
+            return;
+        }
+        // Bail if the expected side has already moved.
+        if gr.game.position.turn() != expected_side {
+            return;
+        }
+        // Defense in depth: also check move count.
+        let already_moved = match expected_side {
+            Color::White => !gr.move_history.is_empty(),
+            Color::Black => gr.move_history.len() >= 2,
+        };
+        if already_moved {
+            return;
+        }
+
+        gr.end_game(KnownOutcome::Draw, GameOverReason::Abort)
+    };
+
+    if let Some(plan) = plan {
+        if let Err(e) = game_store.abort_game(plan).await {
+            tracing::warn!(?e, "abort_game failed");
         }
     }
 }

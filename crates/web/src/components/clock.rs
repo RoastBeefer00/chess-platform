@@ -15,12 +15,23 @@ pub fn Clock(
     /// Defaults to 0 — identical to pre-handshake behavior until it converges.
     #[prop(into, optional)]
     offset_ms: Signal<i64>,
+    /// When `Some(deadline_ms)`, the clock shows a 15-second first-move abort
+    /// countdown instead of the game clock. `deadline_ms` is the server-time
+    /// UNIX epoch ms at which the abort fires.
+    #[prop(into, optional)]
+    abort_deadline_ms: Signal<Option<i64>>,
 ) -> impl IntoView {
     let displayed_ms = RwSignal::new(snapshot_ms.get_untracked());
 
     #[cfg(feature = "hydrate")]
     use_interval_fn(
         move || {
+            // Abort mode takes precedence: show countdown to deadline.
+            if let Some(deadline) = abort_deadline_ms.get_untracked() {
+                let server_now = Date::now() as i64 + offset_ms.get_untracked();
+                displayed_ms.set((deadline - server_now).max(0));
+                return;
+            }
             let snap = snapshot_ms.get_untracked();
             if is_active.get_untracked() {
                 // Measure elapsed in *server* time: Date::now() + offset maps the
@@ -38,6 +49,10 @@ pub fn Clock(
     );
 
     let state_classes = move || {
+        // Abort countdown: amber background to distinguish from normal low-time red.
+        if abort_deadline_ms.get().is_some() {
+            return "bg-amber-500 text-black font-bold";
+        }
         let ms = displayed_ms.get();
         let active = is_active.get();
         if !active || ms == 0 {

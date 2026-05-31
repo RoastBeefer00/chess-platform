@@ -251,11 +251,45 @@ impl GameStore {
         );
         Ok(())
     }
+
+    /// Persist an aborted game: sets `status='aborted'`, `result=NULL`,
+    /// `termination='abandonment'`. Skips all rating reads/writes — no ELO
+    /// change for either player.
+    #[tracing::instrument(skip(self, plan), fields(game_id = %plan.game_id))]
+    pub async fn abort_game(&self, plan: GameFinalization) -> Result<(), AuthError> {
+        let moves_joined = plan.moves.join(" ");
+        sqlx::query!(
+            r#"UPDATE games
+               SET status = 'aborted',
+                   result = NULL,
+                   termination = 'abandonment',
+                   ended_at = now(),
+                   moves = $2,
+                   final_fen = $3
+               WHERE id = $1"#,
+            plan.game_id,
+            moves_joined,
+            plan.final_fen,
+        )
+        .execute(&self.pool)
+        .await?;
+        tracing::info!(game_id = %plan.game_id, "game_aborted");
+        Ok(())
+    }
 }
 
 pub fn spawn_finalize(game_store: GameStore, plan: Option<GameFinalization>) {
     if let Some(plan) = plan {
         let gs = game_store.clone();
-        tokio::spawn(async move { gs.finalize_game(plan).await });
+        tokio::spawn(async move {
+            let result = if matches!(plan.reason, GameOverReason::Abort) {
+                gs.abort_game(plan).await
+            } else {
+                gs.finalize_game(plan).await
+            };
+            if let Err(e) = result {
+                tracing::warn!(?e, "game finalization failed");
+            }
+        });
     }
 }

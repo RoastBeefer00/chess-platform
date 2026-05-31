@@ -76,6 +76,13 @@ pub enum GameServerMessage {
         from: Uuid,
     },
     DrawDecline,
+    /// First-move abort countdown. Both fields `Some` ⇒ countdown active for
+    /// that side until `deadline_ms` (server-time, ms since UNIX epoch). Both
+    /// `None` ⇒ countdown cleared (side moved, game ended, etc.).
+    AbortCountdown {
+        side: Option<Side>,
+        deadline_ms: Option<i64>,
+    },
     /// Reply to a client `Ping`. Echoes the client's send timestamp and
     /// carries the server's wall-clock time so the client can estimate the
     /// client↔server clock offset (NTP-style) for accurate clock display.
