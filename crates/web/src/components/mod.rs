@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod board_user;
 pub mod captured_pieces;
+pub mod connection_indicator;
 pub mod chess_board;
 pub mod clock;
 pub mod draw_resign_controls;
@@ -20,6 +21,7 @@ pub mod user;
 pub use auth::*;
 pub use board_user::*;
 pub use captured_pieces::*;
+pub use connection_indicator::*;
 pub use chess_board::*;
 pub use clock::*;
 pub use draw_resign_controls::*;

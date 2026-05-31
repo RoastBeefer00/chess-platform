@@ -33,6 +33,12 @@ pub(super) struct SessionState {
     pub on_move: Callback<shakmaty::Move>,
     pub white_wins: RwSignal<f32>,
     pub black_wins: RwSignal<f32>,
+    pub white_rtt_ms: RwSignal<Option<u32>>,
+    pub black_rtt_ms: RwSignal<Option<u32>>,
+    pub white_connected: RwSignal<bool>,
+    pub black_connected: RwSignal<bool>,
+    pub self_rtt_ms: RwSignal<Option<u32>>,
+    pub self_ws_connected: RwSignal<bool>,
 }
 
 #[derive(Copy, Clone)]
@@ -68,6 +74,8 @@ pub(super) async fn run_session(
 
         match game_websocket(rx.map(Ok).into()).await {
             Ok(mut messages) => {
+                s.self_ws_connected.set(true);
+                s.self_rtt_ms.set(None);
                 backoff_ms = 500;
                 let mut last_message_at = js_sys::Date::now() as i64;
                 loop {
@@ -308,12 +316,25 @@ pub(super) async fn run_session(
                         GameServerMessage::DrawDecline => {
                             s.draw_offer_state.set(DrawOfferState::Idle);
                         }
+                        GameServerMessage::PresenceUpdate { side, connected, rtt_ms } => {
+                            match side {
+                                shared::Side::White => {
+                                    s.white_connected.set(connected);
+                                    s.white_rtt_ms.set(rtt_ms);
+                                }
+                                shared::Side::Black => {
+                                    s.black_connected.set(connected);
+                                    s.black_rtt_ms.set(rtt_ms);
+                                }
+                            }
+                        }
                         GameServerMessage::Pong {
                             client_time_ms,
                             server_time_ms,
                         } => {
                             let now = js_sys::Date::now() as i64;
                             let rtt = now - client_time_ms;
+                            s.self_rtt_ms.set(Some(rtt.clamp(0, 60_000) as u32));
                             let offset = server_time_ms - (client_time_ms + rtt / 2);
                             h.offset_samples.update_value(|samples| {
                                 samples.push((rtt, offset));
@@ -338,6 +359,8 @@ pub(super) async fn run_session(
             }
         }
 
+        s.self_ws_connected.set(false);
+        s.self_rtt_ms.set(None);
         h.current_tx.set_value(None);
         gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
         backoff_ms = (backoff_ms * 2).min(30_000);

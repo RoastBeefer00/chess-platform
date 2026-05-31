@@ -8,8 +8,8 @@ mod ws_session;
 
 use crate::components::{
     material_advantage, BoardPerspective, BoardUser, CapturedPieces, ChessBoard, Clock,
-    DrawOfferState, DrawResignControls, GameOverModal, MatchmakingModal, MovesPanel, NewGameButton,
-    RematchControls, RematchState,
+    ConnectionIndicator, DrawOfferState, DrawResignControls, GameOverModal, MatchmakingModal,
+    MovesPanel, NewGameButton, RematchControls, RematchState,
 };
 use crate::game::get_game_info;
 use crate::sound::{self, sfx};
@@ -73,6 +73,12 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     let sent_at_ms = RwSignal::new(0_i64);
     let clock_running = RwSignal::new(false);
     let clock_offset_ms = RwSignal::new(0_i64);
+    let white_rtt_ms = RwSignal::new(None::<u32>);
+    let black_rtt_ms = RwSignal::new(None::<u32>);
+    let white_connected = RwSignal::new(true);
+    let black_connected = RwSignal::new(true);
+    let self_rtt_ms = RwSignal::new(None::<u32>);
+    let self_ws_connected = RwSignal::new(true);
     #[cfg(feature = "hydrate")]
     let offset_samples: StoredValue<Vec<(i64, i64)>, LocalStorage> =
         StoredValue::new_local(Vec::new());
@@ -171,6 +177,16 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     let bottom_abort_deadline = Signal::derive(move || match perspective.get() {
         BoardPerspective::White => white_abort_deadline.get(),
         BoardPerspective::Black => black_abort_deadline.get(),
+    });
+
+    // Perspective-adjusted connection signals for the indicator dots.
+    let opponent_rtt = Signal::derive(move || match perspective.get() {
+        BoardPerspective::White => black_rtt_ms.get(),
+        BoardPerspective::Black => white_rtt_ms.get(),
+    });
+    let opponent_connected = Signal::derive(move || match perspective.get() {
+        BoardPerspective::White => black_connected.get(),
+        BoardPerspective::Black => white_connected.get(),
     });
 
     let display_position = Signal::derive(move || match viewing_ply.get() {
@@ -284,6 +300,12 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             on_move,
             white_wins,
             black_wins,
+            white_rtt_ms,
+            black_rtt_ms,
+            white_connected,
+            black_connected,
+            self_rtt_ms,
+            self_ws_connected,
         };
         let session_handles = ws_session::SessionHandles {
             current_tx,
@@ -419,6 +441,9 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                             })}
                         </Transition>
                     </div>
+                    <Show when=move || game_result.get().is_none()>
+                        <ConnectionIndicator rtt_ms=opponent_rtt connected=opponent_connected />
+                    </Show>
                     {move || view! {
                         <CapturedPieces position={position} color={match perspective.get() {
                             BoardPerspective::White => Color::White,
@@ -470,6 +495,9 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                             })}
                         </Transition>
                     </div>
+                    <Show when=move || game_result.get().is_none()>
+                        <ConnectionIndicator rtt_ms=self_rtt_ms connected=self_ws_connected />
+                    </Show>
                     {move || view! {
                         <CapturedPieces position={position} color={match perspective.get() {
                             BoardPerspective::White => Color::Black,

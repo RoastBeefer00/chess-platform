@@ -75,6 +75,8 @@ pub async fn game_websocket(
             session_score,
             abort_countdown_snapshot,
             receiver,
+            player_side,
+            opponent_presence_snapshot,
         ) = {
             use shakmaty::fen::Fen;
             let mut gr = game_room.lock().await;
@@ -89,6 +91,41 @@ pub async fn game_websocket(
                 ));
                 gr.abort_task = Some(handle);
             }
+
+            // Inform the room that this player has connected/reconnected.
+            let joining_side: Option<shared::Side> = match &role {
+                shared::PlayerRole::Player(side) => Some(*side),
+                shared::PlayerRole::Spectator => None,
+            };
+            if let Some(side) = joining_side {
+                gr.broadcast(GameServerMessage::PresenceUpdate {
+                    side,
+                    connected: true,
+                    rtt_ms: None,
+                });
+            }
+            // Snapshot opponent's current presence to send just to this client
+            // (the broadcast above only goes to already-subscribed clients).
+            let opponent_presence_snapshot: Option<GameServerMessage> = {
+                let opp_id = if user.id == gr.game.white_player {
+                    Some(gr.game.black_player)
+                } else if user.id == gr.game.black_player {
+                    Some(gr.game.white_player)
+                } else {
+                    None
+                };
+                opp_id.and_then(|id| {
+                    if gr.connected.contains_key(&id) {
+                        gr.user_side(id).map(|side| GameServerMessage::PresenceUpdate {
+                            side,
+                            connected: true,
+                            rtt_ms: gr.rtt_of(id),
+                        })
+                    } else {
+                        None
+                    }
+                })
+            };
             let fen =
                 Fen::from_position(&gr.get_position(), shakmaty::EnPassantMode::Legal).to_string();
 
@@ -136,6 +173,8 @@ pub async fn game_websocket(
                 gr.session_score,
                 (gr.abort_side, gr.abort_deadline_ms),
                 gr.subscribe(),
+                joining_side,
+                opponent_presence_snapshot,
             )
         };
 
@@ -181,6 +220,12 @@ pub async fn game_websocket(
             }));
         }
 
+        // Push opponent's current presence directly to this client (they missed
+        // the broadcast that fired when the opponent first connected).
+        if let Some(presence) = opponent_presence_snapshot {
+            let _ = tx.unbounded_send(Ok(presence));
+        }
+
         let mut broadcast = BroadcastStream::new(receiver);
         let tx2 = tx.clone();
         let room_for_lag = game_room.clone();
@@ -210,6 +255,9 @@ pub async fn game_websocket(
         // min(recv - send) ≈ true clock offset (best-case one-way lag → 0).
         // Connection-local so the lock-free Ping fast-path stays lock-free.
         let mut offset_est: Option<i64> = None;
+        // Last RTT bucket broadcast for this connection; used to suppress
+        // redundant PresenceUpdate broadcasts in the steady state.
+        let mut prev_bucket: Option<u8> = None;
 
         while let Some(msg) = input.next().await {
             if let Ok(msg) = msg {
@@ -224,7 +272,26 @@ pub async fn game_websocket(
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or(0);
                     let d = server_time_ms - client_time_ms;
-                    offset_est = Some(offset_est.map_or(d, |e| e.min(d)));
+                    let new_offset = offset_est.map_or(d, |e| e.min(d));
+                    offset_est = Some(new_offset);
+                    // RTT estimate: 2 * (server_recv - client_send - min_offset).
+                    // Lock only on bucket transitions to preserve the fast path.
+                    if let Some(side) = player_side {
+                        use shared::rtt_bucket;
+                        let rtt_est = ((server_time_ms - client_time_ms - new_offset) * 2)
+                            .clamp(0, 60_000) as u32;
+                        let new_bucket = rtt_bucket(rtt_est);
+                        if prev_bucket != Some(new_bucket) {
+                            prev_bucket = Some(new_bucket);
+                            let mut gr = game_room.lock().await;
+                            gr.update_rtt(user.id, rtt_est);
+                            gr.broadcast(GameServerMessage::PresenceUpdate {
+                                side,
+                                connected: true,
+                                rtt_ms: Some(rtt_est),
+                            });
+                        }
+                    }
                     let _ = tx.unbounded_send(Ok(GameServerMessage::Pong {
                         client_time_ms,
                         server_time_ms,
@@ -456,7 +523,17 @@ pub async fn game_websocket(
             }
         }
         let mut gr = game_room.lock().await;
+        let disconnecting_side = gr.user_side(user.id);
         gr.remove_player(user.id);
+        if !gr.connected.contains_key(&user.id) {
+            if let Some(side) = disconnecting_side {
+                gr.broadcast(GameServerMessage::PresenceUpdate {
+                    side,
+                    connected: false,
+                    rtt_ms: None,
+                });
+            }
+        }
         if gr.rematch_offer.is_some() {
             gr.clear_rematch_offer();
             gr.broadcast(GameServerMessage::RematchCancel);

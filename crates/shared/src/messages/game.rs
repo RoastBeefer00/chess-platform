@@ -90,6 +90,13 @@ pub enum GameServerMessage {
         client_time_ms: i64,
         server_time_ms: i64,
     },
+    /// Per-player connection status. Broadcast to the room when a player
+    /// connects, disconnects, or their RTT bucket changes.
+    PresenceUpdate {
+        side: Side,
+        connected: bool,
+        rtt_ms: Option<u32>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,4 +115,32 @@ pub enum GameClientMessage {
     /// Clock-offset probe. `client_time_ms` is the client's `Date.now()` at
     /// send; the server echoes it in `Pong` so the client can compute RTT.
     Ping { client_time_ms: i64 },
+}
+
+/// Bucket a raw RTT (ms) into a 0–3 level for UI display.
+/// 0 = excellent (<100 ms), 1 = good (100–249 ms), 2 = fair (250–499 ms), 3 = poor (≥500 ms).
+pub fn rtt_bucket(rtt_ms: u32) -> u8 {
+    match rtt_ms {
+        0..=99 => 0,
+        100..=249 => 1,
+        250..=499 => 2,
+        _ => 3,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rtt_bucket_boundaries() {
+        assert_eq!(rtt_bucket(0), 0);
+        assert_eq!(rtt_bucket(99), 0);
+        assert_eq!(rtt_bucket(100), 1);
+        assert_eq!(rtt_bucket(249), 1);
+        assert_eq!(rtt_bucket(250), 2);
+        assert_eq!(rtt_bucket(499), 2);
+        assert_eq!(rtt_bucket(500), 3);
+        assert_eq!(rtt_bucket(10_000), 3);
+    }
 }
