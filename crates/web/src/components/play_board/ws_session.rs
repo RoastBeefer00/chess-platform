@@ -28,8 +28,8 @@ pub(super) struct SessionState {
     pub clock_offset_ms: RwSignal<i64>,
     pub set_game_result: WriteSignal<Option<Outcome>>,
     pub on_move: Callback<shakmaty::Move>,
-    pub white_wins: RwSignal<u32>,
-    pub black_wins: RwSignal<u32>,
+    pub white_wins: RwSignal<f32>,
+    pub black_wins: RwSignal<f32>,
 }
 
 #[derive(Copy, Clone)]

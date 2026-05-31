@@ -14,6 +14,14 @@ use crate::components::{
 use crate::game::get_game_info;
 use crate::sound::{self, sfx};
 
+fn format_score(score: f32) -> String {
+    if score.fract() == 0.0 {
+        format!("{}", score as u32)
+    } else {
+        format!("{:.1}", score)
+    }
+}
+
 #[component]
 #[cfg_attr(not(feature = "hydrate"), allow(unused_variables))]
 pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
@@ -31,8 +39,8 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
 
     let rematch_state = RwSignal::new(RematchState::Idle);
     let draw_offer_state = RwSignal::new(DrawOfferState::Idle);
-    let white_wins = RwSignal::new(0_u32);
-    let black_wins = RwSignal::new(0_u32);
+    let white_wins = RwSignal::new(0_f32);
+    let black_wins = RwSignal::new(0_f32);
     let searching = RwSignal::new(None::<(shared::TimeControl, shared::RatingMode)>);
     // Tracks whether the GameOverModal has been dismissed. Separate from
     // `game_result` so closing the modal doesn't hide the post-game buttons.
@@ -392,9 +400,9 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                         </span>
                     })}
                     <div class="flex flex-row items-center gap-2 flex-shrink-0 ml-auto">
-                        {move || (white_wins.get() + black_wins.get() > 0).then(|| view! {
+                        {move || (white_wins.get() + black_wins.get() > 0.0).then(|| view! {
                             <span class="font-mono text-sm font-semibold text-zinc-300 flex-shrink-0">
-                                {move || top_wins.get()}
+                                {move || format_score(top_wins.get())}
                             </span>
                         })}
                         <Transition fallback=|| view! { <div></div> }>
@@ -464,9 +472,9 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                 <NewGameButton on_new_game=on_new_game_cb tc_label=tc_label size="sm" />
                             </div>
                         </Show>
-                        {move || (white_wins.get() + black_wins.get() > 0).then(|| view! {
+                        {move || (white_wins.get() + black_wins.get() > 0.0).then(|| view! {
                             <span class="font-mono text-sm font-semibold text-zinc-300 flex-shrink-0">
-                                {move || bottom_wins.get()}
+                                {move || format_score(bottom_wins.get())}
                             </span>
                         })}
                         <Transition fallback=|| view! { <div></div> }>

@@ -65,7 +65,7 @@ impl AppState {
         game_config: GameConfig,
         white_player: Uuid,
         black_player: Uuid,
-        session_score: (u32, u32),
+        session_score: (f32, f32),
     ) -> Result<GameId, AuthError> {
         let game = GameRoom::new(Game::new(game_config.clone(), white_player, black_player), session_score);
         let game_id = game.game.id;

@@ -71,12 +71,12 @@ pub struct GameRoom {
     /// the `GameOver` event to a client that reconnects after the game
     /// finished (otherwise they'd see a frozen board with no modal).
     pub end_reason: Option<GameOverReason>,
-    /// Cumulative wins across all games in this rematch series (white, black).
-    pub session_score: (u32, u32),
+    /// Cumulative score across all games in this rematch series (white, black). Draws give 0.5.
+    pub session_score: (f32, f32),
 }
 
 impl GameRoom {
-    pub fn new(game: Game, session_score: (u32, u32)) -> Self {
+    pub fn new(game: Game, session_score: (f32, f32)) -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         GameRoom {
             game,
@@ -182,9 +182,12 @@ impl GameRoom {
         self.end_reason = Some(reason.clone());
 
         match outcome {
-            KnownOutcome::Decisive { winner: Color::White } => self.session_score.0 += 1,
-            KnownOutcome::Decisive { winner: Color::Black } => self.session_score.1 += 1,
-            KnownOutcome::Draw => {}
+            KnownOutcome::Decisive { winner: Color::White } => self.session_score.0 += 1.0,
+            KnownOutcome::Decisive { winner: Color::Black } => self.session_score.1 += 1.0,
+            KnownOutcome::Draw => {
+                self.session_score.0 += 0.5;
+                self.session_score.1 += 0.5;
+            }
         }
 
         // Push the final clock snapshot so clients display the true ending values
