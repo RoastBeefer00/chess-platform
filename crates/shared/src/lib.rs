@@ -6,6 +6,7 @@ mod player;
 pub use game::*;
 pub use matchmaking::*;
 pub use messages::{
-    GameClientMessage, GameServerMessage, MatchmakingClientMessage, MatchmakingServerMessage,
+    rtt_bucket, GameClientMessage, GameServerMessage, MatchmakingClientMessage,
+    MatchmakingServerMessage,
 };
 pub use player::*;

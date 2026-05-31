@@ -60,7 +60,10 @@ pub struct GameRoom {
     /// (e.g. laptop + phone for the same account) each `add_player` on connect
     /// and `remove_player` on disconnect; the user only counts as "left" when
     /// the count reaches zero.
-    connected: HashMap<Uuid, u32>,
+    pub connected: HashMap<Uuid, u32>,
+    /// Server-estimated RTT (ms) for each connected player. Updated on every
+    /// Ping bucket change; cleared when the user fully disconnects.
+    rtt_ms: HashMap<Uuid, u32>,
     tx: Sender<GameServerMessage>,
     pub last_move_at: Option<Instant>,
     pub timeout_task: Option<JoinHandle<()>>,
@@ -85,6 +88,7 @@ impl GameRoom {
             game,
             status: GameStatus::WaitingForOpponent,
             connected: HashMap::new(),
+            rtt_ms: HashMap::new(),
             tx,
             last_move_at: None,
             timeout_task: None,
@@ -110,6 +114,24 @@ impl GameRoom {
     /// Number of distinct connected users (not number of sessions).
     pub fn player_count(&self) -> usize {
         self.connected.len()
+    }
+
+    pub fn update_rtt(&mut self, id: Uuid, rtt: u32) {
+        self.rtt_ms.insert(id, rtt);
+    }
+
+    pub fn rtt_of(&self, id: Uuid) -> Option<u32> {
+        self.rtt_ms.get(&id).copied()
+    }
+
+    pub fn user_side(&self, id: Uuid) -> Option<Side> {
+        if id == self.game.white_player {
+            Some(Side::White)
+        } else if id == self.game.black_player {
+            Some(Side::Black)
+        } else {
+            None
+        }
     }
 
     pub fn get_position(&self) -> Chess {
@@ -153,6 +175,7 @@ impl GameRoom {
             *count = count.saturating_sub(1);
             if *count == 0 {
                 self.connected.remove(&id);
+                self.rtt_ms.remove(&id);
             }
         }
     }
@@ -196,8 +219,12 @@ impl GameRoom {
         self.end_reason = Some(reason.clone());
 
         match outcome {
-            KnownOutcome::Decisive { winner: Color::White } => self.session_score.0 += 1.0,
-            KnownOutcome::Decisive { winner: Color::Black } => self.session_score.1 += 1.0,
+            KnownOutcome::Decisive {
+                winner: Color::White,
+            } => self.session_score.0 += 1.0,
+            KnownOutcome::Decisive {
+                winner: Color::Black,
+            } => self.session_score.1 += 1.0,
             KnownOutcome::Draw => {
                 self.session_score.0 += 0.5;
                 self.session_score.1 += 0.5;
