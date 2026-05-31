@@ -13,6 +13,8 @@ leptos-use = { version = "0.18.3", features = ["use_draggable"] }
 leptos_axum = { version = "0.8.0", optional = true }
 leptos_meta = { version = "0.8.0" }
 axum = { version = "0.8", features = ["ws", "macros"], optional = true }
+convert_case = { version = "0.11.0" }
+strum = { workspace = true }
 tokio = { version = "1", features = ["full"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 server_fn = { version = "0.8", optional = true }

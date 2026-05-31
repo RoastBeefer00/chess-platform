@@ -116,7 +116,7 @@ pub async fn matchmaking_websocket(
                         variant: Variant::Standard,
                         rated: rating_mode,
                     };
-                    let game_id = match state.create_game(game_config, white, black).await {
+                    let game_id = match state.create_game(game_config, white, black, (0.0, 0.0)).await {
                         Ok(id) => id,
                         Err(e) => {
                             tracing::warn!(?e, "matchmaking: create_game failed");

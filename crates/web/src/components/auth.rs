@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 /// Client-facing snapshot of the signed-in user. Server-only fields
 /// (password_hash, created_at) are intentionally omitted.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct UserSummary {
     pub id: Uuid,
     pub email: String,
