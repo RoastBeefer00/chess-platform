@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE games\n               SET status = 'aborted',\n                   result = NULL,\n                   termination = 'abandonment',\n                   ended_at = now(),\n                   moves = $2,\n                   final_fen = $3\n               WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "58ed6a381d6f8407f0dc199e2f9ef64a815034982d49a2747a6e2e77c03522b2"
+}
