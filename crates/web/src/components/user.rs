@@ -55,7 +55,7 @@ pub fn UserMenu() -> impl IntoView {
                             "Log in"
                         </a>
                         <a
-                            href="/register"
+                            href="/login"
                             class="px-3.5 py-1.5 text-sm font-medium text-zinc-950 bg-white rounded-md hover:bg-zinc-100 transition-colors"
                         >
                             "Register"

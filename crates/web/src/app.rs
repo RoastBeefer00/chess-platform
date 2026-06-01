@@ -35,11 +35,11 @@ pub fn App() -> impl IntoView {
 
     view! {
         <Stylesheet id="leptos" href="/pkg/web.css"/>
-        <Title text="Gambit"/>
+        <Title text="gambit.rs"/>
 
         <Router>
             <Nav/>
-            <main class="pt-14 min-h-screen bg-zinc-950">
+            <main class="pt-14 min-h-screen bg-zinc-950 max-w-7xl mx-auto">
                 <Routes fallback=NotFoundPage>
                     <Route path=StaticSegment("/") view={Lazy::<HomePage>::new()}/>
                     <ParentRoute path=StaticSegment("/") view=RequireAuth>

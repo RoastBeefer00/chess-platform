@@ -9,25 +9,31 @@ pub fn PlayHub() -> impl IntoView {
     let searching = RwSignal::new(None::<(TimeControl, RatingMode)>);
 
     let time_groups = [
-        ("Bullet", vec![
-            ("1+0", 60_000i64, 0i64),
-            ("1+1", 60_000, 1_000),
-            ("2+1", 120_000, 1_000),
-        ]),
-        ("Blitz", vec![
-            ("3+0", 180_000, 0),
-            ("3+2", 180_000, 2_000),
-            ("5+0", 300_000, 0),
-            ("5+5", 300_000, 5_000),
-        ]),
-        ("Rapid", vec![
-            ("10+0", 600_000, 0),
-            ("15+10", 900_000, 10_000),
-        ]),
+        (
+            "Bullet",
+            vec![
+                ("1 + 0", 60_000i64, 0i64),
+                ("1 + 1", 60_000, 1_000),
+                ("2 + 1", 120_000, 1_000),
+            ],
+        ),
+        (
+            "Blitz",
+            vec![
+                ("3 + 0", 180_000, 0),
+                ("3 + 2", 180_000, 2_000),
+                ("5 + 0", 300_000, 0),
+                ("5 + 5", 300_000, 5_000),
+            ],
+        ),
+        (
+            "Rapid",
+            vec![("10 + 0", 600_000, 0), ("15 + 10", 900_000, 10_000)],
+        ),
     ];
 
     view! {
-        <div class="flex flex-col min-h-[100dvh]">
+        <div class="flex flex-col min-h-[100dvh] max-w-2xl mx-auto">
             // EloCards strip
             <div class="flex gap-3 overflow-x-auto scrollbar-none px-6 pt-6 pb-4">
                 {Category::iter().map(|c| view! {

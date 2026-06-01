@@ -444,12 +444,14 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     <Show when=move || game_result.get().is_none()>
                         <ConnectionIndicator rtt_ms=opponent_rtt connected=opponent_connected />
                     </Show>
-                    {move || view! {
-                        <CapturedPieces position={position} color={match perspective.get() {
-                            BoardPerspective::White => Color::White,
-                            BoardPerspective::Black => Color::Black,
-                        }} />
-                    }}
+                    <div class="min-w-0 overflow-hidden">
+                        {move || view! {
+                            <CapturedPieces position={position} color={match perspective.get() {
+                                BoardPerspective::White => Color::White,
+                                BoardPerspective::Black => Color::Black,
+                            }} />
+                        }}
+                    </div>
                     {move || (top_advantage.get() > 0).then(|| view! {
                         <span class="text-xs font-semibold text-zinc-400 flex-shrink-0">
                             {format!("+{}", top_advantage.get())}
@@ -498,12 +500,14 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     <Show when=move || game_result.get().is_none()>
                         <ConnectionIndicator rtt_ms=self_rtt_ms connected=self_ws_connected />
                     </Show>
-                    {move || view! {
-                        <CapturedPieces position={position} color={match perspective.get() {
-                            BoardPerspective::White => Color::Black,
-                            BoardPerspective::Black => Color::White,
-                        }} />
-                    }}
+                    <div class="min-w-0 overflow-hidden">
+                        {move || view! {
+                            <CapturedPieces position={position} color={match perspective.get() {
+                                BoardPerspective::White => Color::Black,
+                                BoardPerspective::Black => Color::White,
+                            }} />
+                        }}
+                    </div>
                     {move || (bottom_advantage.get() > 0).then(|| view! {
                         <span class="text-xs font-semibold text-zinc-400 flex-shrink-0">
                             {format!("+{}", bottom_advantage.get())}

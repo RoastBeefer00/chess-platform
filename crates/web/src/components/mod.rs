@@ -1,9 +1,10 @@
+pub mod analysis_board;
 pub mod auth;
 pub mod board_user;
 pub mod captured_pieces;
-pub mod connection_indicator;
 pub mod chess_board;
 pub mod clock;
+pub mod connection_indicator;
 pub mod draw_resign_controls;
 pub mod elo_card;
 pub mod game_over_modal;
@@ -18,12 +19,13 @@ pub mod rematch_controls;
 pub mod square;
 pub mod user;
 
+pub use analysis_board::*;
 pub use auth::*;
 pub use board_user::*;
 pub use captured_pieces::*;
-pub use connection_indicator::*;
 pub use chess_board::*;
 pub use clock::*;
+pub use connection_indicator::*;
 pub use draw_resign_controls::*;
 pub use elo_card::*;
 pub use game_over_modal::*;

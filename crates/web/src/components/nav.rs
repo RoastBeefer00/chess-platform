@@ -15,7 +15,7 @@ pub fn Nav() -> impl IntoView {
                     on:click=close_mobile
                     class="shrink-0 text-xl font-bold tracking-tight text-white hover:text-zinc-200 transition-colors"
                 >
-                    "Gambit"
+                    "gambit.rs"
                 </a>
 
                 // Desktop links — hidden on mobile.

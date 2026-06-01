@@ -9,14 +9,14 @@ pub fn Landing() -> impl IntoView {
 
             <div class="relative z-10 flex flex-col items-center text-center max-w-2xl">
                 <h1 class="text-6xl sm:text-7xl font-semibold tracking-tighter text-white mb-4">
-                    "Pure chess."
+                    "Chess. Blazingly fast."
                 </h1>
                 <p class="text-zinc-400 text-lg sm:text-xl mb-10 max-w-lg">
-                    "Free, fast, and open. No ads, no tracking, no nonsense."
+                    "Free, open source, and secure. No ads, no tracking, no nonsense."
                 </p>
                 <div class="flex flex-col sm:flex-row items-center gap-3">
                     <a
-                        href="/register"
+                        href="/login"
                         class="w-full sm:w-auto px-6 py-3 text-sm font-semibold bg-white text-zinc-950 rounded-md hover:bg-zinc-100 transition-colors"
                     >
                         "Get started"
