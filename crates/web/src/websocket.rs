@@ -137,7 +137,7 @@ pub async fn game_websocket(
                         }
                         shakmaty::KnownOutcome::Draw => None,
                     };
-                    let reason = gr.end_reason.clone().unwrap_or(GameOverReason::Draw);
+                    let reason = gr.end_reason.clone().unwrap_or(GameOverReason::DrawAgreement);
                     Some((winner, reason))
                 }
                 _ => None,
@@ -407,7 +407,7 @@ pub async fn game_websocket(
                             if offerer != user.id {
                                 gr.clear_draw_offer();
                                 let plan =
-                                    gr.end_game(shakmaty::KnownOutcome::Draw, GameOverReason::Draw);
+                                    gr.end_game(shakmaty::KnownOutcome::Draw, GameOverReason::DrawAgreement);
                                 spawn_finalize(state.game_store.clone(), plan);
                             }
                         }

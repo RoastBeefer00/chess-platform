@@ -25,8 +25,6 @@ pub struct GameFinalization {
     pub final_fen: String,
     pub outcome: KnownOutcome,
     pub reason: GameOverReason,
-    pub is_stalemate: bool,
-    pub is_insufficient_material: bool,
 }
 
 impl GameStore {
@@ -99,18 +97,11 @@ impl GameStore {
             GameOverReason::Resignation => "resignation",
             GameOverReason::Timeout => "timeout",
             GameOverReason::Abort => "abandonment",
-            GameOverReason::Draw => {
-                if plan.is_insufficient_material {
-                    "insufficient_material"
-                } else if plan.is_stalemate {
-                    "stalemate"
-                } else {
-                    // We don't currently track repetition or 50-move-rule state,
-                    // so any non-stalemate draw triggered through the protocol
-                    // path is a draw agreement. See KNOWN_ISSUES.md.
-                    "draw_agreement"
-                }
-            }
+            GameOverReason::Stalemate => "stalemate",
+            GameOverReason::InsufficientMaterial => "insufficient_material",
+            GameOverReason::Repetition => "repetition",
+            GameOverReason::FiftyMove => "fifty_move",
+            GameOverReason::DrawAgreement => "draw_agreement",
         };
         let moves_joined = plan.moves.join(" ");
 

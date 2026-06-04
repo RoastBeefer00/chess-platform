@@ -1,6 +1,6 @@
 use leptos::{html::Div, prelude::*};
 use shakmaty::Outcome;
-use shared::{messages::GameOverReason, GameClientMessage};
+use shared::{messages::GameOverReason, GameClientMessage, Side};
 
 use crate::components::{NewGameButton, RematchControls, RematchState};
 
@@ -8,6 +8,8 @@ use crate::components::{NewGameButton, RematchControls, RematchState};
 pub fn GameOverModal(
     outcome: Outcome,
     reason: Option<GameOverReason>,
+    /// The player's own side, or `None` for spectators.
+    my_side: Option<Side>,
     #[prop(into)] on_close: Callback<()>,
     #[prop(into)] on_new_game: Callback<()>,
     rematch_state: RwSignal<RematchState>,
@@ -22,22 +24,34 @@ pub fn GameOverModal(
         }
         match outcome {
             Outcome::Known(known_outcome) => match known_outcome {
-                shakmaty::KnownOutcome::Decisive { winner } => match winner {
-                    shakmaty::Color::Black => "Black wins",
-                    shakmaty::Color::White => "White wins",
-                },
+                shakmaty::KnownOutcome::Decisive { winner } => {
+                    let winner_side = Side::from(winner);
+                    match my_side {
+                        Some(mine) if mine == winner_side => "Victory",
+                        Some(_) => "Defeat",
+                        None => match winner {
+                            shakmaty::Color::White => "White wins",
+                            shakmaty::Color::Black => "Black wins",
+                        },
+                    }
+                }
                 shakmaty::KnownOutcome::Draw => "Draw",
             },
             Outcome::Unknown => "this should never happen",
         }
     };
 
-    let subtitle = move || {
-        if is_abort {
-            "No rating change"
-        } else {
-            "Game over"
-        }
+    let subtitle = move || match &reason {
+        Some(GameOverReason::Abort) => "No rating change",
+        Some(GameOverReason::Checkmate) => "by checkmate",
+        Some(GameOverReason::Resignation) => "by resignation",
+        Some(GameOverReason::Timeout) => "on time",
+        Some(GameOverReason::Stalemate) => "by stalemate",
+        Some(GameOverReason::InsufficientMaterial) => "by insufficient material",
+        Some(GameOverReason::Repetition) => "by repetition",
+        Some(GameOverReason::FiftyMove) => "by the fifty-move rule",
+        Some(GameOverReason::DrawAgreement) => "by agreement",
+        None => "Game over",
     };
 
     let card_ref = NodeRef::<Div>::new();

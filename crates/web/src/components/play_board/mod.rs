@@ -426,6 +426,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                 <GameOverModal
                     outcome=game_result.get().unwrap()
                     reason=end_reason.get()
+                    my_side=player_role.get().and_then(|r| r.color()).map(shared::Side::from)
                     on_close=move |_| modal_dismissed.set(true)
                     on_new_game=on_new_game_cb
                     rematch_state=rematch_state

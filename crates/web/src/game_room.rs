@@ -5,7 +5,10 @@ use std::{
 };
 
 use shakmaty::{
-    fen::Fen, uci::UciMove, Chess, Color, EnPassantMode, KnownOutcome, Move, Outcome, Position as _,
+    fen::Fen,
+    uci::UciMove,
+    zobrist::Zobrist64,
+    Chess, Color, EnPassantMode, KnownOutcome, Move, Outcome, Position as _,
 };
 use tokio::{
     sync::{
@@ -78,6 +81,9 @@ pub struct GameRoom {
     pub rematch_offer: Option<Uuid>,
     pub draw_offer: Option<Uuid>,
     pub move_history: Vec<String>,
+    /// Zobrist hash → occurrence count for the current game, used to detect
+    /// threefold repetition. Seeded with the starting position at construction.
+    position_counts: HashMap<Zobrist64, u8>,
     /// Set when `end_game` runs; allows the websocket join handler to replay
     /// the `GameOver` event to a client that reconnects after the game
     /// finished (otherwise they'd see a frozen board with no modal).
@@ -89,6 +95,11 @@ pub struct GameRoom {
 impl GameRoom {
     pub fn new(game: Game, session_score: (f32, f32)) -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let start_hash = game
+            .position
+            .zobrist_hash::<Zobrist64>(EnPassantMode::Legal);
+        let mut position_counts = HashMap::new();
+        position_counts.insert(start_hash, 1u8);
         GameRoom {
             game,
             status: GameStatus::WaitingForOpponent,
@@ -103,6 +114,7 @@ impl GameRoom {
             rematch_offer: None,
             draw_offer: None,
             move_history: Vec::new(),
+            position_counts,
             end_reason: None,
             session_score,
         }
@@ -282,8 +294,6 @@ impl GameRoom {
             final_fen: Fen::from_position(&self.game.position, EnPassantMode::Legal).to_string(),
             outcome,
             reason,
-            is_stalemate: self.game.position.is_stalemate(),
-            is_insufficient_material: self.game.position.is_insufficient_material(),
         })
     }
 
@@ -377,13 +387,37 @@ impl GameRoom {
             self.broadcast(GameServerMessage::DrawDecline);
         }
 
+        // Track position for threefold repetition detection.
+        let hash = self
+            .get_position()
+            .zobrist_hash::<Zobrist64>(EnPassantMode::Legal);
+        let rep_count = {
+            let c = self.position_counts.entry(hash).or_insert(0);
+            *c += 1;
+            *c
+        };
+
         // Game ended on this move?
         if let Outcome::Known(known) = self.get_position().outcome() {
             let reason = match known {
                 KnownOutcome::Decisive { .. } => GameOverReason::Checkmate,
-                KnownOutcome::Draw => GameOverReason::Draw,
+                KnownOutcome::Draw => {
+                    if self.get_position().is_stalemate() {
+                        GameOverReason::Stalemate
+                    } else {
+                        GameOverReason::InsufficientMaterial
+                    }
+                }
             };
             let plan = self.end_game(known, reason);
+            return Ok(MoveOutcome::Ended(plan));
+        }
+        if rep_count >= 3 {
+            let plan = self.end_game(KnownOutcome::Draw, GameOverReason::Repetition);
+            return Ok(MoveOutcome::Ended(plan));
+        }
+        if self.get_position().halfmoves() >= 100 {
+            let plan = self.end_game(KnownOutcome::Draw, GameOverReason::FiftyMove);
             return Ok(MoveOutcome::Ended(plan));
         }
 
@@ -572,6 +606,79 @@ pub async fn handle_abort_timeout(
     if let Some(plan) = plan {
         if let Err(e) = game_store.abort_game(plan).await {
             tracing::warn!(?e, "abort_game failed");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared::{GameConfig, RatingMode, TimeControl, TimeMode, Variant, Game};
+    use uuid::Uuid;
+
+    /// Build a minimal GameRoom with generous clocks for test purposes.
+    fn make_room() -> (GameRoom, Uuid, Uuid) {
+        let white_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let config = GameConfig {
+            time_control: TimeControl {
+                initial_time: 600_000, // 10 min
+                mode: TimeMode::Increment(0),
+            },
+            variant: Variant::Standard,
+            rated: RatingMode::Casual,
+        };
+        let game = Game::new(config, white_id, black_id);
+        let mut room = GameRoom::new(game, (0.0, 0.0));
+        // Mark both players connected so current_player() resolves correctly.
+        room.connected.insert(white_id, 1);
+        room.connected.insert(black_id, 1);
+        // Seed last_move_at so clock charges don't panic.
+        room.last_move_at = Some(Instant::now());
+        room.status = GameStatus::Ongoing;
+        (room, white_id, black_id)
+    }
+
+    /// Knight shuffle: Nf3 Nf6 Ng1 Ng8 repeated until the start position
+    /// has appeared three times → threefold repetition draw.
+    ///
+    /// Position count timeline (Zobrist includes side-to-move):
+    ///   seed:           start (White to move)  → count 1
+    ///   g1f3 g8f6 f3g1 f6g8  → back to start  → count 2
+    ///   g1f3 g8f6 f3g1 f6g8  → back to start  → count 3 → draw
+    #[test]
+    fn threefold_repetition_detected() {
+        let (mut room, white_id, black_id) = make_room();
+
+        let moves: &[(&str, Uuid)] = &[
+            ("g1f3", white_id),
+            ("g8f6", black_id),
+            ("f3g1", white_id),
+            ("f6g8", black_id),
+            ("g1f3", white_id),
+            ("g8f6", black_id),
+            ("f3g1", white_id),
+            ("f6g8", black_id),
+        ];
+
+        for (i, (uci, player)) in moves.iter().enumerate() {
+            // Refresh last_move_at so clock charge doesn't trip the flag.
+            room.last_move_at = Some(Instant::now());
+            let result = room.handle_move_made(uci.to_string(), *player, 0);
+            let outcome = result.expect("move should be legal");
+            if i < moves.len() - 1 {
+                assert!(
+                    matches!(outcome, MoveOutcome::Continuing(_)),
+                    "expected game to continue after move {i}"
+                );
+            } else {
+                // Final move should trigger threefold draw.
+                assert!(
+                    matches!(outcome, MoveOutcome::Ended(_)),
+                    "expected game to end on move {i}"
+                );
+                assert_eq!(room.end_reason, Some(GameOverReason::Repetition));
+            }
         }
     }
 }
