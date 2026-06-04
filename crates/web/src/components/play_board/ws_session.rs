@@ -245,7 +245,13 @@ pub(super) async fn run_session(
                                         winner: w.into(),
                                     })
                                 }
-                                GameOverReason::Draw => Outcome::Known(KnownOutcome::Draw),
+                                GameOverReason::Stalemate
+                                | GameOverReason::InsufficientMaterial
+                                | GameOverReason::Repetition
+                                | GameOverReason::FiftyMove
+                                | GameOverReason::DrawAgreement => {
+                                    Outcome::Known(KnownOutcome::Draw)
+                                }
                             };
                             s.set_game_result.set(Some(outcome));
                             let my_side = s

@@ -7,7 +7,11 @@ use crate::{PlayerRole, Side};
 pub enum GameOverReason {
     Abort,
     Checkmate,
-    Draw,
+    Stalemate,
+    InsufficientMaterial,
+    Repetition,
+    FiftyMove,
+    DrawAgreement,
     Timeout,
     Resignation,
 }
