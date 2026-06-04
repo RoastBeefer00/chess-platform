@@ -23,6 +23,7 @@ pub(super) struct SessionState {
     pub clock_running: RwSignal<bool>,
     pub last_move: RwSignal<Option<(Square, Square)>>,
     pub premoves: RwSignal<Vec<(Square, Square)>>,
+    pub turn_started_at_ms: RwSignal<i64>,
     pub rematch_state: RwSignal<RematchState>,
     pub draw_offer_state: RwSignal<DrawOfferState>,
     pub clock_offset_ms: RwSignal<i64>,
@@ -128,6 +129,16 @@ pub(super) async fn run_session(
                                 s.set_move_history.set(moves);
                                 sound::play(sfx::GAME_START);
                             }
+                            // If we (re)joined on our own move, start the
+                            // think-time clock now rather than from a stale value.
+                            let is_my_turn = s
+                                .player_role
+                                .get_untracked()
+                                .and_then(|r| r.color())
+                                .is_some_and(|c| c == s.position.get_untracked().turn());
+                            if is_my_turn {
+                                s.turn_started_at_ms.set(js_sys::Date::now() as i64);
+                            }
                         }
                         GameServerMessage::UserLeft { username: _ } => {}
                         GameServerMessage::MoveMade {
@@ -178,6 +189,10 @@ pub(super) async fn run_session(
                                 .and_then(|r| r.color())
                                 .is_some_and(|c| c == s.position.get_untracked().turn());
                             if is_my_turn {
+                                // The position the player will move in just
+                                // rendered — start the think-time clock before
+                                // a queued premove (if any) fires synchronously.
+                                s.turn_started_at_ms.set(js_sys::Date::now() as i64);
                                 let mut queue = s.premoves.get_untracked();
                                 if let Some((from, to)) = queue.first().copied() {
                                     use crate::components::move_target;
@@ -291,6 +306,14 @@ pub(super) async fn run_session(
                             s.black_ms.set(b_ms);
                             s.sent_at_ms.set(server_sent_at);
                             s.clock_running.set(running);
+                            let is_my_turn = s
+                                .player_role
+                                .get_untracked()
+                                .and_then(|r| r.color())
+                                .is_some_and(|c| c == s.position.get_untracked().turn());
+                            if is_my_turn {
+                                s.turn_started_at_ms.set(js_sys::Date::now() as i64);
+                            }
                         }
                         GameServerMessage::RematchOffer { from: id } => {
                             if id != my_uuid {

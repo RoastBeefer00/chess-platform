@@ -62,6 +62,11 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     let (move_history, set_move_history) = signal(Vec::<String>::new());
     let last_move = RwSignal::new(None::<(shakmaty::Square, shakmaty::Square)>);
     let premoves = RwSignal::new(Vec::<(shakmaty::Square, shakmaty::Square)>::new());
+    // Client-local timestamp (ms) of when the position the player is to move
+    // in was last rendered. `on_move` diffs against this to report think time;
+    // a premove fires synchronously on render, so it reports ~0.
+    #[cfg(feature = "hydrate")]
+    let turn_started_at_ms = RwSignal::new(0_i64);
     let (player_role, set_player_role) = signal(None::<PlayerRole>);
     let (game_result, set_game_result) = signal(None::<Outcome>);
     let (end_reason, set_end_reason) = signal(None::<shared::messages::GameOverReason>);
@@ -242,20 +247,20 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         let uci = m.to_uci(shakmaty::CastlingMode::Standard).to_string();
         #[cfg(feature = "hydrate")]
         last_sent_uci.set_value(Some(uci.clone()));
-        let client_time_ms = {
+        // Time the player spent on this move: now minus when the position was
+        // rendered. A premove runs synchronously on the opponent's move
+        // arriving, so this is ~0; a hand-played move reflects real think time.
+        let think_ms = {
             #[cfg(feature = "hydrate")]
             {
-                js_sys::Date::now() as i64
+                (js_sys::Date::now() as i64 - turn_started_at_ms.get_untracked()).max(0)
             }
             #[cfg(not(feature = "hydrate"))]
             {
                 0_i64
             }
         };
-        send.run(GameClientMessage::MoveMade {
-            uci,
-            client_time_ms,
-        });
+        send.run(GameClientMessage::MoveMade { uci, think_ms });
     });
 
     let on_premove = Callback::new(move |(from, to): (shakmaty::Square, shakmaty::Square)| {
@@ -290,6 +295,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             clock_running,
             last_move,
             premoves,
+            turn_started_at_ms,
             rematch_state,
             draw_offer_state,
             clock_offset_ms,
