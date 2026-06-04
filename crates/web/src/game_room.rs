@@ -25,6 +25,11 @@ use crate::db::{GameFinalization, GameStore};
 
 const BROADCAST_CAPACITY: usize = 32;
 
+/// Jitter margin added to a mover's measured RTT when bounding how much
+/// network latency we forgive on a move. Wider = more lenient toward laggy
+/// clients (and easier to abuse by faking think time); narrower = stricter.
+const RTT_CAP_SLACK_MS: i64 = 200;
+
 #[derive(Debug, thiserror::Error)]
 pub enum MoveError {
     #[error("invalid uci: {0}")]
@@ -294,19 +299,35 @@ impl GameRoom {
         Ok(m)
     }
 
+    /// Deduct the mover's clock based on the client-reported think time,
+    /// bounded by what the server considers physically possible.
+    ///
+    /// `think_ms` is how long the client says elapsed between rendering the
+    /// position and committing the move (≈0 for a premove). We trust it, but:
+    ///   - never charge more than wall-clock `elapsed` (a client can't
+    ///     manufacture time by over-reporting — it only hurts itself), and
+    ///   - never charge less than `elapsed - rtt_cap_ms`: the most network
+    ///     latency we're willing to forgive. This floor stops a client from
+    ///     under-reporting think time to bank clock. When `rtt_cap_ms` covers
+    ///     the real round trip, a genuine premove's floor is ≤0 and it costs
+    ///     ~0 regardless of where the player sits relative to the server.
     #[instrument(skip(self), fields(game_id = %self.game.id))]
-    pub fn update_clock(&mut self, lag_ms: i64) -> Result<(), MoveError> {
+    pub fn update_clock(&mut self, think_ms: i64, rtt_cap_ms: i64) -> Result<(), MoveError> {
         let now = Instant::now();
         let elapsed = match self.last_move_at {
             Some(t) => now.duration_since(t).as_millis() as i64,
             None => Duration::ZERO.as_millis() as i64,
         };
+        // floor <= elapsed always holds (rtt_cap_ms >= 0), so clamp won't panic.
+        let floor = (elapsed - rtt_cap_ms).max(0);
+        let charge = think_ms.clamp(floor, elapsed);
+
         let mover = self.game.get_turn().other();
         let mut mover_ms = match mover {
             Color::Black => self.game.black_ms_left,
             Color::White => self.game.white_ms_left,
         };
-        mover_ms -= (elapsed - lag_ms).max(0);
+        mover_ms -= charge;
         if let TimeMode::Increment(i) = self.game.config.time_control.mode {
             mover_ms += i;
         }
@@ -326,13 +347,17 @@ impl GameRoom {
         &mut self,
         uci: String,
         mover_id: uuid::Uuid,
-        lag_ms: i64,
+        think_ms: i64,
     ) -> Result<MoveOutcome, MoveError> {
         if self.current_player() != Some(mover_id) {
             return Err(MoveError::NotYourTurn);
         }
         self.parse_and_apply_move(&uci)?;
-        self.update_clock(lag_ms)?;
+        // Forgive up to the mover's measured RTT plus a jitter margin. Falls
+        // back to the bare margin if we have no RTT sample yet (e.g. a move
+        // that races the first Ping).
+        let rtt_cap_ms = self.rtt_of(mover_id).map(|r| r as i64).unwrap_or(0) + RTT_CAP_SLACK_MS;
+        self.update_clock(think_ms, rtt_cap_ms)?;
         let sent_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)

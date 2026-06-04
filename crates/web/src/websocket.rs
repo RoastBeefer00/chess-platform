@@ -2,9 +2,6 @@ use leptos::prelude::*;
 use server_fn::{codec::JsonEncoding, BoxedStream, Websocket};
 use shared::{GameClientMessage, GameServerMessage};
 
-#[cfg(feature = "ssr")]
-const LAG_CAP_MS: i64 = 100;
-
 #[server(protocol = Websocket<JsonEncoding, JsonEncoding>)]
 pub async fn game_websocket(
     input: BoxedStream<GameClientMessage, ServerFnError>,
@@ -303,19 +300,9 @@ pub async fn game_websocket(
                     GameClientMessage::UserJoined { game_id: _ } => {
                         tracing::warn!(%user.id, "ignoring duplicate UserJoined");
                     }
-                    GameClientMessage::MoveMade { uci, client_time_ms } => {
-                        let lag = match offset_est {
-                            Some(offset) => {
-                                let recv = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .map(|d| d.as_millis() as i64)
-                                    .unwrap_or(0);
-                                (recv - (client_time_ms + offset)).clamp(0, LAG_CAP_MS)
-                            }
-                            None => 0,
-                        };
+                    GameClientMessage::MoveMade { uci, think_ms } => {
                         use crate::game_room::MoveOutcome;
-                        match gr.handle_move_made(uci, user.id, lag) {
+                        match gr.handle_move_made(uci, user.id, think_ms) {
                             Ok(MoveOutcome::Continuing(plan)) => {
                                 if let Some(h) = gr.timeout_task.take() {
                                     h.abort();

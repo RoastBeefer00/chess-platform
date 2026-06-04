@@ -102,7 +102,12 @@ pub enum GameServerMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GameClientMessage {
     UserJoined { game_id: Uuid },
-    MoveMade { uci: String, client_time_ms: i64 },
+    /// `think_ms` is the client-measured time between rendering the position
+    /// the player moved in and committing this move. The server charges this
+    /// (bounded) against the mover's clock, so a premove — committed the
+    /// instant the opponent's move renders — reports ~0 and costs ~0,
+    /// independent of network latency.
+    MoveMade { uci: String, think_ms: i64 },
     Chat { text: String },
     Resign,
     DrawOffer,
