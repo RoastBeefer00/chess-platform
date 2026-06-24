@@ -614,9 +614,11 @@ pub async fn handle_abort_timeout(
 mod tests {
     use super::*;
     use shared::{GameConfig, RatingMode, TimeControl, TimeMode, Variant, Game};
+    use shakmaty::{Color, KnownOutcome};
+    use std::time::Duration;
     use uuid::Uuid;
 
-    /// Build a minimal GameRoom with generous clocks for test purposes.
+    /// Minimal GameRoom with generous clocks, both players pre-connected.
     fn make_room() -> (GameRoom, Uuid, Uuid) {
         let white_id = Uuid::new_v4();
         let black_id = Uuid::new_v4();
@@ -630,14 +632,52 @@ mod tests {
         };
         let game = Game::new(config, white_id, black_id);
         let mut room = GameRoom::new(game, (0.0, 0.0));
-        // Mark both players connected so current_player() resolves correctly.
         room.connected.insert(white_id, 1);
         room.connected.insert(black_id, 1);
-        // Seed last_move_at so clock charges don't panic.
         room.last_move_at = Some(Instant::now());
         room.status = GameStatus::Ongoing;
         (room, white_id, black_id)
     }
+
+    /// Room with an increment time control.
+    fn make_room_increment(increment_ms: i64) -> (GameRoom, Uuid, Uuid) {
+        let white_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let config = GameConfig {
+            time_control: TimeControl {
+                initial_time: 600_000,
+                mode: TimeMode::Increment(increment_ms),
+            },
+            variant: Variant::Standard,
+            rated: RatingMode::Casual,
+        };
+        let game = Game::new(config, white_id, black_id);
+        let mut room = GameRoom::new(game, (0.0, 0.0));
+        room.connected.insert(white_id, 1);
+        room.connected.insert(black_id, 1);
+        room.last_move_at = Some(Instant::now());
+        room.status = GameStatus::Ongoing;
+        (room, white_id, black_id)
+    }
+
+    /// Room with no pre-connected players (WaitingForOpponent state).
+    fn make_room_bare() -> (GameRoom, Uuid, Uuid) {
+        let white_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let config = GameConfig {
+            time_control: TimeControl {
+                initial_time: 600_000,
+                mode: TimeMode::Increment(0),
+            },
+            variant: Variant::Standard,
+            rated: RatingMode::Casual,
+        };
+        let game = Game::new(config, white_id, black_id);
+        let room = GameRoom::new(game, (0.0, 0.0));
+        (room, white_id, black_id)
+    }
+
+    // ── threefold repetition (original) ─────────────────────────────────────
 
     /// Knight shuffle: Nf3 Nf6 Ng1 Ng8 repeated until the start position
     /// has appeared three times → threefold repetition draw.
@@ -662,7 +702,6 @@ mod tests {
         ];
 
         for (i, (uci, player)) in moves.iter().enumerate() {
-            // Refresh last_move_at so clock charge doesn't trip the flag.
             room.last_move_at = Some(Instant::now());
             let result = room.handle_move_made(uci.to_string(), *player, 0);
             let outcome = result.expect("move should be legal");
@@ -672,7 +711,6 @@ mod tests {
                     "expected game to continue after move {i}"
                 );
             } else {
-                // Final move should trigger threefold draw.
                 assert!(
                     matches!(outcome, MoveOutcome::Ended(_)),
                     "expected game to end on move {i}"
@@ -680,5 +718,284 @@ mod tests {
                 assert_eq!(room.end_reason, Some(GameOverReason::Repetition));
             }
         }
+    }
+
+    // ── update_clock ─────────────────────────────────────────────────────────
+    //
+    // update_clock is called AFTER a move is applied (turn has switched).
+    // get_turn().other() = the side that just moved = the clock to charge.
+    // We play "e2e4" to advance past White's turn before each clock test,
+    // then manipulate white_ms_left and last_move_at directly.
+
+    #[test]
+    fn clock_premove_charged_nothing() {
+        let (mut room, _, _) = make_room();
+        room.parse_and_apply_move("e2e4").unwrap(); // now Black to move; charges White
+        room.game.white_ms_left = 60_000;
+        room.last_move_at = Some(Instant::now()); // elapsed ≈ 0
+        room.update_clock(0, 500).unwrap(); // think_ms=0, rtt_cap=500 → floor=0, charge=0
+        // Allow up to 20ms slop for code-execution time.
+        assert!(
+            room.game.white_ms_left >= 59_980,
+            "premove should cost near 0; left={}",
+            room.game.white_ms_left
+        );
+    }
+
+    #[test]
+    fn clock_over_reporting_clamped_to_elapsed() {
+        let (mut room, _, _) = make_room();
+        room.parse_and_apply_move("e2e4").unwrap();
+        room.game.white_ms_left = 60_000;
+        // elapsed ≈ 100ms; think_ms = 50 000 (massive over-report)
+        room.last_move_at = Some(Instant::now() - Duration::from_millis(100));
+        room.update_clock(50_000, 0).unwrap(); // rtt_cap=0 → floor=elapsed; charge=elapsed
+        let charged = 60_000 - room.game.white_ms_left;
+        // Should be clamped to ~100ms, never 50 000ms.
+        assert!(
+            charged <= 200,
+            "over-report must be clamped to elapsed; charged={charged}"
+        );
+        assert!(charged >= 80, "at least some real time should be charged; charged={charged}");
+    }
+
+    #[test]
+    fn clock_under_reporting_floored() {
+        let (mut room, _, _) = make_room();
+        room.parse_and_apply_move("e2e4").unwrap();
+        room.game.white_ms_left = 60_000;
+        // elapsed ≈ 500ms; rtt_cap=200 → floor=300; think_ms=0 → charge=300
+        room.last_move_at = Some(Instant::now() - Duration::from_millis(500));
+        room.update_clock(0, 200).unwrap();
+        let charged = 60_000 - room.game.white_ms_left;
+        assert!(
+            charged >= 250,
+            "under-report must be floored to (elapsed-rtt_cap); charged={charged}"
+        );
+        assert!(charged <= 600, "shouldn't exceed elapsed+slop; charged={charged}");
+    }
+
+    #[test]
+    fn clock_increment_added_after_charge() {
+        let (mut room, _, _) = make_room_increment(5_000); // 5s increment
+        room.parse_and_apply_move("e2e4").unwrap();
+        room.game.white_ms_left = 60_000;
+        room.last_move_at = Some(Instant::now()); // elapsed ≈ 0
+        room.update_clock(0, 500).unwrap(); // charge ≈ 0, then +5 000
+        assert!(
+            room.game.white_ms_left >= 64_990,
+            "increment should be added; left={}",
+            room.game.white_ms_left
+        );
+    }
+
+    #[test]
+    fn clock_flag_fall_returns_error_and_clock_unchanged() {
+        let (mut room, _, _) = make_room();
+        room.parse_and_apply_move("e2e4").unwrap();
+        room.game.white_ms_left = 100;
+        // elapsed ≈ 500ms, no rtt forgiveness → floor=500, charge=500 > 100 → FlagFall
+        room.last_move_at = Some(Instant::now() - Duration::from_millis(500));
+        let result = room.update_clock(0, 0);
+        assert!(
+            matches!(result, Err(MoveError::FlagFall)),
+            "expected FlagFall"
+        );
+        assert_eq!(room.game.white_ms_left, 100, "clock must not mutate on FlagFall");
+    }
+
+    // ── handle_move_made ─────────────────────────────────────────────────────
+
+    #[test]
+    fn move_not_your_turn() {
+        let (mut room, _, black_id) = make_room();
+        room.last_move_at = Some(Instant::now());
+        // It's White's turn; Black trying to move → NotYourTurn.
+        let result = room.handle_move_made("e7e5".to_string(), black_id, 0);
+        assert!(matches!(result, Err(MoveError::NotYourTurn)));
+    }
+
+    #[test]
+    fn move_invalid_uci_string() {
+        let (mut room, white_id, _) = make_room();
+        room.last_move_at = Some(Instant::now());
+        let result = room.handle_move_made("notauci".to_string(), white_id, 0);
+        assert!(matches!(result, Err(MoveError::InvalidUci(_))));
+    }
+
+    #[test]
+    fn move_updates_history_and_returns_timeout_plan() {
+        let (mut room, white_id, _) = make_room();
+        room.last_move_at = Some(Instant::now());
+        let outcome = room.handle_move_made("e2e4".to_string(), white_id, 0).unwrap();
+        match &outcome {
+            MoveOutcome::Continuing(plan) => {
+                assert_eq!(plan.next_color, Color::Black);
+                assert!(plan.ms_until_flag > 0);
+            }
+            _ => panic!("expected Continuing after e2e4"),
+        }
+        assert_eq!(room.move_history, vec!["e2e4"]);
+    }
+
+    /// Fool's mate: the quickest checkmate (4 moves, Black wins).
+    /// f2f3 e7e5 g2g4 d8h4#
+    #[test]
+    fn move_checkmate_ends_game() {
+        let (mut room, white_id, black_id) = make_room();
+        let moves: &[(&str, Uuid)] = &[
+            ("f2f3", white_id),
+            ("e7e5", black_id),
+            ("g2g4", white_id),
+            ("d8h4", black_id), // checkmate
+        ];
+        for (i, (uci, player)) in moves.iter().enumerate() {
+            room.last_move_at = Some(Instant::now());
+            let outcome = room
+                .handle_move_made(uci.to_string(), *player, 0)
+                .expect("legal move");
+            if i < 3 {
+                assert!(matches!(outcome, MoveOutcome::Continuing(_)));
+            } else {
+                assert!(
+                    matches!(outcome, MoveOutcome::Ended(_)),
+                    "expected game to end on checkmate"
+                );
+                assert_eq!(room.end_reason, Some(GameOverReason::Checkmate));
+            }
+        }
+    }
+
+    #[test]
+    fn move_clears_pending_draw_offer() {
+        let (mut room, white_id, black_id) = make_room();
+        room.draw_offer = Some(black_id); // Black offered a draw
+        room.last_move_at = Some(Instant::now());
+        // White makes a move → implicitly declines the draw offer.
+        room.handle_move_made("e2e4".to_string(), white_id, 0).unwrap();
+        assert!(room.draw_offer.is_none(), "draw offer should be cleared after a move");
+    }
+
+    // ── end_game ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn end_game_idempotent_returns_none_on_second_call() {
+        let (mut room, _, _) = make_room();
+        let plan1 = room.end_game(
+            KnownOutcome::Decisive { winner: Color::White },
+            GameOverReason::Checkmate,
+        );
+        assert!(plan1.is_some(), "first call should return a finalization plan");
+        assert!(matches!(room.status, GameStatus::Finished(_)));
+
+        let plan2 = room.end_game(
+            KnownOutcome::Decisive { winner: Color::Black },
+            GameOverReason::Resignation,
+        );
+        assert!(plan2.is_none(), "second call should be a no-op");
+        // Session score should only reflect the first outcome.
+        assert_eq!(room.session_score.0, 1.0, "only one white win should be counted");
+        assert_eq!(room.session_score.1, 0.0);
+    }
+
+    #[test]
+    fn end_game_session_score_white_win() {
+        let (mut room, _, _) = make_room();
+        room.end_game(
+            KnownOutcome::Decisive { winner: Color::White },
+            GameOverReason::Checkmate,
+        );
+        assert_eq!(room.session_score, (1.0, 0.0));
+    }
+
+    #[test]
+    fn end_game_session_score_black_win() {
+        let (mut room, _, _) = make_room();
+        room.end_game(
+            KnownOutcome::Decisive { winner: Color::Black },
+            GameOverReason::Resignation,
+        );
+        assert_eq!(room.session_score, (0.0, 1.0));
+    }
+
+    #[test]
+    fn end_game_session_score_draw() {
+        let (mut room, _, _) = make_room();
+        room.end_game(KnownOutcome::Draw, GameOverReason::Stalemate);
+        assert_eq!(room.session_score, (0.5, 0.5));
+    }
+
+    #[test]
+    fn end_game_finalization_has_correct_players() {
+        let (mut room, white_id, black_id) = make_room();
+        let plan = room
+            .end_game(
+                KnownOutcome::Decisive { winner: Color::White },
+                GameOverReason::Checkmate,
+            )
+            .unwrap();
+        assert_eq!(plan.game_id, room.game.id);
+        assert_eq!(plan.white_id, white_id);
+        assert_eq!(plan.black_id, black_id);
+    }
+
+    // ── add_player / remove_player / current_player ──────────────────────────
+
+    #[test]
+    fn add_both_players_transitions_to_ongoing() {
+        let (mut room, white_id, black_id) = make_room_bare();
+        assert!(matches!(room.status, GameStatus::WaitingForOpponent));
+
+        let (role_w, started) = room.add_player(white_id);
+        assert!(matches!(role_w, shared::PlayerRole::Player(shared::Side::White)));
+        assert!(!started, "game not started with only one player");
+        assert!(matches!(room.status, GameStatus::WaitingForOpponent));
+
+        let (role_b, started) = room.add_player(black_id);
+        assert!(matches!(role_b, shared::PlayerRole::Player(shared::Side::Black)));
+        assert!(started, "game should start when second player joins");
+        assert!(matches!(room.status, GameStatus::Ongoing));
+    }
+
+    #[test]
+    fn add_player_reconnect_does_not_restart() {
+        let (mut room, white_id, black_id) = make_room_bare();
+        room.add_player(white_id);
+        room.add_player(black_id); // game starts, history still empty
+        // White disconnects then reconnects.
+        room.remove_player(white_id);
+        let (_, restarted) = room.add_player(white_id);
+        assert!(!restarted, "reconnect must not trigger started=true");
+    }
+
+    #[test]
+    fn add_player_spectator_not_tracked() {
+        let (mut room, _, _) = make_room_bare();
+        let spectator = Uuid::new_v4();
+        let (role, started) = room.add_player(spectator);
+        assert!(matches!(role, shared::PlayerRole::Spectator));
+        assert!(!started);
+        assert!(!room.connected.contains_key(&spectator));
+    }
+
+    #[test]
+    fn remove_player_refcount_multi_session() {
+        let (mut room, white_id, _) = make_room_bare();
+        room.add_player(white_id); // count → 1
+        room.add_player(white_id); // count → 2
+        room.remove_player(white_id); // count → 1, still connected
+        assert!(room.connected.contains_key(&white_id));
+        room.remove_player(white_id); // count → 0, disconnected
+        assert!(!room.connected.contains_key(&white_id));
+    }
+
+    #[test]
+    fn current_player_none_when_side_to_move_is_disconnected() {
+        let (mut room, white_id, _) = make_room_bare();
+        // Only White connected; it's White's turn → Some(white_id).
+        room.add_player(white_id);
+        assert_eq!(room.current_player(), Some(white_id));
+        room.remove_player(white_id);
+        assert_eq!(room.current_player(), None);
     }
 }

@@ -71,3 +71,82 @@ impl RatingStore {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    async fn insert_user(pool: &PgPool) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query!(
+            "INSERT INTO users (id, email) VALUES ($1, $2)",
+            id,
+            format!("{}@test.invalid", id)
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn no_history_returns_zero_diff(pool: PgPool) {
+        let store = RatingStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+        let (rating, diff) = store.get_rating_with_diff(&user_id, Category::Blitz).await.unwrap();
+        assert_eq!(rating, 1500, "freshly created user starts at 1500");
+        assert_eq!(diff, 0, "no history → diff is 0");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn history_older_than_14d_gives_diff(pool: PgPool) {
+        let store = RatingStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+
+        // Directly seed a rating_history row dated 15 days ago with rating 1400
+        // to simulate a loss before the 14-day window.
+        sqlx::query!(
+            r#"INSERT INTO rating_history (user_id, mode, rating, recorded_at)
+               VALUES ($1, 'blitz', 1400, now() - INTERVAL '15 days')"#,
+            user_id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (rating, diff) = store.get_rating_with_diff(&user_id, Category::Blitz).await.unwrap();
+        assert_eq!(rating, 1500);
+        // current (1500) - prior (1400) = +100
+        assert_eq!(diff, 100, "14-day diff should reflect improvement from 1400 → 1500");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn recent_history_uses_oldest_in_window(pool: PgPool) {
+        let store = RatingStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+
+        // Seed a row within the 14-day window (10 days ago, rating 1480)
+        // and a newer one (1 day ago, rating 1510). Oldest-in-window is 1480.
+        sqlx::query!(
+            "INSERT INTO rating_history (user_id, mode, rating, recorded_at) VALUES ($1, 'blitz', 1480, now() - INTERVAL '10 days')",
+            user_id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query!(
+            "INSERT INTO rating_history (user_id, mode, rating, recorded_at) VALUES ($1, 'blitz', 1510, now() - INTERVAL '1 day')",
+            user_id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let (rating, diff) = store.get_rating_with_diff(&user_id, Category::Blitz).await.unwrap();
+        assert_eq!(rating, 1500);
+        // current (1500) - oldest_in_window (1480) = +20
+        assert_eq!(diff, 20);
+    }
+}

@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::time::Instant;
+
 use axum_login::{AuthUser, AuthnBackend, UserId};
 use oauth2::{
     basic::{
@@ -12,6 +15,12 @@ use openidconnect::{
     ClientId, ClientSecret, EndpointMaybeSet, EndpointSet as OidcEndpointSet, IssuerUrl,
     RedirectUrl,
 };
+use serde::{Deserialize, Serialize};
+use sqlx::{query_as, PgPool};
+use tokio::sync::{Mutex, RwLock};
+use uuid::Uuid;
+
+use crate::auth::{get_github_user, AuthError};
 
 type GoogleClient = CoreClient<
     OidcEndpointSet,
@@ -21,11 +30,6 @@ type GoogleClient = CoreClient<
     EndpointMaybeSet,
     EndpointMaybeSet,
 >;
-use serde::{Deserialize, Serialize};
-use sqlx::{query_as, PgPool};
-use uuid::Uuid;
-
-use crate::auth::{get_github_user, AuthError};
 
 type OAuthClient = Client<
     StandardErrorResponse<BasicErrorResponseType>,
@@ -76,7 +80,16 @@ pub struct AuthBackend {
     pool: PgPool,
     http_client: reqwest::Client,
     pub github_client: OAuthClient,
-    pub google_client: GoogleClient,
+    /// Wrapped in Arc<RwLock<..>> so the JWKS can be swapped at runtime when
+    /// Google rotates its signing keys, without restarting the server.
+    pub google_client: Arc<RwLock<GoogleClient>>,
+    // Fields kept for rebuilding the client on refresh.
+    google_client_id: ClientId,
+    google_client_secret: ClientSecret,
+    google_redirect_uri: RedirectUrl,
+    google_issuer: IssuerUrl,
+    /// Throttles concurrent refresh attempts — only one per 60 s.
+    last_google_refresh: Arc<Mutex<Instant>>,
 }
 
 impl AuthBackend {
@@ -103,30 +116,92 @@ impl AuthBackend {
             );
 
         let google_client_id =
-            std::env::var("GOOGLE_CLIENT_ID").expect("GOOGLE_CLIENT_ID must be set");
-        let google_client_secret =
-            std::env::var("GOOGLE_CLIENT_SECRET").expect("GOOGLE_CLIENT_SECRET must be set");
-        let google_redirect_uri =
-            std::env::var("GOOGLE_REDIRECT_URI").expect("GOOGLE_REDIRECT_URI must be set");
+            ClientId::new(std::env::var("GOOGLE_CLIENT_ID").expect("GOOGLE_CLIENT_ID must be set"));
+        let google_client_secret = ClientSecret::new(
+            std::env::var("GOOGLE_CLIENT_SECRET").expect("GOOGLE_CLIENT_SECRET must be set"),
+        );
+        let google_redirect_uri = RedirectUrl::new(
+            std::env::var("GOOGLE_REDIRECT_URI").expect("GOOGLE_REDIRECT_URI must be set"),
+        )
+        .expect("Invalid GOOGLE_REDIRECT_URI");
+        let google_issuer =
+            IssuerUrl::new("https://accounts.google.com".to_string()).expect("Invalid issuer URL");
+
         let provider_metadata = CoreProviderMetadata::discover_async(
-            IssuerUrl::new("https://accounts.google.com".to_string()).expect("Invalid issuer URL"),
+            google_issuer.clone(),
             &http_client,
         )
         .await
         .expect("Failed to discover Google OIDC metadata");
-        let google_client = CoreClient::from_provider_metadata(
+        let google_client = Self::build_google_client(
             provider_metadata,
-            ClientId::new(google_client_id),
-            Some(ClientSecret::new(google_client_secret)),
-        )
-        .set_redirect_uri(RedirectUrl::new(google_redirect_uri).expect("Invalid redirect URI"));
+            google_client_id.clone(),
+            google_client_secret.clone(),
+            google_redirect_uri.clone(),
+        );
 
         AuthBackend {
             pool,
             http_client,
             github_client,
-            google_client,
+            google_client: Arc::new(RwLock::new(google_client)),
+            google_client_id,
+            google_client_secret,
+            google_redirect_uri,
+            google_issuer,
+            // Use a far-past instant so the first reactive refresh is never throttled.
+            last_google_refresh: Arc::new(Mutex::new(
+                Instant::now() - std::time::Duration::from_secs(3600),
+            )),
         }
+    }
+
+    /// Build a [`GoogleClient`] from freshly-fetched provider metadata.
+    fn build_google_client(
+        metadata: CoreProviderMetadata,
+        client_id: ClientId,
+        client_secret: ClientSecret,
+        redirect_uri: RedirectUrl,
+    ) -> GoogleClient {
+        CoreClient::from_provider_metadata(metadata, client_id, Some(client_secret))
+            .set_redirect_uri(redirect_uri)
+    }
+
+    /// Re-discover Google's OIDC metadata and swap in a client with fresh JWKS.
+    ///
+    /// Throttled to at most once per 60 seconds so a burst of failed logins
+    /// cannot trigger a discovery storm. Discovery errors are logged and
+    /// swallowed — the existing (possibly stale) keys keep serving.
+    #[tracing::instrument(skip(self))]
+    pub async fn refresh_google_metadata(&self) {
+        let mut last = self.last_google_refresh.lock().await;
+        if last.elapsed() < std::time::Duration::from_secs(60) {
+            tracing::debug!("google_oidc_refresh_skipped: throttled");
+            return;
+        }
+
+        let metadata = match CoreProviderMetadata::discover_async(
+            self.google_issuer.clone(),
+            &self.http_client,
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = ?e, "google_oidc_refresh_failed: discovery error");
+                return;
+            }
+        };
+
+        let new_client = Self::build_google_client(
+            metadata,
+            self.google_client_id.clone(),
+            self.google_client_secret.clone(),
+            self.google_redirect_uri.clone(),
+        );
+        *self.google_client.write().await = new_client;
+        *last = Instant::now();
+        tracing::info!("google_oidc_metadata_refreshed");
     }
 }
 
@@ -239,8 +314,11 @@ impl AuthnBackend for AuthBackend {
                 Ok(Some(user))
             }
             Credentials::GoogleOAuth { code, nonce } => {
-                let token = match self
-                    .google_client
+                // Clone the client out so we don't hold the RwLock guard across
+                // any .await points (token exchange, verification, refresh).
+                let google_client = self.google_client.read().await.clone();
+
+                let token = match google_client
                     .exchange_code(openidconnect::AuthorizationCode::new(code))?
                     .request_async(&self.http_client)
                     .await
@@ -260,14 +338,38 @@ impl AuthnBackend for AuthBackend {
                     }
                 };
 
-                let claims = match id_token.claims(
-                    &self.google_client.id_token_verifier(),
-                    &openidconnect::Nonce::new(nonce),
-                ) {
+                // First verification attempt using the JWKS already in the cloned client.
+                // id_token.claims<'a>(&'a self, ...) -> &'a IdTokenClaims: lifetime tied
+                // to id_token, not the verifier, so the owned verifier can be dropped.
+                let first_result = {
+                    let verifier = google_client.id_token_verifier();
+                    id_token.claims(&verifier, &openidconnect::Nonce::new(nonce.clone()))
+                };
+
+                let claims = match first_result {
                     Ok(c) => c,
                     Err(e) => {
-                        tracing::warn!(provider = "google", error = ?e, "login_failure: claim verification");
-                        return Ok(None);
+                        // Likely cause: Google rotated its signing keys since our last
+                        // discovery. Refresh the JWKS and retry once with a fresh client.
+                        tracing::warn!(
+                            provider = "google",
+                            error = ?e,
+                            "login_failure: verify failed, refreshing OIDC metadata"
+                        );
+                        self.refresh_google_metadata().await;
+                        let fresh_client = self.google_client.read().await.clone();
+                        let verifier = fresh_client.id_token_verifier();
+                        match id_token.claims(&verifier, &openidconnect::Nonce::new(nonce)) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::warn!(
+                                    provider = "google",
+                                    error = ?e,
+                                    "login_failure: claim verification failed after refresh"
+                                );
+                                return Ok(None);
+                            }
+                        }
                     }
                 };
 

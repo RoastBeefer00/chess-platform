@@ -219,3 +219,138 @@ impl RedisClient {
         self.pool.zrem(bucket, player_id.to_string()).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fred::prelude::*;
+
+    async fn make_redis_client() -> RedisClient {
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let config = Config::from_url(&redis_url).expect("invalid REDIS_URL");
+        let pool = Pool::new(config, None, None, None, 2).expect("build pool");
+        pool.connect();
+        pool.wait_for_connect().await.expect("Redis connect");
+        RedisClient::new(pool).await
+    }
+
+    /// Unique bucket per test so parallel tests don't interfere.
+    fn test_bucket(label: &str) -> String {
+        format!("test:mm:{}:{}", label, Uuid::new_v4())
+    }
+
+    #[tokio::test]
+    async fn add_then_remove_from_bucket() {
+        let client = make_redis_client().await;
+        let bucket = test_bucket("add_remove");
+        let player = Uuid::new_v4();
+
+        client.add_to_bucket(&bucket, player, 1500).await.unwrap();
+        let score: Option<f64> = client.pool.zscore(&bucket, player.to_string()).await.unwrap();
+        assert_eq!(score, Some(1500.0), "player should be in bucket with correct rating");
+
+        client.remove_from_bucket(&bucket, player).await.unwrap();
+        let score_after: Option<f64> = client.pool.zscore(&bucket, player.to_string()).await.unwrap();
+        assert!(score_after.is_none(), "player should be removed");
+    }
+
+    #[tokio::test]
+    async fn add_to_bucket_nx_no_duplicate() {
+        let client = make_redis_client().await;
+        let bucket = test_bucket("nx");
+        let player = Uuid::new_v4();
+
+        client.add_to_bucket(&bucket, player, 1500).await.unwrap();
+        // Attempt to add same player with different rating (NX → ignored).
+        client.add_to_bucket(&bucket, player, 2000).await.unwrap();
+        let score: Option<f64> = client.pool.zscore(&bucket, player.to_string()).await.unwrap();
+        assert_eq!(score, Some(1500.0), "NX flag: existing entry must not be overwritten");
+
+        client.remove_from_bucket(&bucket, player).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn find_pair_returns_none_when_no_opponent() {
+        let client = make_redis_client().await;
+        let bucket = test_bucket("no_opp");
+        let player = Uuid::new_v4();
+
+        client.add_to_bucket(&bucket, player, 1500).await.unwrap();
+        let result = client.find_pair(&bucket, player, 1500, 100).await.unwrap();
+        assert!(result.is_none(), "self-only queue → no match");
+
+        client.remove_from_bucket(&bucket, player).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn find_pair_matches_and_removes_both() {
+        let client = make_redis_client().await;
+        let bucket = test_bucket("match");
+        let player_a = Uuid::new_v4();
+        let player_b = Uuid::new_v4();
+
+        client.add_to_bucket(&bucket, player_a, 1500).await.unwrap();
+        client.add_to_bucket(&bucket, player_b, 1510).await.unwrap();
+
+        let matched = client.find_pair(&bucket, player_a, 1500, 100).await.unwrap();
+        assert_eq!(matched, Some(player_b), "should match player_b as nearest in window");
+
+        // Both must be removed atomically.
+        let a_score: Option<f64> = client.pool.zscore(&bucket, player_a.to_string()).await.unwrap();
+        let b_score: Option<f64> = client.pool.zscore(&bucket, player_b.to_string()).await.unwrap();
+        assert!(a_score.is_none(), "player_a should be removed after match");
+        assert!(b_score.is_none(), "player_b should be removed after match");
+    }
+
+    #[tokio::test]
+    async fn find_pair_ignores_out_of_window_opponent() {
+        let client = make_redis_client().await;
+        let bucket = test_bucket("window");
+        let player_a = Uuid::new_v4();
+        let player_b = Uuid::new_v4();
+
+        client.add_to_bucket(&bucket, player_a, 1500).await.unwrap();
+        client.add_to_bucket(&bucket, player_b, 1700).await.unwrap(); // 200 pts away, window=100
+
+        let result = client.find_pair(&bucket, player_a, 1500, 100).await.unwrap();
+        assert!(result.is_none(), "opponent outside rating window must not match");
+
+        client.remove_from_bucket(&bucket, player_a).await.unwrap();
+        client.remove_from_bucket(&bucket, player_b).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn find_pair_picks_nearest_rating() {
+        let client = make_redis_client().await;
+        let bucket = test_bucket("nearest");
+        let seeker = Uuid::new_v4();
+        let close = Uuid::new_v4();
+        let far = Uuid::new_v4();
+
+        client.add_to_bucket(&bucket, seeker, 1500).await.unwrap();
+        client.add_to_bucket(&bucket, close, 1505).await.unwrap(); // Δ5
+        client.add_to_bucket(&bucket, far, 1595).await.unwrap();   // Δ95, still in window
+
+        let matched = client.find_pair(&bucket, seeker, 1500, 100).await.unwrap();
+        assert_eq!(matched, Some(close), "should pick nearest rating (close, Δ5)");
+
+        // Clean up the unmatched player.
+        client.remove_from_bucket(&bucket, far).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn find_pair_returns_none_if_requester_not_in_queue() {
+        let client = make_redis_client().await;
+        let bucket = test_bucket("not_in_queue");
+        let ghost = Uuid::new_v4();
+        let opponent = Uuid::new_v4();
+
+        // Ghost is NOT in the bucket; opponent is.
+        client.add_to_bucket(&bucket, opponent, 1500).await.unwrap();
+
+        let result = client.find_pair(&bucket, ghost, 1500, 100).await.unwrap();
+        assert!(result.is_none(), "requester not in queue → no match");
+
+        client.remove_from_bucket(&bucket, opponent).await.unwrap();
+    }
+}

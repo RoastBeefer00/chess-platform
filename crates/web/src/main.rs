@@ -95,6 +95,22 @@ async fn main() {
         .with_expiry(Expiry::OnInactivity(TimeDuration::days(14)));
 
     let app_state = AppState::new(leptos_options.clone(), pool, redis).await;
+
+    // Refresh Google's OIDC metadata (JWKS signing keys) every 6 hours so that
+    // key rotation doesn't silently break logins until the next restart.
+    // Startup already ran discovery, so skip the first tick.
+    {
+        let refresh_backend = app_state.auth_backend.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(6 * 60 * 60));
+            tick.tick().await; // skip the immediate first tick
+            loop {
+                tick.tick().await;
+                refresh_backend.refresh_google_metadata().await;
+            }
+        });
+    }
+
     let auth_layer =
         AuthManagerLayerBuilder::new(app_state.auth_backend.clone(), session_layer).build();
 

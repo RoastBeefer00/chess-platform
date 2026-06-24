@@ -54,3 +54,55 @@ impl PlayerRole {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shakmaty::Color;
+
+    #[test]
+    fn side_opposite_involution() {
+        assert_eq!(Side::White.opposite(), Side::Black);
+        assert_eq!(Side::Black.opposite(), Side::White);
+        assert_eq!(Side::White.opposite().opposite(), Side::White);
+        assert_eq!(Side::Black.opposite().opposite(), Side::Black);
+    }
+
+    #[test]
+    fn color_to_side_round_trip() {
+        assert_eq!(Side::from(Color::White), Side::White);
+        assert_eq!(Side::from(Color::Black), Side::Black);
+    }
+
+    #[test]
+    fn side_to_color_round_trip() {
+        assert_eq!(Color::from(Side::White), Color::White);
+        assert_eq!(Color::from(Side::Black), Color::Black);
+    }
+
+    #[test]
+    fn color_side_color_round_trip() {
+        for color in [Color::White, Color::Black] {
+            assert_eq!(Color::from(Side::from(color)), color);
+        }
+    }
+
+    #[test]
+    fn color_to_player_role() {
+        let role_w = PlayerRole::from(Color::White);
+        let role_b = PlayerRole::from(Color::Black);
+        assert_eq!(role_w, PlayerRole::Player(Side::White));
+        assert_eq!(role_b, PlayerRole::Player(Side::Black));
+    }
+
+    #[test]
+    fn player_role_color_some_for_players() {
+        assert_eq!(PlayerRole::Player(Side::White).color(), Some(Color::White));
+        assert_eq!(PlayerRole::Player(Side::Black).color(), Some(Color::Black));
+    }
+
+    #[test]
+    fn player_role_color_none_for_spectator() {
+        assert_eq!(PlayerRole::Spectator.color(), None);
+    }
+}

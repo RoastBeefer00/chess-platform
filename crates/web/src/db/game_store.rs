@@ -284,3 +284,222 @@ pub fn spawn_finalize(game_store: GameStore, plan: Option<GameFinalization>) {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared::{Category, GameConfig, GameStatus, RatingMode, TimeControl, TimeMode, Variant};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    async fn insert_user(pool: &PgPool) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query!(
+            "INSERT INTO users (id, email) VALUES ($1, $2)",
+            id,
+            format!("{}@test.invalid", id)
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    async fn insert_game_row(pool: &PgPool, game_id: Uuid, white_id: Uuid, black_id: Uuid, rated: bool) {
+        sqlx::query!(
+            r#"INSERT INTO games (id, status, white_user_id, black_user_id, mode,
+                time_initial_seconds, time_increment_seconds, rated)
+               VALUES ($1, 'active', $2, $3, 'blitz', 300, 0, $4)"#,
+            game_id,
+            white_id,
+            black_id,
+            rated,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn make_plan(
+        game_id: Uuid,
+        white_id: Uuid,
+        black_id: Uuid,
+        rated: bool,
+        outcome: KnownOutcome,
+        reason: GameOverReason,
+    ) -> GameFinalization {
+        GameFinalization {
+            game_id,
+            white_id,
+            black_id,
+            category: Category::Blitz,
+            rated,
+            moves: vec!["e2e4".to_string(), "e7e5".to_string()],
+            final_fen: "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2".to_string(),
+            outcome,
+            reason,
+        }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_rated_white_wins_updates_ratings(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+
+        let plan = make_plan(
+            game_id,
+            white_id,
+            black_id,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Checkmate,
+        );
+        store.finalize_game(plan).await.unwrap();
+
+        let white_rating: i32 = sqlx::query_scalar!(
+            "SELECT rating FROM ratings WHERE user_id = $1 AND mode = 'blitz'",
+            white_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let black_rating: i32 = sqlx::query_scalar!(
+            "SELECT rating FROM ratings WHERE user_id = $1 AND mode = 'blitz'",
+            black_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(white_rating > 1500, "winner's rating should increase (was {white_rating})");
+        assert!(black_rating < 1500, "loser's rating should decrease (was {black_rating})");
+
+        let history_count: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM rating_history WHERE game_id = $1",
+            game_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .unwrap_or(0);
+        assert_eq!(history_count, 2, "two rating_history rows (one per player)");
+
+        let games_row = sqlx::query!(
+            "SELECT status, result, termination FROM games WHERE id = $1",
+            game_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(games_row.status, "finished");
+        assert_eq!(games_row.result.as_deref(), Some("white"));
+        assert_eq!(games_row.termination.as_deref(), Some("checkmate"));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_rated_draw_gives_half_point(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+
+        let plan = make_plan(game_id, white_id, black_id, true, KnownOutcome::Draw, GameOverReason::Stalemate);
+        store.finalize_game(plan).await.unwrap();
+
+        let white_rating: i32 = sqlx::query_scalar!(
+            "SELECT rating FROM ratings WHERE user_id = $1 AND mode = 'blitz'",
+            white_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let black_rating: i32 = sqlx::query_scalar!(
+            "SELECT rating FROM ratings WHERE user_id = $1 AND mode = 'blitz'",
+            black_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // Equal-rating draw → no change (expected 0.5, got 0.5).
+        assert_eq!(white_rating, 1500, "equal-rating draw: white unchanged");
+        assert_eq!(black_rating, 1500, "equal-rating draw: black unchanged");
+
+        let games_row = sqlx::query!("SELECT result FROM games WHERE id = $1", game_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(games_row.result.as_deref(), Some("draw"));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_casual_game_does_not_change_ratings(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, false).await;
+
+        let plan = make_plan(
+            game_id,
+            white_id,
+            black_id,
+            false,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Checkmate,
+        );
+        store.finalize_game(plan).await.unwrap();
+
+        let white_rating: i32 = sqlx::query_scalar!(
+            "SELECT rating FROM ratings WHERE user_id = $1 AND mode = 'blitz'",
+            white_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(white_rating, 1500, "casual: ratings must not change");
+
+        let history_count: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM rating_history WHERE game_id = $1",
+            game_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .unwrap_or(0);
+        assert_eq!(history_count, 0, "casual: no rating_history rows");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn abort_game_sets_aborted_status(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+
+        let plan = make_plan(game_id, white_id, black_id, true, KnownOutcome::Draw, GameOverReason::Abort);
+        store.abort_game(plan).await.unwrap();
+
+        let row = sqlx::query!("SELECT status, result FROM games WHERE id = $1", game_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.status, "aborted");
+        assert!(row.result.is_none(), "aborted game has no result");
+
+        // No rating change.
+        let white_rating: i32 = sqlx::query_scalar!(
+            "SELECT rating FROM ratings WHERE user_id = $1 AND mode = 'blitz'",
+            white_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(white_rating, 1500, "abort: ratings must not change");
+    }
+}
