@@ -48,19 +48,24 @@ pub async fn matchmaking_websocket(
 
     let (tx, rx) =
         futures::channel::mpsc::unbounded::<Result<MatchmakingServerMessage, ServerFnError>>();
-    state.add_match_inbox(player_id, tx.clone()).await;
+    // Unique per-connection ID so remove_match_inbox can distinguish tabs.
+    let session_id = Uuid::new_v4();
+    state.add_match_inbox(player_id, session_id, tx.clone()).await;
 
     // Reconnect path: if this player was already matched but their previous
     // WS died before they received the notification, deliver it now.
     if let Some((game_id, side)) = state.take_pending_match(&player_id).await {
         let _ = tx.unbounded_send(Ok(MatchmakingServerMessage::Matched { game: game_id, side }));
-        state.remove_match_inbox(&player_id).await;
+        state.remove_match_inbox(&player_id, session_id).await;
         return Ok(rx.into());
     }
 
     tokio::spawn(async move {
         let mut input = input;
-        // Holds the bucket key once we know it, so cleanup can ZREM regardless of path.
+        // Only set when this connection was the one that actually inserted the
+        // Redis entry (ZADD NX). A secondary tab blocked by NX must not ZREM
+        // on cleanup — it didn't add the entry, so removing it would dequeue
+        // the primary tab silently.
         let mut queued_key: Option<String> = None;
 
         let _ = async {
@@ -75,7 +80,6 @@ pub async fn matchmaking_websocket(
             };
 
             let key = time_control.bucket(rating_mode);
-            queued_key = Some(key.clone());
 
             let player_rating = match state
                 .rating_store
@@ -90,13 +94,24 @@ pub async fn matchmaking_websocket(
                 }
             };
 
-            if let Err(e) = state
+            match state
                 .redis_client
                 .add_to_bucket(&key, player_id, player_rating)
                 .await
             {
-                let _ = tx.unbounded_send(Err(ServerFnError::new(e.to_string())));
-                return Err(());
+                Ok(true) => {
+                    // This connection owns the Redis slot; clean it up on exit.
+                    queued_key = Some(key.clone());
+                }
+                Ok(false) => {
+                    // Player already queued from another tab; NX blocked the add.
+                    // Do NOT set queued_key — closing this tab must not ZREM the
+                    // entry that belongs to the other tab.
+                }
+                Err(e) => {
+                    let _ = tx.unbounded_send(Err(ServerFnError::new(e.to_string())));
+                    return Err(());
+                }
             }
 
             let _ = tx.unbounded_send(Ok(MatchmakingServerMessage::Queued {
@@ -165,7 +180,9 @@ pub async fn matchmaking_websocket(
         .await;
 
         // Always-runs cleanup, regardless of which exit path was taken.
-        state.remove_match_inbox(&player_id).await;
+        // remove_match_inbox only evicts the inbox if this session still owns it
+        // (guards against a later tab's cleanup removing the earlier tab's entry).
+        state.remove_match_inbox(&player_id, session_id).await;
         if let Some(key) = queued_key {
             let _ = state.redis_client.remove_from_bucket(&key, player_id).await;
         }

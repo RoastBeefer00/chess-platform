@@ -17,7 +17,9 @@ use crate::game_room::GameRoom;
 pub type GameId = Uuid;
 pub type GameRooms = Arc<Mutex<HashMap<GameId, Arc<Mutex<GameRoom>>>>>;
 pub type MatchInboxSender = UnboundedSender<Result<MatchmakingServerMessage, ServerFnError>>;
-pub type MatchInbox = Arc<Mutex<HashMap<Uuid, MatchInboxSender>>>;
+/// Maps user_id → (session_id, sender). The session_id prevents a later tab's
+/// cleanup from evicting an earlier tab's — or vice versa — inbox entry.
+pub type MatchInbox = Arc<Mutex<HashMap<Uuid, (Uuid, MatchInboxSender)>>>;
 
 #[derive(Debug)]
 pub struct PendingMatch {
@@ -107,19 +109,27 @@ impl AppState {
         games.get(game_id).cloned()
     }
 
-    #[tracing::instrument(skip(self, tx), fields(user_id = %id))]
-    pub async fn add_match_inbox(&self, id: Uuid, tx: MatchInboxSender) {
-        let _ = self.match_inboxes.lock().await.insert(id, tx);
+    #[tracing::instrument(skip(self, tx), fields(user_id = %id, %session_id))]
+    pub async fn add_match_inbox(&self, id: Uuid, session_id: Uuid, tx: MatchInboxSender) {
+        let _ = self.match_inboxes.lock().await.insert(id, (session_id, tx));
     }
 
-    #[tracing::instrument(skip(self), fields(user_id = %id))]
-    pub async fn remove_match_inbox(&self, id: &Uuid) {
-        let _ = self.match_inboxes.lock().await.remove(id);
+    /// Remove the inbox entry only if it still belongs to `session_id`.
+    /// Guards against a closing tab evicting a later tab's inbox when the same
+    /// user has multiple matchmaking connections open simultaneously.
+    #[tracing::instrument(skip(self), fields(user_id = %id, %session_id))]
+    pub async fn remove_match_inbox(&self, id: &Uuid, session_id: Uuid) {
+        let mut map = self.match_inboxes.lock().await;
+        if let Some((stored_session, _)) = map.get(id) {
+            if *stored_session == session_id {
+                map.remove(id);
+            }
+        }
     }
 
     #[tracing::instrument(skip(self, message), fields(user_id = %id))]
     pub async fn notify_match(&self, id: Uuid, message: MatchmakingServerMessage) {
-        let tx = self.match_inboxes.lock().await.get(&id).cloned();
+        let tx = self.match_inboxes.lock().await.get(&id).map(|(_, tx)| tx.clone());
         if let Some(tx) = tx {
             if tx.unbounded_send(Ok(message)).is_ok() {
                 // Message successfully enqueued — consume pending match so a
@@ -195,15 +205,20 @@ impl RedisClient {
         Ok(opp.and_then(|s| Uuid::parse_str(&s).ok()))
     }
 
+    /// Add `player_id` to the bucket only if not already present (ZADD NX).
+    /// Returns `true` if the entry was newly inserted, `false` if it already
+    /// existed. Callers use this to avoid spurious cleanup ZREM calls from
+    /// secondary tabs that were blocked by NX.
     #[tracing::instrument(skip(self), fields(%player_id))]
     pub async fn add_to_bucket(
         &self,
         bucket: &str,
         player_id: Uuid,
         rating: u32,
-    ) -> FredResult<()> {
-        self.pool
-            .zadd::<(), _, _>(
+    ) -> FredResult<bool> {
+        let added: i64 = self
+            .pool
+            .zadd(
                 bucket,
                 Some(SetOptions::NX),
                 None,
@@ -211,7 +226,8 @@ impl RedisClient {
                 false,
                 (rating as f64, player_id.to_string()),
             )
-            .await
+            .await?;
+        Ok(added > 0)
     }
 
     #[tracing::instrument(skip(self), fields(%player_id))]
@@ -245,7 +261,8 @@ mod tests {
         let bucket = test_bucket("add_remove");
         let player = Uuid::new_v4();
 
-        client.add_to_bucket(&bucket, player, 1500).await.unwrap();
+        let was_added = client.add_to_bucket(&bucket, player, 1500).await.unwrap();
+        assert!(was_added, "first add should insert");
         let score: Option<f64> = client.pool.zscore(&bucket, player.to_string()).await.unwrap();
         assert_eq!(score, Some(1500.0), "player should be in bucket with correct rating");
 
@@ -260,9 +277,11 @@ mod tests {
         let bucket = test_bucket("nx");
         let player = Uuid::new_v4();
 
-        client.add_to_bucket(&bucket, player, 1500).await.unwrap();
+        let first = client.add_to_bucket(&bucket, player, 1500).await.unwrap();
+        assert!(first, "first add returns true");
         // Attempt to add same player with different rating (NX → ignored).
-        client.add_to_bucket(&bucket, player, 2000).await.unwrap();
+        let second = client.add_to_bucket(&bucket, player, 2000).await.unwrap();
+        assert!(!second, "NX-blocked add returns false");
         let score: Option<f64> = client.pool.zscore(&bucket, player.to_string()).await.unwrap();
         assert_eq!(score, Some(1500.0), "NX flag: existing entry must not be overwritten");
 
@@ -275,7 +294,7 @@ mod tests {
         let bucket = test_bucket("no_opp");
         let player = Uuid::new_v4();
 
-        client.add_to_bucket(&bucket, player, 1500).await.unwrap();
+        client.add_to_bucket(&bucket, player, 1500).await.unwrap(); // return ignored intentionally
         let result = client.find_pair(&bucket, player, 1500, 100).await.unwrap();
         assert!(result.is_none(), "self-only queue → no match");
 
