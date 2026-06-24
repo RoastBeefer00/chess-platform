@@ -147,25 +147,13 @@ impl AppState {
     /// Register a matchmaking tab. Returns the new count of active tabs for
     /// this player (1 = first tab, should add to Redis; >1 = already queued).
     pub async fn enter_matchmaking_queue(&self, player_id: Uuid, key: String) -> u32 {
-        let mut map = self.matchmaking_refcount.lock().await;
-        let entry = map.entry(player_id).or_insert((0, key));
-        entry.0 += 1;
-        entry.0
+        refcount_enter(&self.matchmaking_refcount, player_id, key).await
     }
 
     /// Deregister a matchmaking tab. Returns `Some(key)` when this was the
     /// last active tab (caller should ZREM from Redis); `None` otherwise.
     pub async fn leave_matchmaking_queue(&self, player_id: &Uuid) -> Option<String> {
-        let mut map = self.matchmaking_refcount.lock().await;
-        if let Some(entry) = map.get_mut(player_id) {
-            entry.0 = entry.0.saturating_sub(1);
-            if entry.0 == 0 {
-                let key = entry.1.clone();
-                map.remove(player_id);
-                return Some(key);
-            }
-        }
-        None
+        refcount_leave(&self.matchmaking_refcount, player_id).await
     }
 
     pub async fn set_pending_match(&self, player_id: Uuid, game_id: GameId, side: Side) {
@@ -263,6 +251,33 @@ impl RedisClient {
     pub async fn remove_from_bucket(&self, bucket: &str, player_id: Uuid) -> FredResult<()> {
         self.pool.zrem(bucket, player_id.to_string()).await
     }
+}
+
+pub(crate) async fn refcount_enter(
+    refcount: &MatchmakingRefcount,
+    player_id: Uuid,
+    key: String,
+) -> u32 {
+    let mut map = refcount.lock().await;
+    let entry = map.entry(player_id).or_insert((0, key));
+    entry.0 += 1;
+    entry.0
+}
+
+pub(crate) async fn refcount_leave(
+    refcount: &MatchmakingRefcount,
+    player_id: &Uuid,
+) -> Option<String> {
+    let mut map = refcount.lock().await;
+    if let Some(entry) = map.get_mut(player_id) {
+        entry.0 = entry.0.saturating_sub(1);
+        if entry.0 == 0 {
+            let key = entry.1.clone();
+            map.remove(player_id);
+            return Some(key);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -400,5 +415,90 @@ mod tests {
         assert!(result.is_none(), "requester not in queue → no match");
 
         client.remove_from_bucket(&bucket, opponent).await.unwrap();
+    }
+
+    fn make_refcount() -> MatchmakingRefcount {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    #[tokio::test]
+    async fn refcount_first_tab_returns_one() {
+        let rc = make_refcount();
+        let player = Uuid::new_v4();
+        let count = refcount_enter(&rc, player, "bucket".into()).await;
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn refcount_second_tab_returns_two() {
+        let rc = make_refcount();
+        let player = Uuid::new_v4();
+        refcount_enter(&rc, player, "bucket".into()).await;
+        let count = refcount_enter(&rc, player, "bucket".into()).await;
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn refcount_leave_non_last_tab_returns_none() {
+        let rc = make_refcount();
+        let player = Uuid::new_v4();
+        refcount_enter(&rc, player, "bucket".into()).await;
+        refcount_enter(&rc, player, "bucket".into()).await; // two tabs
+
+        // First tab closes — still one active, no ZREM.
+        let result = refcount_leave(&rc, &player).await;
+        assert!(result.is_none(), "should not ZREM while another tab is open");
+    }
+
+    #[tokio::test]
+    async fn refcount_leave_last_tab_returns_key() {
+        let rc = make_refcount();
+        let player = Uuid::new_v4();
+        refcount_enter(&rc, player, "my-bucket".into()).await;
+        refcount_enter(&rc, player, "my-bucket".into()).await;
+
+        refcount_leave(&rc, &player).await; // first close → still 1
+        let result = refcount_leave(&rc, &player).await; // last close → ZREM
+        assert_eq!(result.as_deref(), Some("my-bucket"));
+    }
+
+    #[tokio::test]
+    async fn refcount_entry_removed_after_last_leave() {
+        let rc = make_refcount();
+        let player = Uuid::new_v4();
+        refcount_enter(&rc, player, "k".into()).await;
+        refcount_leave(&rc, &player).await;
+
+        // Map must be empty — no phantom entry with count 0.
+        assert!(rc.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn refcount_leave_unknown_player_returns_none() {
+        let rc = make_refcount();
+        let ghost = Uuid::new_v4();
+        let result = refcount_leave(&rc, &ghost).await;
+        assert!(result.is_none());
+    }
+
+    // Regression: models the original bug. Old idle tab (tab_1) closes while
+    // tab_2 is still active. Tab_1 should NOT ZREM; tab_2 close should ZREM.
+    #[tokio::test]
+    async fn refcount_old_tab_close_does_not_zrem_while_new_tab_active() {
+        let rc = make_refcount();
+        let player = Uuid::new_v4();
+
+        // tab_1 (phone, idle) enters first.
+        refcount_enter(&rc, player, "bucket".into()).await;
+        // tab_2 (laptop, active) enters.
+        refcount_enter(&rc, player, "bucket".into()).await;
+
+        // tab_1 (phone) disconnects via TCP timeout.
+        let tab1_result = refcount_leave(&rc, &player).await;
+        assert!(tab1_result.is_none(), "tab_1 close must not ZREM — tab_2 still active");
+
+        // tab_2 closes normally.
+        let tab2_result = refcount_leave(&rc, &player).await;
+        assert_eq!(tab2_result.as_deref(), Some("bucket"), "tab_2 close must ZREM");
     }
 }
