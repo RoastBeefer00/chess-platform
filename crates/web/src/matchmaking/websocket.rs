@@ -62,11 +62,10 @@ pub async fn matchmaking_websocket(
 
     tokio::spawn(async move {
         let mut input = input;
-        // Only set when this connection was the one that actually inserted the
-        // Redis entry (ZADD NX). A secondary tab blocked by NX must not ZREM
-        // on cleanup — it didn't add the entry, so removing it would dequeue
-        // the primary tab silently.
-        let mut queued_key: Option<String> = None;
+        // Whether this connection registered in the matchmaking refcount.
+        // Cleanup calls leave_matchmaking_queue only when true; the refcount
+        // decides whether to ZREM (only on last-tab-close).
+        let mut entered_queue = false;
 
         let _ = async {
             // First message MUST be Join.
@@ -94,24 +93,20 @@ pub async fn matchmaking_websocket(
                 }
             };
 
-            match state
+            // Register before touching Redis so cleanup always decrements.
+            state.enter_matchmaking_queue(player_id, key.clone()).await;
+            entered_queue = true;
+
+            // ZADD NX is idempotent — multiple tabs trying to add the same
+            // player only succeed once (score stays from first tab). That's fine:
+            // the refcount, not NX, decides who ZREMs on cleanup.
+            if let Err(e) = state
                 .redis_client
                 .add_to_bucket(&key, player_id, player_rating)
                 .await
             {
-                Ok(true) => {
-                    // This connection owns the Redis slot; clean it up on exit.
-                    queued_key = Some(key.clone());
-                }
-                Ok(false) => {
-                    // Player already queued from another tab; NX blocked the add.
-                    // Do NOT set queued_key — closing this tab must not ZREM the
-                    // entry that belongs to the other tab.
-                }
-                Err(e) => {
-                    let _ = tx.unbounded_send(Err(ServerFnError::new(e.to_string())));
-                    return Err(());
-                }
+                let _ = tx.unbounded_send(Err(ServerFnError::new(e.to_string())));
+                return Err(());
             }
 
             let _ = tx.unbounded_send(Ok(MatchmakingServerMessage::Queued {
@@ -183,8 +178,14 @@ pub async fn matchmaking_websocket(
         // remove_match_inbox only evicts the inbox if this session still owns it
         // (guards against a later tab's cleanup removing the earlier tab's entry).
         state.remove_match_inbox(&player_id, session_id).await;
-        if let Some(key) = queued_key {
-            let _ = state.redis_client.remove_from_bucket(&key, player_id).await;
+        // leave_matchmaking_queue returns Some(key) only when this was the last
+        // active tab (refcount → 0). Other tabs closing earlier decrement but
+        // don't ZREM, so the player stays visible to find_pair until the last
+        // connection closes.
+        if entered_queue {
+            if let Some(key) = state.leave_matchmaking_queue(&player_id).await {
+                let _ = state.redis_client.remove_from_bucket(&key, player_id).await;
+            }
         }
     });
 

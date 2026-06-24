@@ -20,6 +20,9 @@ pub type MatchInboxSender = UnboundedSender<Result<MatchmakingServerMessage, Ser
 /// Maps user_id → (session_id, sender). The session_id prevents a later tab's
 /// cleanup from evicting an earlier tab's — or vice versa — inbox entry.
 pub type MatchInbox = Arc<Mutex<HashMap<Uuid, (Uuid, MatchInboxSender)>>>;
+/// Maps user_id → (tab_count, bucket_key). ZREM only fires when count hits 0
+/// so closing one of N tabs never dequeues the player while others are active.
+pub type MatchmakingRefcount = Arc<Mutex<HashMap<Uuid, (u32, String)>>>;
 
 #[derive(Debug)]
 pub struct PendingMatch {
@@ -40,6 +43,7 @@ pub struct AppState {
     pub redis_client: RedisClient,
     pub match_inboxes: MatchInbox,
     pub pending_matches: PendingMatches,
+    pub matchmaking_refcount: MatchmakingRefcount,
 }
 
 impl AppState {
@@ -68,6 +72,7 @@ impl AppState {
             redis_client,
             match_inboxes: Arc::new(Mutex::new(HashMap::new())),
             pending_matches: Arc::new(Mutex::new(HashMap::new())),
+            matchmaking_refcount: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -137,6 +142,30 @@ impl AppState {
                 self.pending_matches.lock().await.remove(&id);
             }
         }
+    }
+
+    /// Register a matchmaking tab. Returns the new count of active tabs for
+    /// this player (1 = first tab, should add to Redis; >1 = already queued).
+    pub async fn enter_matchmaking_queue(&self, player_id: Uuid, key: String) -> u32 {
+        let mut map = self.matchmaking_refcount.lock().await;
+        let entry = map.entry(player_id).or_insert((0, key));
+        entry.0 += 1;
+        entry.0
+    }
+
+    /// Deregister a matchmaking tab. Returns `Some(key)` when this was the
+    /// last active tab (caller should ZREM from Redis); `None` otherwise.
+    pub async fn leave_matchmaking_queue(&self, player_id: &Uuid) -> Option<String> {
+        let mut map = self.matchmaking_refcount.lock().await;
+        if let Some(entry) = map.get_mut(player_id) {
+            entry.0 = entry.0.saturating_sub(1);
+            if entry.0 == 0 {
+                let key = entry.1.clone();
+                map.remove(player_id);
+                return Some(key);
+            }
+        }
+        None
     }
 
     pub async fn set_pending_match(&self, player_id: Uuid, game_id: GameId, side: Side) {
