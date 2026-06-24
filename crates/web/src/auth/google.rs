@@ -13,6 +13,8 @@ pub async fn google_login(
 ) -> impl IntoResponse {
     let (redirect_url, csrf_token, nonce) = backend
         .google_client
+        .read()
+        .await
         .authorize_url(
             openidconnect::AuthenticationFlow::<openidconnect::core::CoreResponseType>::AuthorizationCode,
             openidconnect::CsrfToken::new_random,

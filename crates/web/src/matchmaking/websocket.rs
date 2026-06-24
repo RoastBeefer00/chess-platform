@@ -48,20 +48,24 @@ pub async fn matchmaking_websocket(
 
     let (tx, rx) =
         futures::channel::mpsc::unbounded::<Result<MatchmakingServerMessage, ServerFnError>>();
-    state.add_match_inbox(player_id, tx.clone()).await;
+    // Unique per-connection ID so remove_match_inbox can distinguish tabs.
+    let session_id = Uuid::new_v4();
+    state.add_match_inbox(player_id, session_id, tx.clone()).await;
 
     // Reconnect path: if this player was already matched but their previous
     // WS died before they received the notification, deliver it now.
     if let Some((game_id, side)) = state.take_pending_match(&player_id).await {
         let _ = tx.unbounded_send(Ok(MatchmakingServerMessage::Matched { game: game_id, side }));
-        state.remove_match_inbox(&player_id).await;
+        state.remove_match_inbox(&player_id, session_id).await;
         return Ok(rx.into());
     }
 
     tokio::spawn(async move {
         let mut input = input;
-        // Holds the bucket key once we know it, so cleanup can ZREM regardless of path.
-        let mut queued_key: Option<String> = None;
+        // Whether this connection registered in the matchmaking refcount.
+        // Cleanup calls leave_matchmaking_queue only when true; the refcount
+        // decides whether to ZREM (only on last-tab-close).
+        let mut entered_queue = false;
 
         let _ = async {
             // First message MUST be Join.
@@ -75,7 +79,6 @@ pub async fn matchmaking_websocket(
             };
 
             let key = time_control.bucket(rating_mode);
-            queued_key = Some(key.clone());
 
             let player_rating = match state
                 .rating_store
@@ -90,6 +93,13 @@ pub async fn matchmaking_websocket(
                 }
             };
 
+            // Register before touching Redis so cleanup always decrements.
+            state.enter_matchmaking_queue(player_id, key.clone()).await;
+            entered_queue = true;
+
+            // ZADD NX is idempotent — multiple tabs trying to add the same
+            // player only succeed once (score stays from first tab). That's fine:
+            // the refcount, not NX, decides who ZREMs on cleanup.
             if let Err(e) = state
                 .redis_client
                 .add_to_bucket(&key, player_id, player_rating)
@@ -165,9 +175,17 @@ pub async fn matchmaking_websocket(
         .await;
 
         // Always-runs cleanup, regardless of which exit path was taken.
-        state.remove_match_inbox(&player_id).await;
-        if let Some(key) = queued_key {
-            let _ = state.redis_client.remove_from_bucket(&key, player_id).await;
+        // remove_match_inbox only evicts the inbox if this session still owns it
+        // (guards against a later tab's cleanup removing the earlier tab's entry).
+        state.remove_match_inbox(&player_id, session_id).await;
+        // leave_matchmaking_queue returns Some(key) only when this was the last
+        // active tab (refcount → 0). Other tabs closing earlier decrement but
+        // don't ZREM, so the player stays visible to find_pair until the last
+        // connection closes.
+        if entered_queue {
+            if let Some(key) = state.leave_matchmaking_queue(&player_id).await {
+                let _ = state.redis_client.remove_from_bucket(&key, player_id).await;
+            }
         }
     });
 

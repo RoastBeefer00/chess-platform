@@ -77,3 +77,60 @@ impl UserStore {
         .await?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    async fn insert_user(pool: &PgPool) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query!(
+            "INSERT INTO users (id, email) VALUES ($1, $2)",
+            id,
+            format!("{}@test.invalid", id)
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn username_available_for_fresh_user(pool: PgPool) {
+        let store = UserStore::new(pool);
+        let available = store.is_username_available("unused_name".to_string()).await.unwrap();
+        assert!(available);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn set_username_succeeds_and_marks_taken(pool: PgPool) {
+        let store = UserStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+        store.set_username(user_id, "coolplayer".to_string()).await.unwrap();
+
+        let still_available = store.is_username_available("coolplayer".to_string()).await.unwrap();
+        assert!(!still_available, "username should be taken after set");
+
+        let row = sqlx::query!("SELECT username FROM users WHERE id = $1", user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.username.as_deref(), Some("coolplayer"));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn set_username_fails_on_duplicate(pool: PgPool) {
+        let store = UserStore::new(pool.clone());
+        let user_a = insert_user(&pool).await;
+        let user_b = insert_user(&pool).await;
+        store.set_username(user_a, "taken_name".to_string()).await.unwrap();
+
+        let result = store.set_username(user_b, "taken_name".to_string()).await;
+        assert!(
+            matches!(result, Err(crate::auth::AuthError::UsernameTaken(_))),
+            "expected UsernameTaken error"
+        );
+    }
+}
