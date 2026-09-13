@@ -41,6 +41,15 @@ pub struct DragState {
     pub y: f64,
 }
 
+/// Live state of an in-progress right-click-drag annotation arrow. `to` is
+/// the square currently under the cursor (for the live preview), re-hit-
+/// tested on every `pointermove` — `None` once the cursor leaves the board.
+#[derive(Debug, Clone, Copy)]
+struct ArrowDrag {
+    from: shakmaty::Square,
+    to: Option<shakmaty::Square>,
+}
+
 /// Every legal move from `from` to `to`. In standard chess this is at most
 /// one move — except a promotion, where it's the four role choices
 /// (Q/R/B/N), which is exactly the ambiguity the promotion picker resolves.
@@ -141,6 +150,38 @@ fn pull_back_last_point(mut points: Vec<(f64, f64)>, distance: f64) -> Vec<(f64,
     points
 }
 
+/// One arrow (`from` → `to`), shared by the engine-suggestion and
+/// user-drawn-annotation overlays — see `pull_back_last_point` for why the
+/// line is trimmed back by the arrowhead's own length before rendering.
+/// `#best-move-arrowhead` (defined once in `ChessBoard`'s view) is reused
+/// by every arrow regardless of which kind drew it.
+fn arrow_polyline(
+    from: shakmaty::Square,
+    to: shakmaty::Square,
+    perspective: BoardPerspective,
+    stroke: &str,
+    opacity: f64,
+    width: f64,
+) -> impl IntoView {
+    let points = pull_back_last_point(
+        arrow_points(square_center(from, perspective), square_center(to, perspective)),
+        ARROWHEAD_MARKER_SIZE * width,
+    );
+    let points_attr = points.iter().map(|(x, y)| format!("{x},{y}")).collect::<Vec<_>>().join(" ");
+    view! {
+        <polyline
+            points=points_attr
+            fill="none"
+            stroke=stroke.to_string()
+            stroke-width=width.to_string()
+            stroke-opacity=opacity.to_string()
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            marker-end="url(#best-move-arrowhead)"
+        ></polyline>
+    }
+}
+
 impl From<Option<PlayerRole>> for BoardPerspective {
     fn from(role: Option<PlayerRole>) -> Self {
         match role {
@@ -174,6 +215,19 @@ pub fn ChessBoard(
     let selected_square = RwSignal::new(None::<shakmaty::Square>);
     let pending_promotion = RwSignal::new(None::<PendingPromotion>);
     let drag_state = RwSignal::new(None::<DragState>);
+    // Right-click-drag annotation arrows — local to this board (not a prop
+    // like `arrows` above), so both `PlayBoard` and `AnalysisBoard` get the
+    // feature automatically with no changes of their own.
+    let arrow_drag = RwSignal::new(None::<ArrowDrag>);
+    let user_arrows = RwSignal::new(Vec::<(shakmaty::Square, shakmaty::Square)>::new());
+
+    // Shapes are per-position, not carried across moves or navigation —
+    // matches lichess. `user_arrows` starts empty, so the first (mount) run
+    // is a no-op.
+    Effect::new(move || {
+        position.get();
+        user_arrows.set(vec![]);
+    });
 
     let premoves_ctx = use_context::<RwSignal<Vec<(shakmaty::Square, shakmaty::Square)>>>();
 
@@ -305,6 +359,19 @@ pub fn ChessBoard(
         use std::str::FromStr;
         use wasm_bindgen::JsCast as _;
 
+        // Shared by the left-drag-drop logic below and the right-click
+        // arrow-drag logic — resolves a viewport point to the `data-square`
+        // element under it. Needed (rather than just using the event's own
+        // `target()`) specifically at pointerUP: mid-drag, pointer capture
+        // means the event's target is wherever the drag *started*, not
+        // whatever's actually under the cursor now.
+        fn square_at_point(x: f32, y: f32) -> Option<shakmaty::Square> {
+            let window = web_sys::window()?;
+            let el = window.document()?.element_from_point(x, y)?;
+            let sq_el = el.closest("[data-square]").ok()??;
+            shakmaty::Square::from_str(&sq_el.get_attribute("data-square")?).ok()
+        }
+
         // `window_event_listener`'s typed `ev::pointermove`/`ev::pointerup`
         // descriptors cast the raw event to `web_sys::PointerEvent`
         // internally; under rapid repeated firing (e.g. quickly stepping
@@ -323,39 +390,48 @@ pub fn ChessBoard(
                     d.y = e.client_y() as f64 - d.grab_dy;
                 }
             });
+            if arrow_drag.get_untracked().is_some() {
+                let sq = square_at_point(e.client_x() as f32, e.client_y() as f32);
+                arrow_drag.update(|a| {
+                    if let Some(a) = a {
+                        a.to = sq;
+                    }
+                });
+            }
         });
 
         window_event_listener_untyped("pointerup", move |e: web_sys::Event| {
             let e: web_sys::MouseEvent = e.unchecked_into();
+
+            // Complete a right-click arrow drag, if one was in progress —
+            // independent of (and unconditional on) any left-drag below.
+            if let Some(drag) = arrow_drag.get_untracked() {
+                arrow_drag.set(None);
+                match drag.to {
+                    Some(to) if to != drag.from => user_arrows.update(|arrows| {
+                        if let Some(i) = arrows.iter().position(|a| *a == (drag.from, to)) {
+                            arrows.remove(i);
+                        } else {
+                            arrows.push((drag.from, to));
+                        }
+                    }),
+                    // Plain right-click (released on the start square) or
+                    // the cursor left the board entirely — clear all.
+                    _ => user_arrows.set(vec![]),
+                }
+            }
+
             let Some(drag) = drag_state.get_untracked() else {
                 return;
             };
             drag_state.set(None);
 
             // Mobile Safari can produce drops outside the viewport (finger
-            // lifted off-screen). Every step below can fail legitimately;
-            // bail out instead of panicking the drop handler (which would
-            // block all future drags).
+            // lifted off-screen) — `square_at_point` returning `None` covers
+            // that legitimately; bail out instead of panicking the drop
+            // handler (which would block all future drags).
             let (x, y) = (e.client_x() as f32, e.client_y() as f32);
-            let Some(window) = web_sys::window() else {
-                return;
-            };
-            let Some(document) = window.document() else {
-                return;
-            };
-            let Some(dom_element) = document.element_from_point(x, y) else {
-                selected_square.set(None);
-                return;
-            };
-            let Ok(Some(el)) = dom_element.closest("[data-square]") else {
-                selected_square.set(None);
-                return;
-            };
-            let Some(attr) = el.get_attribute("data-square") else {
-                selected_square.set(None);
-                return;
-            };
-            let Ok(dropped_square) = shakmaty::Square::from_str(&attr) else {
+            let Some(dropped_square) = square_at_point(x, y) else {
                 selected_square.set(None);
                 return;
             };
@@ -388,10 +464,41 @@ pub fn ChessBoard(
         });
     }
 
+    // Starts a right-click-drag annotation arrow. A per-element `on:`
+    // binding (delegated, like the piece's own `on:pointerdown`) rather than
+    // a window listener — no new leak risk. The event's own target is
+    // correct here (unlike at pointerup, mid-drag), so this doesn't need
+    // `square_at_point`.
+    #[cfg(feature = "hydrate")]
+    let on_board_pointer_down = move |ev: leptos::ev::PointerEvent| {
+        use std::str::FromStr;
+        use wasm_bindgen::JsCast as _;
+        if ev.button() != 2 {
+            return;
+        }
+        let Some(target) = ev.target() else { return };
+        let Ok(el) = target.dyn_into::<web_sys::Element>() else {
+            return;
+        };
+        let Ok(Some(sq_el)) = el.closest("[data-square]") else {
+            return;
+        };
+        let Some(attr) = sq_el.get_attribute("data-square") else {
+            return;
+        };
+        let Ok(sq) = shakmaty::Square::from_str(&attr) else {
+            return;
+        };
+        arrow_drag.set(Some(ArrowDrag { from: sq, to: Some(sq) }));
+    };
+    #[cfg(not(feature = "hydrate"))]
+    let on_board_pointer_down = |_: leptos::ev::PointerEvent| {};
+
     view! {
         <div class="flex items-center justify-center">
             <div
                 class="relative grid grid-cols-8 grid-rows-8 w-[min(100vw,calc(100dvh-11.5rem))] aspect-square"
+                on:pointerdown=on_board_pointer_down
                 on:contextmenu=move |e| {
                     e.prevent_default();
                     if selected_square.get_untracked().is_some() {
@@ -462,38 +569,32 @@ pub fn ChessBoard(
                                     1 => (0.55, 0.14),
                                     _ => (0.30, 0.10),
                                 };
-                                // `refX="0"` (above) anchors the marker's wide
-                                // base — not its tip — to the polyline's last
-                                // point, so the arrowhead's full `markerWidth`
-                                // extends forward from there to the real
-                                // target square; pulling the line back by
-                                // that same length keeps the tip landing
-                                // exactly on target while moving the line's
-                                // own stroke (and its cap) safely under the
-                                // base instead of the narrow tip.
-                                let points = pull_back_last_point(
-                                    arrow_points(square_center(from, persp), square_center(to, persp)),
-                                    ARROWHEAD_MARKER_SIZE * width,
-                                );
-                                let points_attr = points
-                                    .iter()
-                                    .map(|(x, y)| format!("{x},{y}"))
-                                    .collect::<Vec<_>>()
-                                    .join(" ");
-                                view! {
-                                    <polyline
-                                        points=points_attr
-                                        fill="none"
-                                        stroke="#9ca3af"
-                                        stroke-width=width.to_string()
-                                        stroke-opacity=opacity.to_string()
-                                        stroke-linecap="round"
-                                        stroke-linejoin="round"
-                                        marker-end="url(#best-move-arrowhead)"
-                                    ></polyline>
-                                }
+                                arrow_polyline(from, to, persp, "#9ca3af", opacity, width)
                             })
                             .collect_view()
+                    }}
+                    // User-drawn (right-click-drag) annotation arrows — a
+                    // distinct green so they read as "your annotation" next
+                    // to the engine suggestions' gray, drawn on top of them.
+                    {move || {
+                        let persp = perspective.get();
+                        user_arrows
+                            .get()
+                            .into_iter()
+                            .map(|(from, to)| arrow_polyline(from, to, persp, "#22c55e", 0.8, 0.16))
+                            .collect_view()
+                    }}
+                    // Live preview while a right-click-drag is in progress —
+                    // same color, faded, so it reads as "not committed yet".
+                    // Nothing renders once the cursor leaves the board
+                    // (`to: None`) or sits back on the start square (a plain
+                    // right-click, not a real drag).
+                    {move || {
+                        let persp = perspective.get();
+                        arrow_drag.get().and_then(|drag| {
+                            let to = drag.to?;
+                            (to != drag.from).then(|| arrow_polyline(drag.from, to, persp, "#22c55e", 0.4, 0.16))
+                        })
                     }}
                 </svg>
                 <PromotionPicker perspective={perspective} />

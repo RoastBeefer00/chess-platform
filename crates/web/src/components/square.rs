@@ -199,6 +199,13 @@ fn DraggablePieceImg(
 
     #[cfg(feature = "hydrate")]
     let on_pointer_down = move |ev: leptos::ev::PointerEvent| {
+        // Right-click (button 2) starts an arrow-drag instead (see
+        // `ChessBoard`'s board-level `on:pointerdown`) — most squares a user
+        // right-clicks are occupied, so without this guard a right-click on
+        // a piece would also start moving/selecting it.
+        if ev.button() != 0 {
+            return;
+        }
         let Some(p) = piece.get_untracked() else {
             return;
         };
