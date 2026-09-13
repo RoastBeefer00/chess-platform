@@ -31,7 +31,7 @@ pub fn material_advantage(pos: &shakmaty::Chess, color: Color) -> i32 {
 }
 
 #[component]
-pub fn CapturedPieces(position: ReadSignal<shakmaty::Chess>, color: Color) -> impl IntoView {
+pub fn CapturedPieces(#[prop(into)] position: Signal<shakmaty::Chess>, color: Color) -> impl IntoView {
     use shakmaty::Position as _;
 
     // Flat list: (index, role, is_first_of_its_type). Keyed by index for correct diffing.

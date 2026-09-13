@@ -151,6 +151,43 @@ async fn main() {
         }
     });
 
+    // `cargo-leptos` doesn't content-hash the WASM/JS bundle filenames
+    // (output-name = "web" — always `web.wasm`, `chunk_N.wasm`, etc.), so a
+    // rebuild reuses the exact same URL for different content. Without an
+    // explicit header, browsers apply heuristic caching against
+    // `Last-Modified` and can keep serving a stale (pre-rebuild) bundle
+    // after a normal reload. `no-cache` still lets the browser cache the
+    // response but forces revalidation (conditional GET) on every request,
+    // so a rebuild is always picked up on the next load — in both dev and
+    // prod, since neither hashes these filenames today.
+    let no_cache_pkg = from_fn(|req: Request, next: Next| async move {
+        let is_pkg = req.uri().path().starts_with("/pkg/");
+        let mut res = next.run(req).await;
+        if is_pkg {
+            res.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        }
+        res
+    });
+
+    // Opposite policy for the vendored Stockfish engine under `/engine/` —
+    // unlike the app's own WASM, these files only change when someone
+    // deliberately swaps in a new build (see public/engine/README.md), so
+    // they're safe to cache hard rather than revalidate on every load. This
+    // matters more here: the engine WASM is ~7MB, multiple times the size
+    // of everything else on the page combined.
+    let long_cache_engine = from_fn(|req: Request, next: Next| async move {
+        let is_engine = req.uri().path().starts_with("/engine/");
+        let mut res = next.run(req).await;
+        if is_engine {
+            res.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=604800, immutable"),
+            );
+        }
+        res
+    });
+
     // Middleware: rate-limit only paths under `/api/*`. Uses the same
     // SmartIpKeyExtractor logic so behavior is consistent with the OAuth
     // GovernorLayer. Static assets and page renders pass through untouched.
@@ -248,6 +285,8 @@ async fn main() {
         // later need a per-WS frame limit, switch to a hand-rolled axum WS
         // route with `max_message_size`.
         .layer(RequestBodyLimitLayer::new(1024 * 1024))
+        .layer(no_cache_pkg)
+        .layer(long_cache_engine)
         .layer(api_rate_limit)
         .layer(TraceLayer::new_for_http())
         .layer(auth_layer);

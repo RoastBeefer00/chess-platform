@@ -8,7 +8,14 @@
     flutter
     dart
     tailwindcss_4
-    wasm-bindgen-cli
+    # Pinned to match `crates/web/Cargo.toml`'s exact `wasm-bindgen = "=0.2.117"`
+    # — the CLI's bindgen schema version must match the Rust crate's exactly
+    # or `cargo leptos build`/`watch` fails outright. Plain `wasm-bindgen-cli`
+    # tracks whatever nixpkgs currently has (drifted to 0.2.121 after
+    # `devenv update`); bumping the Rust-side pin instead cascades through
+    # js-sys/web-sys/wasm-bindgen-futures and whatever else transitively
+    # pins them, which is a much bigger, riskier change than pinning the CLI.
+    wasm-bindgen-cli_0_2_117
     binaryen
     libiconv
   ];
@@ -25,10 +32,36 @@
     listen_addresses = "127.0.0.1";
   };
 
-  services.redis.enable = true;
+  services.redis = {
+    enable = true;
+    # `port` alone doesn't work: devenv's redis module never wires
+    # `services.redis.port` into the generated redis.conf, which always
+    # bakes in a literal `port 6380` regardless of this setting (confirmed
+    # directly, both before and after a `devenv update` bumping devenv's
+    # own locked module version — `port = 6379;` alone still starts redis
+    # on 6380 every time, freshly, no stale state involved). `extraConfig`
+    # appends after that broken line, and redis.conf takes the *last*
+    # occurrence of a directive — so this line is what actually wins.
+    # Verified via `redis-cli -p 6379 ping` → PONG.
+    port = 6379;
+    extraConfig = "port 6379";
+  };
 
   env = {
-    DATABASE_URL = "postgresql://localhost/chess_dev";
+    # Postgres's own port lives in its persisted postgresql.conf, written
+    # once at first init — devenv doesn't regenerate it on later `devenv up`
+    # restarts the way it does for redis, so a `services.postgres.port`
+    # setting here has no effect on an already-initialized data directory.
+    # Check `.devenv/state/postgres/postgresql.conf` directly if it ever
+    # drifts again.
+    #
+    # The `roastbeefer@` user is required, not optional: sqlx-cli 0.9.0
+    # (picked up by the same `devenv update` as the redis/wasm-bindgen
+    # fixes above) defaults an unqualified DATABASE_URL to a role literally
+    # named "anonymous" instead of falling back to the OS user the way
+    # `psql`/libpq do — `sqlx migrate run` fails outright
+    # (`role "anonymous" does not exist`) without an explicit username here.
+    DATABASE_URL = "postgresql://roastbeefer@localhost:5432/chess_dev";
     REDIS_URL = "redis://localhost:6379";
     LEPTOS_OUTPUT_NAME = "web";
     LEPTOS_SITE_ROOT = "target/site";

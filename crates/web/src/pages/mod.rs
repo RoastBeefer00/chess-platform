@@ -1,9 +1,11 @@
+pub mod analysis;
 pub mod create_username;
 pub mod home;
 pub mod login;
 pub mod not_found;
 pub mod play;
 
+pub use analysis::AnalysisPage;
 pub use create_username::CreateUsernamePage;
 pub use home::HomePage;
 pub use login::LoginPage;

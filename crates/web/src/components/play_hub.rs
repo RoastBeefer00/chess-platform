@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use shared::{Category, RatingMode, TimeControl, TimeMode};
 use strum::IntoEnumIterator;
 
-use crate::components::{EloCard, MatchmakingModal};
+use crate::components::{EloCard, MatchmakingModal, RecentGames};
 
 #[component]
 pub fn PlayHub() -> impl IntoView {
@@ -75,6 +75,8 @@ pub fn PlayHub() -> impl IntoView {
                     }).collect_view()}
                 </div>
             </div>
+
+            <RecentGames/>
         </div>
 
         <Show when=move || searching.get().is_some()>

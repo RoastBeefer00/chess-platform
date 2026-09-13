@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT rating FROM ratings WHERE user_id = $1 AND mode = 'blitz'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rating",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0996b7f296056ba77505b877f1d8a4ecdc0bdcec5a15c5612c3cf55a5ca0dd94"
+}

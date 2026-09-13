@@ -1,11 +1,13 @@
 use leptos::{html::Div, prelude::*};
 use shakmaty::Outcome;
 use shared::{messages::GameOverReason, GameClientMessage, Side};
+use uuid::Uuid;
 
-use crate::components::{NewGameButton, RematchControls, RematchState};
+use crate::components::{AnalyzeLink, NewGameButton, RematchControls, RematchState};
 
 #[component]
 pub fn GameOverModal(
+    game_id: Uuid,
     outcome: Outcome,
     reason: Option<GameOverReason>,
     /// The player's own side, or `None` for spectators.
@@ -82,6 +84,7 @@ pub fn GameOverModal(
                 <div class="flex flex-wrap items-center justify-center gap-3">
                     <RematchControls rematch_state=rematch_state send=send />
                     <NewGameButton on_new_game=on_new_game tc_label=tc_label />
+                    <AnalyzeLink game_id=game_id />
                 </div>
             </div>
         </div>
