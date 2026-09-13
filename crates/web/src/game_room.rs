@@ -81,6 +81,10 @@ pub struct GameRoom {
     pub rematch_offer: Option<Uuid>,
     pub draw_offer: Option<Uuid>,
     pub move_history: Vec<String>,
+    /// (white_ms_left, black_ms_left) after each move in `move_history`, same
+    /// index alignment. Persisted alongside `move_history` so a finished game
+    /// can be analyzed later with real per-move clock times.
+    pub clock_history: Vec<(i64, i64)>,
     /// Zobrist hash → occurrence count for the current game, used to detect
     /// threefold repetition. Seeded with the starting position at construction.
     position_counts: HashMap<Zobrist64, u8>,
@@ -114,6 +118,7 @@ impl GameRoom {
             rematch_offer: None,
             draw_offer: None,
             move_history: Vec::new(),
+            clock_history: Vec::new(),
             position_counts,
             end_reason: None,
             session_score,
@@ -291,6 +296,7 @@ impl GameRoom {
             category: self.game.config.time_control.category(),
             rated: self.game.config.rated.is_rated(),
             moves: self.move_history.clone(),
+            clocks: self.clock_history.clone(),
             final_fen: Fen::from_position(&self.game.position, EnPassantMode::Legal).to_string(),
             outcome,
             reason,
@@ -368,6 +374,15 @@ impl GameRoom {
         // that races the first Ping).
         let rtt_cap_ms = self.rtt_of(mover_id).map(|r| r as i64).unwrap_or(0) + RTT_CAP_SLACK_MS;
         self.update_clock(think_ms, rtt_cap_ms)?;
+
+        // Record the move and its resulting clocks now, before any of the
+        // early returns below (checkmate, repetition, fifty-move) — a
+        // game-ending move must still land in the history that gets
+        // persisted.
+        self.move_history.push(uci.clone());
+        self.clock_history
+            .push((self.game.white_ms_left, self.game.black_ms_left));
+
         let sent_at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -427,7 +442,6 @@ impl GameRoom {
             Color::Black => self.game.black_ms_left,
         };
 
-        self.move_history.push(uci);
         Ok(MoveOutcome::Continuing(TimeoutPlan {
             next_color,
             ms_until_flag,
@@ -836,6 +850,7 @@ mod tests {
             _ => panic!("expected Continuing after e2e4"),
         }
         assert_eq!(room.move_history, vec!["e2e4"]);
+        assert_eq!(room.clock_history.len(), 1);
     }
 
     /// Fool's mate: the quickest checkmate (4 moves, Black wins).
@@ -864,6 +879,11 @@ mod tests {
                 assert_eq!(room.end_reason, Some(GameOverReason::Checkmate));
             }
         }
+        // The mating move itself must be recorded, not just the moves before
+        // it — history is built from this before any of `end_game`'s early
+        // returns run.
+        assert_eq!(room.move_history, vec!["f2f3", "e7e5", "g2g4", "d8h4"]);
+        assert_eq!(room.clock_history.len(), room.move_history.len());
     }
 
     #[test]

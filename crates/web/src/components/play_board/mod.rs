@@ -7,9 +7,9 @@ use uuid::Uuid;
 mod ws_session;
 
 use crate::components::{
-    material_advantage, BoardPerspective, BoardUser, CapturedPieces, ChessBoard, Clock,
-    ConnectionIndicator, DrawOfferState, DrawResignControls, GameOverModal, MatchmakingModal,
-    MovesPanel, NewGameButton, RematchControls, RematchState,
+    material_advantage, AnalyzeLink, BoardPerspective, BoardUser, CapturedPieces, ChessBoard,
+    Clock, ConnectionIndicator, DrawOfferState, DrawResignControls, GameOverModal,
+    MatchmakingModal, MovesPanel, NewGameButton, RematchControls, RematchState,
 };
 use crate::game::get_game_info;
 use crate::sound::{self, sfx};
@@ -276,6 +276,14 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                 .is_some_and(|c| c == p.color)
     });
 
+    let is_my_turn = Signal::derive(move || {
+        use shakmaty::Position as _;
+        player_role
+            .get()
+            .and_then(|r| r.color())
+            .is_some_and(|c| c == display_position.get().turn())
+    });
+
     // Launch the WebSocket reconnect loop.
     #[cfg(feature = "hydrate")]
     {
@@ -408,7 +416,6 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         });
     }
 
-    provide_context(player_role);
     provide_context(premoves);
 
     view! {
@@ -424,6 +431,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             </Show>
             <Show when=move || game_result.get().is_some() && !modal_dismissed.get()>
                 <GameOverModal
+                    game_id=game_id
                     outcome=game_result.get().unwrap()
                     reason=end_reason.get()
                     my_side=player_role.get().and_then(|r| r.color()).map(shared::Side::from)
@@ -490,6 +498,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     on_move={on_move}
                     on_premove={on_premove}
                     can_drag_piece={can_drag_piece}
+                    is_my_turn={is_my_turn}
                 />
                 // Bottom player row
                 <div class="flex flex-row items-center pl-2 py-2 gap-2 overflow-hidden">
@@ -541,6 +550,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                             <div class="md:hidden flex flex-row items-center gap-1">
                                 <RematchControls rematch_state=rematch_state send=send size="sm" />
                                 <NewGameButton on_new_game=on_new_game_cb tc_label=tc_label size="sm" />
+                                <AnalyzeLink game_id=game_id size="sm" />
                             </div>
                         </Show>
                         {move || (white_wins.get() + black_wins.get() > 0.0).then(|| view! {
@@ -594,6 +604,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                         <div class="flex flex-row items-center gap-2 flex-shrink-0 flex-wrap">
                             <RematchControls rematch_state=rematch_state send=send size="sm" />
                             <NewGameButton on_new_game=on_new_game_cb tc_label=tc_label size="sm" />
+                            <AnalyzeLink game_id=game_id size="sm" />
                         </div>
                     </Show>
                 </div>

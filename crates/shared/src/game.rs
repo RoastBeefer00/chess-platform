@@ -24,6 +24,46 @@ pub struct GameInfo {
     pub config: GameConfig,
 }
 
+/// A finished game's move/clock history, for loading into the analysis
+/// board. `clocks` is index-aligned with `moves`; an entry is `None` when
+/// that move has no recorded clock (older pre-clock-tracking rows).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalysisGameData {
+    pub moves: Vec<String>,
+    pub clocks: Vec<Option<(i64, i64)>>,
+    pub initial_time_ms: i64,
+}
+
+/// The querying user's outcome in one of their past games.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecentGameResult {
+    Won,
+    Lost,
+    Drawn,
+    Aborted,
+}
+
+/// One side of a `RecentGame` row. `rating` is `None` for an aborted game —
+/// `abort_game` never touches the rating columns, unlike `finalize_game`
+/// which populates them even for casual games.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentGamePlayer {
+    pub username: Option<String>,
+    pub avatar_url: Option<String>,
+    pub rating: Option<i32>,
+}
+
+/// One row in a user's recent-games list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentGame {
+    pub id: Uuid,
+    pub white: RecentGamePlayer,
+    pub black: RecentGamePlayer,
+    pub my_result: RecentGameResult,
+    /// Which side the querying user played.
+    pub my_side: crate::Side,
+}
+
 #[derive(Debug, Clone)]
 pub enum GameStatus {
     Ongoing,

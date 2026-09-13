@@ -1,0 +1,83 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH my_games AS (\n                (SELECT id, white_user_id, black_user_id, result, status,\n                        white_rating_after, black_rating_after, ended_at\n                 FROM games\n                 WHERE white_user_id = $1 AND status IN ('finished', 'aborted')\n                 ORDER BY ended_at DESC LIMIT $2)\n                UNION ALL\n                (SELECT id, white_user_id, black_user_id, result, status,\n                        white_rating_after, black_rating_after, ended_at\n                 FROM games\n                 WHERE black_user_id = $1 AND status IN ('finished', 'aborted')\n                 ORDER BY ended_at DESC LIMIT $2)\n            )\n            SELECT mg.id AS \"id!\", mg.white_user_id AS \"white_user_id!\", mg.black_user_id AS \"black_user_id!\",\n                   mg.result, mg.status AS \"status!\",\n                   mg.white_rating_after, mg.black_rating_after,\n                   wu.username AS white_username, wu.avatar_url AS white_avatar_url,\n                   bu.username AS black_username, bu.avatar_url AS black_avatar_url\n            FROM my_games mg\n            JOIN users wu ON wu.id = mg.white_user_id\n            JOIN users bu ON bu.id = mg.black_user_id\n            ORDER BY mg.ended_at DESC\n            LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "white_user_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "black_user_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "result",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "white_rating_after",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "black_rating_after",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "white_username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "white_avatar_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "black_username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "black_avatar_url",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "93b22b2fbccd6184a0b0d583780cd754ae9bf3bcd4cc9266f4113e314ee38e75"
+}

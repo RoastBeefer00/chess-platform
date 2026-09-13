@@ -1,13 +1,9 @@
 use leptos::{html::Img, prelude::*};
-#[cfg(feature = "hydrate")]
-use leptos_use::UseDraggableReturn;
 use shakmaty::{Color, Piece, Square};
-#[cfg(feature = "hydrate")]
-use shared::PlayerRole;
 
-#[cfg(feature = "hydrate")]
-use crate::components::move_target;
 use crate::components::BoardPerspective;
+#[cfg(feature = "hydrate")]
+use crate::components::{chess_board::matching_moves, DragState, PendingPromotion};
 
 #[component]
 pub fn Square(
@@ -16,8 +12,6 @@ pub fn Square(
     piece: Signal<Option<Piece>>,
     perspective: Signal<BoardPerspective>,
 ) -> impl IntoView {
-    #[cfg(feature = "hydrate")]
-    let player_role = expect_context::<ReadSignal<Option<PlayerRole>>>();
     let valid_move_targets = expect_context::<Signal<Vec<shakmaty::Square>>>();
     let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
     let last_move = expect_context::<RwSignal<Option<(shakmaty::Square, shakmaty::Square)>>>();
@@ -26,21 +20,12 @@ pub fn Square(
     let on_move = expect_context::<Callback<shakmaty::Move>>();
     #[cfg(feature = "hydrate")]
     let on_premove = expect_context::<Callback<(shakmaty::Square, shakmaty::Square)>>();
-    #[cfg(feature = "hydrate")]
-    let can_drag_piece = expect_context::<Callback<shakmaty::Piece, bool>>();
     let premoves_ctx = use_context::<RwSignal<Vec<(shakmaty::Square, shakmaty::Square)>>>();
 
     #[cfg(feature = "hydrate")]
-    let is_my_turn = Signal::derive(move || {
-        use shakmaty::Position as _;
-        match player_role.get() {
-            Some(role) => match role {
-                PlayerRole::Player(side) => shakmaty::Color::from(side) == position.get().turn(),
-                PlayerRole::Spectator => false,
-            },
-            None => false,
-        }
-    });
+    let is_my_turn = expect_context::<Signal<bool>>();
+    #[cfg(feature = "hydrate")]
+    let pending_promotion = expect_context::<RwSignal<Option<PendingPromotion>>>();
 
     let in_check = Signal::derive(move || {
         use shakmaty::Position as _;
@@ -70,102 +55,6 @@ pub fn Square(
         })
     });
 
-    let el = NodeRef::<Img>::new();
-
-    #[cfg(feature = "hydrate")]
-    let drag_size = RwSignal::new((0.0_f64, 0.0_f64));
-
-    #[cfg(feature = "hydrate")]
-    let UseDraggableReturn {
-        is_dragging, style, ..
-    } = {
-        use leptos_use::core::Position;
-        use leptos_use::{
-            use_draggable_with_options, UseDraggableCallbackArgs, UseDraggableOptions,
-        };
-
-        let pos = RwSignal::new(Position { x: 0.0, y: 0.0 });
-
-        use_draggable_with_options(
-            el,
-            UseDraggableOptions::default()
-                .initial_value(pos)
-                .on_start(move |_: UseDraggableCallbackArgs| {
-                    let can_drag = piece.get().is_some_and(|p| can_drag_piece.run(p));
-                    if can_drag {
-                        selected_square.set(Some(Square::new((rank * 8 + file) as u32)));
-                        if let Some(element) = el.get_untracked() {
-                            let rect = element.get_bounding_client_rect();
-                            pos.set(Position {
-                                x: rect.left(),
-                                y: rect.top(),
-                            });
-                            drag_size.set((rect.width(), rect.height()));
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                })
-                .on_end(move |args: UseDraggableCallbackArgs| {
-                    let (x, y) = (args.event.client_x() as f32, args.event.client_y() as f32);
-
-                    // Mobile Safari can produce drops outside the viewport
-                    // (finger lifted off-screen). Every step below can fail
-                    // legitimately; bail with a log instead of panicking the
-                    // drag handler (which would block all future drags).
-                    let Some(window) = web_sys::window() else {
-                        return;
-                    };
-                    let Some(document) = window.document() else {
-                        return;
-                    };
-                    let Some(dom_element) = document.element_from_point(x, y) else {
-                        selected_square.set(None);
-                        return;
-                    };
-                    let Ok(Some(el)) = dom_element.closest("[data-square]") else {
-                        selected_square.set(None);
-                        return;
-                    };
-                    let Some(attr) = el.get_attribute("data-square") else {
-                        selected_square.set(None);
-                        return;
-                    };
-
-                    use std::str::FromStr;
-                    let Ok(dropped_square) = Square::from_str(&attr) else {
-                        selected_square.set(None);
-                        return;
-                    };
-
-                    if !valid_move_targets.get().contains(&dropped_square) {
-                        return;
-                    }
-
-                    use shakmaty::{Position as _, Role};
-                    let Some(from_sq) = selected_square.get_untracked() else {
-                        return;
-                    };
-                    if is_my_turn.get() {
-                        let legal = position.get_untracked().legal_moves();
-                        // For promotions, default to queen
-                        if let Some(m) = legal.iter().find(|m| {
-                            m.from() == Some(from_sq)
-                                && move_target(m) == dropped_square
-                                && m.promotion().is_none_or(|r| r == Role::Queen)
-                        }) {
-                            selected_square.set(None);
-                            on_move.run(*m);
-                        }
-                    } else {
-                        selected_square.set(None);
-                        on_premove.run((from_sq, dropped_square));
-                    }
-                }),
-        )
-    };
-
     fn rank_to_char(rank: usize) -> char {
         std::char::from_digit((rank + 1) as u32, 10).unwrap()
     }
@@ -173,13 +62,6 @@ pub fn Square(
     fn file_to_char(file: usize) -> char {
         (b'a' + file as u8) as char
     }
-
-    #[cfg(not(feature = "hydrate"))]
-    let (is_dragging, style, drag_size) = (
-        Signal::derive(|| false),
-        Signal::derive(String::new),
-        Signal::derive(|| (0.0_f64, 0.0_f64)),
-    );
 
     #[cfg(feature = "hydrate")]
     let on_click = move |_: leptos::ev::MouseEvent| {
@@ -190,17 +72,22 @@ pub fn Square(
         if !valid_move_targets.get_untracked().contains(&this_square) {
             return;
         }
-        use shakmaty::{Position as _, Role};
+        use shakmaty::Position as _;
         if is_my_turn.get_untracked() {
             let legal = position.get_untracked().legal_moves();
-            if let Some(m) = legal.iter().find(|m| {
-                m.from() == Some(from_sq)
-                    && move_target(m) == this_square
-                    && m.promotion().is_none_or(|r| r == Role::Queen)
-            }) {
-                let m = *m;
-                selected_square.set(None);
-                on_move.run(m);
+            match matching_moves(&legal, from_sq, this_square).as_slice() {
+                [] => {}
+                [m] => {
+                    selected_square.set(None);
+                    on_move.run(*m);
+                }
+                _ => {
+                    selected_square.set(None);
+                    pending_promotion.set(Some(PendingPromotion {
+                        from: from_sq,
+                        to: this_square,
+                    }));
+                }
             }
         } else {
             selected_square.set(None);
@@ -252,21 +139,9 @@ pub fn Square(
                     }.into_any()
                 }}
             </Show>
-            {move || image_path.get().map(|src| view! {
-                <img
-                    src={src}
-                    node_ref=el
-                    draggable="false"
-                    class="relative z-10 w-full h-full cursor-grab select-none touch-none"
-                    class:cursor-grabbing=move || is_dragging.get()
-                    style=move || if is_dragging.get() && selected_square.get().is_some() {
-                        let (w, h) = drag_size.get();
-                        format!("position: fixed; {} pointer-events: none; width: {}px; height: {}px; z-index: 50;", style.get(), w, h)
-                    } else {
-                        String::new()
-                    }
-                />
-            })}
+            <Show when=move || image_path.get().is_some()>
+                <DraggablePieceImg rank=rank file=file piece=piece image_path=image_path />
+            </Show>
             <Show when=move || perspective.get() == BoardPerspective::White && rank == 0 || perspective.get() == BoardPerspective::Black && rank == 7>
                 <span
                     class="absolute bottom-0 left-0.5 font-bold text-sm"
@@ -282,5 +157,100 @@ pub fn Square(
                 >{rank_to_char(rank)}</span>
             </Show>
         </div>
+    }
+}
+
+/// The draggable piece `<img>` for one square. Drag tracking itself lives at
+/// the `ChessBoard` level via the shared `DragState` context — this
+/// component only starts a drag (`on:pointerdown`, a plain Leptos-delegated
+/// event, not a raw per-element listener) and renders the floating image
+/// while `drag_state` names this square as the one being dragged.
+///
+/// This replaced a per-square `leptos_use::use_draggable_with_options` call
+/// (up to 32 simultaneous instances, one per occupied square). That hook's
+/// `pointermove`/`pointerup` listeners default to `window` and are
+/// deliberately leaked forever by `leptos-use` (`Closure::into_js_value`,
+/// cleanup only removes the DOM listener). With that many concurrently-leaked
+/// window listeners the WASM runtime reproducibly crashed a few seconds
+/// after any board with pieces loaded (`RuntimeError: null function`, deep in
+/// wasm-bindgen's closure dispatch) — independent of whether anything was
+/// actually being dragged. A single pair of board-level listeners (see
+/// `ChessBoard`) sidesteps the whole class of problem.
+#[component]
+fn DraggablePieceImg(
+    rank: usize,
+    file: usize,
+    piece: Signal<Option<Piece>>,
+    image_path: Signal<Option<String>>,
+) -> impl IntoView {
+    #[cfg(feature = "hydrate")]
+    let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
+    #[cfg(feature = "hydrate")]
+    let drag_state = expect_context::<RwSignal<Option<DragState>>>();
+    #[cfg(feature = "hydrate")]
+    let can_drag_piece = expect_context::<Callback<shakmaty::Piece, bool>>();
+
+    #[cfg(not(feature = "hydrate"))]
+    let _ = (rank, file, piece);
+
+    let el = NodeRef::<Img>::new();
+    #[cfg(feature = "hydrate")]
+    let this_sq = Square::new((rank * 8 + file) as u32);
+
+    #[cfg(feature = "hydrate")]
+    let on_pointer_down = move |ev: leptos::ev::PointerEvent| {
+        let Some(p) = piece.get_untracked() else {
+            return;
+        };
+        if !can_drag_piece.run(p) {
+            return;
+        }
+        let Some(element) = el.get_untracked() else {
+            return;
+        };
+        let rect = element.get_bounding_client_rect();
+        let grab_dx = ev.client_x() as f64 - rect.left();
+        let grab_dy = ev.client_y() as f64 - rect.top();
+
+        selected_square.set(Some(this_sq));
+        drag_state.set(Some(DragState {
+            from: this_sq,
+            width: rect.width(),
+            height: rect.height(),
+            grab_dx,
+            grab_dy,
+            x: rect.left(),
+            y: rect.top(),
+        }));
+    };
+    #[cfg(not(feature = "hydrate"))]
+    let on_pointer_down = |_: leptos::ev::PointerEvent| {};
+
+    #[cfg(feature = "hydrate")]
+    let style = move || match drag_state.get() {
+        Some(d) if d.from == this_sq => format!(
+            "position: fixed; left: {}px; top: {}px; pointer-events: none; width: {}px; height: {}px; z-index: 50;",
+            d.x, d.y, d.width, d.height
+        ),
+        _ => String::new(),
+    };
+    #[cfg(not(feature = "hydrate"))]
+    let style = || String::new();
+
+    #[cfg(feature = "hydrate")]
+    let is_dragging = move || drag_state.get().is_some_and(|d| d.from == this_sq);
+    #[cfg(not(feature = "hydrate"))]
+    let is_dragging = || false;
+
+    view! {
+        <img
+            src=move || image_path.get().unwrap_or_default()
+            node_ref=el
+            draggable="false"
+            class="relative z-10 w-full h-full cursor-grab select-none touch-none"
+            class:cursor-grabbing=is_dragging
+            style=style
+            on:pointerdown=on_pointer_down
+        />
     }
 }

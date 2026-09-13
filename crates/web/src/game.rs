@@ -1,6 +1,23 @@
 use leptos::prelude::*;
-use shared::GameInfo;
+use shared::{AnalysisGameData, GameInfo};
 use uuid::Uuid;
+
+/// A finished (or aborted) game's move/clock history, for the analysis
+/// board. Reads the DB directly rather than the in-memory `GameRoom` — by
+/// the time this is reachable (the Analyze link only appears after a game
+/// ends) the game is already persisted there.
+#[server]
+pub async fn get_game_for_analysis(game_id: Uuid) -> Result<AnalysisGameData, ServerFnError> {
+    use crate::state::AppState;
+
+    let state = expect_context::<AppState>();
+    state
+        .game_store
+        .get_game_for_analysis(game_id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?
+        .ok_or_else(|| ServerFnError::new("game not found"))
+}
 
 #[server]
 pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
