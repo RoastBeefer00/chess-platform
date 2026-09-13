@@ -189,6 +189,8 @@ fn DraggablePieceImg(
     let drag_state = expect_context::<RwSignal<Option<DragState>>>();
     #[cfg(feature = "hydrate")]
     let can_drag_piece = expect_context::<Callback<shakmaty::Piece, bool>>();
+    #[cfg(feature = "hydrate")]
+    let valid_move_targets = expect_context::<Signal<Vec<shakmaty::Square>>>();
 
     #[cfg(not(feature = "hydrate"))]
     let _ = (rank, file, piece);
@@ -204,6 +206,18 @@ fn DraggablePieceImg(
         // right-clicks are occupied, so without this guard a right-click on
         // a piece would also start moving/selecting it.
         if ev.button() != 0 {
+            return;
+        }
+        // A piece is already selected and this square is one of its legal
+        // targets — i.e. this is a capture, clicked rather than dragged.
+        // `Square`'s own `on:click` already completes exactly this move;
+        // starting a fresh drag/selection on the piece being captured
+        // instead (the default below) would hijack it, showing *that*
+        // piece's own moves rather than completing the capture — the bug
+        // this guards against. Only ever true for an enemy-occupied
+        // square: nothing here since a legal move can never target a
+        // square one of the mover's own pieces occupies.
+        if selected_square.get_untracked().is_some() && valid_move_targets.get_untracked().contains(&this_sq) {
             return;
         }
         let Some(p) = piece.get_untracked() else {
