@@ -1,5 +1,6 @@
 mod engine;
 mod moves_tree;
+mod openings;
 mod tree;
 
 pub use engine::{EngineHandle, EngineInfo, Score};
@@ -239,6 +240,10 @@ pub fn AnalysisBoard(#[prop(optional, into)] game_id: Signal<Option<Uuid>>) -> i
             .collect::<Vec<_>>()
     });
 
+    // Static opening-name lookup, independent of the engine — needs no
+    // Stockfish at all, so it's shown regardless of `engine_on`.
+    let opening = Signal::derive(move || tree.with(|t| openings::lookup(t, cursor.get())));
+
     view! {
         <div class="flex flex-col items-center justify-center w-full py-2 h-[calc(100dvh-3.5rem)]">
             <div class="flex flex-row items-stretch gap-2">
@@ -296,6 +301,7 @@ pub fn AnalysisBoard(#[prop(optional, into)] game_id: Signal<Option<Uuid>>) -> i
                 </div>
                 // Mobile-only compact moves strip + controls
                 <div class="md:hidden px-2 pb-1 flex flex-col gap-2">
+                    <OpeningName opening=opening />
                     <CandidateMoves lines=lines engine_on=engine_on />
                     <AnalysisMovesPanel tree=tree cursor=cursor compact=true />
                     <AnalysisControls tree=tree cursor=cursor flipped=flipped last_move=last_move position=position engine_on=engine_on />
@@ -307,6 +313,7 @@ pub fn AnalysisBoard(#[prop(optional, into)] game_id: Signal<Option<Uuid>>) -> i
                 // inclusive) height, landing flush with the board's actual
                 // top/bottom edges.
                 <div class="hidden md:flex absolute top-1/2 -translate-y-1/2 left-full ml-4 w-64 h-[min(100vw,calc(100dvh-15rem))] md:h-[min(100vw,calc(100dvh-12.5rem))] flex-col gap-3">
+                    <OpeningName opening=opening />
                     <CandidateMoves lines=lines engine_on=engine_on />
                     <div class="flex-1 min-h-0 flex flex-col rounded-md bg-zinc-900/60 border border-zinc-800 p-2">
                         <AnalysisMovesPanel tree=tree cursor=cursor />
@@ -316,6 +323,21 @@ pub fn AnalysisBoard(#[prop(optional, into)] game_id: Signal<Option<Uuid>>) -> i
                 </div>
             </div>
         </div>
+    }
+}
+
+/// The opening name (and ECO code) for the position being viewed, from the
+/// real lichess opening database in `openings.rs` — needs no engine, so it
+/// shows whether or not Stockfish is toggled on. Empty once play has left
+/// the database's coverage.
+#[component]
+fn OpeningName(opening: Signal<Option<(String, String)>>) -> impl IntoView {
+    view! {
+        <Show when=move || opening.get().is_some()>
+            <div class="rounded-md bg-zinc-900/60 border border-zinc-800 p-2 text-xs font-mono text-zinc-300">
+                {move || opening.get().map(|(eco, name)| format!("{eco} · {name}"))}
+            </div>
+        </Show>
     }
 }
 
