@@ -93,6 +93,7 @@ fn PuzzleStatusPanel(
     board_locked: RwSignal<bool>,
     #[prop(into)] on_next: Callback<()>,
     #[prop(into)] on_hint: Callback<()>,
+    #[prop(into)] analysis_href: Signal<String>,
 ) -> impl IntoView {
     view! {
         <div class="rounded-md bg-zinc-900/60 border border-zinc-800 p-3 flex flex-col items-center md:items-start gap-2 text-sm text-zinc-400">
@@ -132,6 +133,12 @@ fn PuzzleStatusPanel(
                     }}
                 </button>
             </Show>
+            <a
+                href={move || analysis_href.get()}
+                class="w-full text-center px-3 py-1.5 rounded-md border border-zinc-700 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors"
+            >
+                "Analyze"
+            </a>
             <Show when=move || status.get() == SolveStatus::Solved>
                 <div class="flex flex-col items-center md:items-start gap-2 pt-1 w-full">
                     <div class="flex flex-wrap justify-center md:justify-start gap-3">
@@ -193,6 +200,7 @@ impl LazyRoute for PuzzlesPage {
         );
 
         let solution = RwSignal::new(Vec::<String>::new());
+        let start_fen = RwSignal::new(String::new());
         let rating = RwSignal::new(0_i32);
         let themes = RwSignal::new(String::new());
         let position = RwSignal::new(Chess::default());
@@ -235,6 +243,7 @@ impl LazyRoute for PuzzlesPage {
             };
 
             solution.set(sol);
+            start_fen.set(puzzle.fen.clone());
             rating.set(puzzle.rating);
             themes.set(puzzle.themes.clone());
             solver_color.set(Some(solving_pos.turn()));
@@ -257,6 +266,20 @@ impl LazyRoute for PuzzlesPage {
         });
 
         let next_puzzle = Callback::new(move |_: ()| load_trigger.update(|n| *n += 1));
+
+        // 1 for the opponent's setup move, then 2 plies per completed
+        // (solver move + reply) pair — same indexing scheme
+        // `check_move_local` uses. The *full* solution is always sent;
+        // only the opening ply tracks progress, so the analysis board can
+        // still be browsed past wherever the solver currently is.
+        let analysis_href = Signal::derive(move || {
+            format!(
+                "/analysis?fen={}&moves={}&ply={}",
+                start_fen.get().replace(' ', "_"),
+                solution.get().join("_"),
+                1 + 2 * ply.get(),
+            )
+        });
 
         let on_move = Callback::new(move |m: shakmaty::Move| {
             let uci = m.to_uci(CastlingMode::Standard).to_string();
@@ -392,7 +415,7 @@ impl LazyRoute for PuzzlesPage {
                                 <PuzzleStatusPanel
                                     rating=rating themes=themes solver_color=solver_color status=status
                                     hint_stage=hint_stage board_locked=board_locked
-                                    on_next=next_puzzle on_hint=on_hint
+                                    on_next=next_puzzle on_hint=on_hint analysis_href=analysis_href
                                 />
                             </div>
                             <div class="relative w-[min(100vw,calc(100dvh-15rem))] md:w-[min(100vw,calc(100dvh-12.5rem))]">
@@ -415,7 +438,7 @@ impl LazyRoute for PuzzlesPage {
                                     <PuzzleStatusPanel
                                         rating=rating themes=themes solver_color=solver_color status=status
                                         hint_stage=hint_stage board_locked=board_locked
-                                        on_next=next_puzzle on_hint=on_hint
+                                        on_next=next_puzzle on_hint=on_hint analysis_href=analysis_href
                                     />
                                 </div>
                             </div>
