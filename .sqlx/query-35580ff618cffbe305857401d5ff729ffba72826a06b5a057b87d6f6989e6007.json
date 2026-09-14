@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, fen, moves, rating, themes FROM puzzles ORDER BY random() LIMIT 1",
+  "query": "SELECT id, fen, moves, rating, themes FROM puzzles\n                       WHERE rating BETWEEN $1 AND $2\n                         AND ($3::text[] = '{}' OR string_to_array(themes, ' ') && $3::text[])\n                       ORDER BY random() LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -30,7 +30,11 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Int4",
+        "Int4",
+        "TextArray"
+      ]
     },
     "nullable": [
       false,
@@ -40,5 +44,5 @@
       false
     ]
   },
-  "hash": "3d7b78a595d62dedfdfe1e4b96c07c43bcf50bc8e68089fbef3c8de0f26882ab"
+  "hash": "35580ff618cffbe305857401d5ff729ffba72826a06b5a057b87d6f6989e6007"
 }

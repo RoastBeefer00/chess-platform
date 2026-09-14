@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use leptos::prelude::*;
 use leptos_router::{lazy_route, LazyRoute};
 use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Color, Position as _, Square};
@@ -5,6 +7,26 @@ use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Color, Position as _
 use crate::components::{BoardPerspective, ChessBoard};
 use crate::puzzle::get_random_puzzle;
 use crate::sound::{self, sfx};
+
+/// The full set of lichess puzzle theme tags present in the vendored
+/// dataset (confirmed directly: `select distinct unnest(...) from
+/// puzzles`, 73 rows) — fixed and known, so hardcoded here rather than
+/// queried at runtime.
+const THEMES: &[&str] = &[
+    "advancedPawn", "advantage", "anastasiaMate", "arabianMate", "attackingF2F7",
+    "attraction", "backRankMate", "balestraMate", "bishopEndgame", "blindSwineMate",
+    "bodenMate", "capturingDefender", "castling", "clearance", "collinearMove",
+    "cornerMate", "crushing", "defensiveMove", "deflection", "discoveredAttack",
+    "discoveredCheck", "doubleBishopMate", "doubleCheck", "dovetailMate", "enPassant",
+    "endgame", "epauletteMate", "equality", "exposedKing", "fork", "hangingPiece",
+    "hookMate", "interference", "intermezzo", "killBoxMate", "kingsideAttack",
+    "knightEndgame", "long", "master", "masterVsMaster", "mate", "mateIn1", "mateIn2",
+    "mateIn3", "mateIn4", "mateIn5", "middlegame", "morphysMate", "oneMove", "opening",
+    "operaMate", "pawnEndgame", "pillsburysMate", "pin", "promotion", "queenEndgame",
+    "queenRookEndgame", "queensideAttack", "quietMove", "rookEndgame", "sacrifice",
+    "short", "skewer", "smotheredMate", "superGM", "swallowstailMate", "trappedPiece",
+    "triangleMate", "underPromotion", "veryLong", "vukovicMate", "xRayAttack", "zugzwang",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SolveStatus {
@@ -93,6 +115,7 @@ fn PuzzleStatusPanel(
     board_locked: RwSignal<bool>,
     #[prop(into)] on_next: Callback<()>,
     #[prop(into)] on_hint: Callback<()>,
+    #[prop(into)] on_back: Callback<()>,
     #[prop(into)] analysis_href: Signal<String>,
 ) -> impl IntoView {
     view! {
@@ -173,12 +196,120 @@ fn PuzzleStatusPanel(
                     </div>
                     <button
                         on:click=move |_| on_next.run(())
-                        class="w-full px-4 py-2 rounded-md bg-green-700 hover:bg-green-600 text-white text-sm font-semibold transition-colors"
+                        class="w-full px-4 py-2 rounded-md bg-green-700 hover:bg-green-600 text-white text-sm font-semibold transition-colors cursor-pointer"
                     >
                         "Next puzzle"
                     </button>
                 </div>
             </Show>
+            <button
+                on:click=move |_| on_back.run(())
+                class="w-full px-3 py-1.5 rounded-md text-xs font-medium text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+            >
+                "← Back to filters"
+            </button>
+        </div>
+    }
+}
+
+/// Landing screen shown before `has_started_once` — rating range + theme
+/// multi-select (empty = all), then "Start Solving". Mounts/unmounts
+/// freely via a plain `<Show>` in `PuzzlesPage` (unlike the solving view,
+/// it never contains `<ChessBoard>`, so it has none of that component's
+/// mount-once constraints).
+#[component]
+fn PuzzleFilterLanding(
+    themes_filter: RwSignal<HashSet<String>>,
+    min_rating: RwSignal<i32>,
+    max_rating: RwSignal<i32>,
+    has_started_once: RwSignal<bool>,
+    #[prop(into)] on_start: Callback<()>,
+    #[prop(into)] on_resume: Callback<()>,
+) -> impl IntoView {
+    let toggle_theme = move |theme: &'static str| {
+        themes_filter.update(|set| {
+            if !set.remove(theme) {
+                set.insert(theme.to_string());
+            }
+        });
+    };
+
+    view! {
+        <div class="flex flex-col items-center gap-4 w-full max-w-2xl mx-auto px-4">
+            <Show when=move || has_started_once.get()>
+                <button
+                    on:click=move |_| on_resume.run(())
+                    class="self-start text-xs font-medium text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+                >
+                    "← Back to puzzle"
+                </button>
+            </Show>
+            <h1 class="text-lg font-semibold text-white">"Puzzles"</h1>
+            <div class="w-full flex flex-col gap-2">
+                <label class="text-sm text-zinc-400">"Rating range"</label>
+                <div class="flex items-center gap-2">
+                    <input
+                        type="number"
+                        class="w-24 px-2 py-1.5 rounded-md bg-zinc-900 border border-zinc-700 text-white text-sm"
+                        prop:value=move || min_rating.get()
+                        on:input=move |e| {
+                            if let Ok(v) = event_target_value(&e).parse::<i32>() {
+                                min_rating.set(v);
+                            }
+                        }
+                    />
+                    <span class="text-zinc-500">"–"</span>
+                    <input
+                        type="number"
+                        class="w-24 px-2 py-1.5 rounded-md bg-zinc-900 border border-zinc-700 text-white text-sm"
+                        prop:value=move || max_rating.get()
+                        on:input=move |e| {
+                            if let Ok(v) = event_target_value(&e).parse::<i32>() {
+                                max_rating.set(v);
+                            }
+                        }
+                    />
+                </div>
+            </div>
+            <div class="w-full flex flex-col gap-2">
+                <div class="flex items-center justify-between">
+                    <label class="text-sm text-zinc-400">"Themes"</label>
+                    <Show when=move || !themes_filter.get().is_empty()>
+                        <button
+                            on:click=move |_| themes_filter.update(|s| s.clear())
+                            class="text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+                        >
+                            "Clear (all types)"
+                        </button>
+                    </Show>
+                </div>
+                <div class="flex flex-wrap gap-2 max-h-72 overflow-y-auto p-1">
+                    {THEMES.iter().map(|&theme| {
+                        let icon = theme_icon(theme).to_string();
+                        let selected = Signal::derive(move || themes_filter.get().contains(theme));
+                        view! {
+                            <button
+                                on:click=move |_| toggle_theme(theme)
+                                class="flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs transition-colors cursor-pointer hover:border-zinc-500"
+                                class:border-blue-400=selected
+                                class:bg-blue-900=selected
+                                class:text-white=selected
+                                class:border-zinc-700=move || !selected.get()
+                                class:text-zinc-400=move || !selected.get()
+                            >
+                                <img src=format!("/images/puzzle-themes/{icon}.svg") class="w-4 h-4 opacity-80" alt="" />
+                                {theme}
+                            </button>
+                        }
+                    }).collect_view()}
+                </div>
+            </div>
+            <button
+                on:click=move |_| on_start.run(())
+                class="w-full px-4 py-2 rounded-md bg-green-700 hover:bg-green-600 text-white text-sm font-semibold transition-colors cursor-pointer"
+            >
+                "Start Solving"
+            </button>
         </div>
     }
 }
@@ -194,9 +325,35 @@ impl LazyRoute for PuzzlesPage {
 
     fn view(_data: Self) -> AnyView {
         let load_trigger = RwSignal::new(0_u32);
+        let themes_filter = RwSignal::new(HashSet::<String>::new());
+        let min_rating = RwSignal::new(0_i32);
+        let max_rating = RwSignal::new(4000_i32);
+        // Never reset back to `false` — gates the one-time `<Show>` mount of
+        // the solving view (see the module doc comment above `THEMES` /
+        // the plan this page followed). `viewing_landing` is the freely-
+        // togglable one: true shows the filter screen, false shows (already
+        // mounted) solving view via CSS `hidden` rather than a `<Show>`.
+        let has_started_once = RwSignal::new(false);
+        let viewing_landing = RwSignal::new(true);
+
+        // Source deliberately excludes the live filter signals — ticking
+        // theme checkboxes on the landing screen must never fire a network
+        // call on its own. Filters are read via `get_untracked()` inside
+        // the fetcher, locking in whatever's set at the moment a fetch
+        // actually runs (on "Start Solving" or "Next puzzle").
         let puzzle_resource = Resource::new(
-            move || load_trigger.get(),
-            |_| async move { get_random_puzzle().await },
+            move || (has_started_once.get(), load_trigger.get()),
+            move |(started, _)| {
+                let themes: String = themes_filter.get_untracked().into_iter().collect::<Vec<_>>().join(" ");
+                let min = min_rating.get_untracked();
+                let max = max_rating.get_untracked();
+                async move {
+                    if !started {
+                        return None;
+                    }
+                    Some(get_random_puzzle(themes, min, max).await)
+                }
+            },
         );
 
         let solution = RwSignal::new(Vec::<String>::new());
@@ -222,7 +379,7 @@ impl LazyRoute for PuzzlesPage {
         // rather than landing mid-puzzle with only the `last_move` highlight
         // to go on.
         Effect::new(move || {
-            let Some(Ok(puzzle)) = puzzle_resource.get() else {
+            let Some(Some(Ok(puzzle))) = puzzle_resource.get() else {
                 return;
             };
             let Some(start_pos) = parse_fen(&puzzle.fen) else {
@@ -266,6 +423,21 @@ impl LazyRoute for PuzzlesPage {
         });
 
         let next_puzzle = Callback::new(move |_: ()| load_trigger.update(|n| *n += 1));
+
+        // Always bumps `load_trigger` — whether this is the very first
+        // start or a return trip with changed filters, "Start Solving"
+        // always commits a fresh puzzle matching whatever's selected now.
+        let start_solving = Callback::new(move |_: ()| {
+            has_started_once.set(true);
+            load_trigger.update(|n| *n += 1);
+            viewing_landing.set(false);
+        });
+        // Just hides the (already-mounted) solving view — the in-progress
+        // puzzle, position, ply, hint state, etc. are untouched.
+        let back_to_filters = Callback::new(move |_: ()| viewing_landing.set(true));
+        // The "I clicked back by mistake" case — no refetch, just resume
+        // exactly where they left off.
+        let resume_puzzle = Callback::new(move |_: ()| viewing_landing.set(false));
 
         // 1 for the opponent's setup move, then 2 plies per completed
         // (solver move + reply) pair — same indexing scheme
@@ -396,55 +568,73 @@ impl LazyRoute for PuzzlesPage {
         // on a `Signal` derived from the resource, rather than the
         // resource's payload itself, keeps the board mounted once `when`
         // first flips true and never rebuilds it on later emissions.
-        let puzzle_loaded = Signal::derive(move || puzzle_resource.get().is_some_and(|r| r.is_ok()));
+        let puzzle_loaded = Signal::derive(move || {
+            puzzle_resource.get().flatten().is_some_and(|r| r.is_ok())
+        });
         let puzzle_error = Signal::derive(move || {
-            puzzle_resource.get().and_then(|r| r.err()).map(|e| e.to_string())
+            puzzle_resource.get().flatten().and_then(|r| r.err()).map(|e| e.to_string())
         });
 
         view! {
             <div class="flex flex-col items-center w-full py-4 gap-4">
-                <Transition fallback=|| view! { <p class="text-zinc-400">"Loading puzzle..."</p> }>
-                    <Show when=move || puzzle_error.get().is_some()>
-                        <p class="text-red-400">"Failed to load puzzle: " {move || puzzle_error.get().unwrap_or_default()}</p>
-                    </Show>
-                    <Show when=move || puzzle_loaded.get()>
-                        <div class="flex flex-col items-center gap-3 w-full">
-                            // Mobile: status panel stacked above the board —
-                            // no room to the side on a narrow screen.
-                            <div class="md:hidden w-full max-w-md">
-                                <PuzzleStatusPanel
-                                    rating=rating themes=themes solver_color=solver_color status=status
-                                    hint_stage=hint_stage board_locked=board_locked
-                                    on_next=next_puzzle on_hint=on_hint analysis_href=analysis_href
-                                />
-                            </div>
-                            <div class="relative w-[min(100vw,calc(100dvh-15rem))] md:w-[min(100vw,calc(100dvh-12.5rem))]">
-                                <ChessBoard
-                                    position={position}
-                                    perspective={perspective}
-                                    last_move={last_move}
-                                    on_move={on_move}
-                                    on_premove={on_premove}
-                                    can_drag_piece={can_drag_piece}
-                                    is_my_turn={is_my_turn}
-                                    wrong_squares={wrong_squares}
-                                    hint_squares={hint_squares}
-                                    arrows={hint_arrows}
-                                />
-                                // Desktop: status panel beside the board,
-                                // same `left-full ml-4` placement
-                                // `AnalysisBoard`'s own side column uses.
-                                <div class="hidden md:flex absolute top-1/2 -translate-y-1/2 left-full ml-4 w-64 flex-col gap-3">
+                <Show when=move || viewing_landing.get()>
+                    <PuzzleFilterLanding
+                        themes_filter=themes_filter min_rating=min_rating max_rating=max_rating
+                        has_started_once=has_started_once
+                        on_start=start_solving on_resume=resume_puzzle
+                    />
+                </Show>
+                // The solving view mounts exactly once (via `Show puzzle_loaded`
+                // below, which — as documented at `puzzle_loaded`'s definition —
+                // only ever flips false→true once) and stays mounted forever
+                // after; going "back" to the landing screen only toggles this
+                // wrapper's CSS visibility, never unmounts `<ChessBoard>`.
+                <div class:hidden=move || viewing_landing.get()>
+                    <Transition fallback=|| view! { <p class="text-zinc-400">"Loading puzzle..."</p> }>
+                        <Show when=move || puzzle_error.get().is_some()>
+                            <p class="text-red-400">"Failed to load puzzle: " {move || puzzle_error.get().unwrap_or_default()}</p>
+                        </Show>
+                        <Show when=move || puzzle_loaded.get()>
+                            <div class="flex flex-col items-center gap-3 w-full">
+                                // Mobile: status panel stacked above the board —
+                                // no room to the side on a narrow screen.
+                                <div class="md:hidden w-full max-w-md">
                                     <PuzzleStatusPanel
                                         rating=rating themes=themes solver_color=solver_color status=status
                                         hint_stage=hint_stage board_locked=board_locked
-                                        on_next=next_puzzle on_hint=on_hint analysis_href=analysis_href
+                                        on_next=next_puzzle on_hint=on_hint on_back=back_to_filters
+                                        analysis_href=analysis_href
                                     />
                                 </div>
+                                <div class="relative w-[min(100vw,calc(100dvh-15rem))] md:w-[min(100vw,calc(100dvh-12.5rem))]">
+                                    <ChessBoard
+                                        position={position}
+                                        perspective={perspective}
+                                        last_move={last_move}
+                                        on_move={on_move}
+                                        on_premove={on_premove}
+                                        can_drag_piece={can_drag_piece}
+                                        is_my_turn={is_my_turn}
+                                        wrong_squares={wrong_squares}
+                                        hint_squares={hint_squares}
+                                        arrows={hint_arrows}
+                                    />
+                                    // Desktop: status panel beside the board,
+                                    // same `left-full ml-4` placement
+                                    // `AnalysisBoard`'s own side column uses.
+                                    <div class="hidden md:flex absolute top-1/2 -translate-y-1/2 left-full ml-4 w-64 flex-col gap-3">
+                                        <PuzzleStatusPanel
+                                            rating=rating themes=themes solver_color=solver_color status=status
+                                            hint_stage=hint_stage board_locked=board_locked
+                                            on_next=next_puzzle on_hint=on_hint on_back=back_to_filters
+                                            analysis_href=analysis_href
+                                        />
+                                    </div>
+                                </div>
                             </div>
-                        </div>
-                    </Show>
-                </Transition>
+                        </Show>
+                    </Transition>
+                </div>
             </div>
         }
         .into_any()
