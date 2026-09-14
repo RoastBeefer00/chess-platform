@@ -39,15 +39,32 @@ struct DisplayLine {
     arrow: Option<(shakmaty::Square, shakmaty::Square)>,
 }
 
+/// A puzzle's move line to preload into the analysis board — see
+/// `pages::puzzles`'s "Open in analysis" button. Distinct from `game_id`:
+/// puzzles have no DB row, so this carries everything needed directly
+/// rather than triggering a server fetch.
+#[derive(Clone, PartialEq)]
+pub struct PuzzleLoad {
+    pub fen: String,
+    pub moves: Vec<String>,
+    /// How many plies from `fen` to open the cursor at.
+    pub ply: usize,
+}
+
 /// Analysis board: a client-only board where the local user moves both
 /// colors, rewinds through history, and branches into variations. No
 /// network, no auth — see `PlayBoard` for the live-game equivalent this
 /// borrows its layout from.
 ///
 /// When `game_id` resolves to `Some`, a finished (or aborted) game's stored
-/// moves and clocks are loaded in, replacing whatever's on the board.
+/// moves and clocks are loaded in, replacing whatever's on the board. When
+/// `puzzle` resolves to `Some`, its move line is loaded the same way, just
+/// from client-supplied data instead of a DB fetch.
 #[component]
-pub fn AnalysisBoard(#[prop(optional, into)] game_id: Signal<Option<Uuid>>) -> impl IntoView {
+pub fn AnalysisBoard(
+    #[prop(optional, into)] game_id: Signal<Option<Uuid>>,
+    #[prop(optional, into)] puzzle: Signal<Option<PuzzleLoad>>,
+) -> impl IntoView {
     let tree = RwSignal::new(MoveTree::new(Chess::default()));
     let cursor = RwSignal::new(0_usize);
     let flipped = RwSignal::new(false);
@@ -73,6 +90,44 @@ pub fn AnalysisBoard(#[prop(optional, into)] game_id: Signal<Option<Uuid>>) -> i
                 cursor.set(end);
             }
         }
+    });
+
+    // Load a puzzle's move line once `puzzle` resolves. Independent of the
+    // `game_id` path above — a page only ever supplies one or the other.
+    Effect::new(move || {
+        let Some(load) = puzzle.get() else { return };
+        let Some(root) = load
+            .fen
+            .parse::<shakmaty::fen::Fen>()
+            .ok()
+            .and_then(|f| f.into_position::<Chess>(shakmaty::CastlingMode::Standard).ok())
+        else {
+            return;
+        };
+        let Ok(loaded) = MoveTree::from_uci_moves_at(root, &load.moves) else {
+            return;
+        };
+
+        let mut node = loaded.root();
+        let mut last = None;
+        for _ in 0..load.ply {
+            let Some(next) = loaded.first_child(node) else { break };
+            // from/to for the highlight, resolved the same way every other
+            // move-application site in this codebase does it.
+            let mv = loaded
+                .uci(next)
+                .parse::<shakmaty::uci::UciMove>()
+                .ok()
+                .and_then(|u| u.to_move(loaded.position(node)).ok());
+            if let Some(mv) = mv {
+                last = mv.from().map(|f| (f, mv.to()));
+            }
+            node = next;
+        }
+
+        tree.set(loaded);
+        cursor.set(node);
+        last_move.set(last);
     });
 
     let position = Signal::derive(move || tree.with(|t| t.position(cursor.get()).clone()));

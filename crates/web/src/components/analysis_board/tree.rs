@@ -514,6 +514,26 @@ impl MoveTree {
         }
         Ok(tree)
     }
+
+    /// Builds a linear tree from an arbitrary `root`, replaying `moves`
+    /// (UCI) against it — the puzzle-analysis equivalent of
+    /// `from_uci_moves`, which always starts from the standard position.
+    /// No clock data (puzzles don't carry any).
+    pub fn from_uci_moves_at(root: Chess, moves: &[String]) -> Result<MoveTree, String> {
+        let mut tree = MoveTree::new(root);
+        let mut cursor = tree.root();
+        for uci_str in moves {
+            let uci: shakmaty::uci::UciMove = uci_str
+                .parse()
+                .map_err(|_| format!("bad move: {uci_str:?}"))?;
+            let pos = tree.position(cursor).clone();
+            let mv = uci
+                .to_move(&pos)
+                .map_err(|_| format!("illegal move: {uci_str:?}"))?;
+            cursor = tree.play(cursor, mv, None);
+        }
+        Ok(tree)
+    }
 }
 
 fn is_move_number_token(token: &str) -> bool {
