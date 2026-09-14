@@ -40,6 +40,13 @@ impl LazyRoute for LoginPage {
                             </svg>
                             "Continue with GitHub"
                         </a>
+                        <a
+                            href="/auth/guest"
+                            rel="external"
+                            class="flex items-center justify-center gap-2 w-full py-2.5 px-4 text-zinc-400 font-medium rounded-md hover:text-white hover:bg-zinc-900 transition-colors"
+                        >
+                            "Continue as Guest"
+                        </a>
                     </div>
                 </div>
             </div>

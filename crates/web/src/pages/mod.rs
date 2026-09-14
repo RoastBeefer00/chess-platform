@@ -5,6 +5,7 @@ pub mod login;
 pub mod not_found;
 pub mod play;
 pub mod puzzles;
+pub mod watch;
 
 pub use analysis::AnalysisPage;
 pub use create_username::CreateUsernamePage;

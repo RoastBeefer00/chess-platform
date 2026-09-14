@@ -21,6 +21,7 @@ pub mod recent_games;
 pub mod rematch_controls;
 pub mod square;
 pub mod user;
+pub mod watch_grid;
 
 pub use analysis_board::*;
 pub use analyze_link::*;
@@ -45,3 +46,4 @@ pub use recent_games::*;
 pub use rematch_controls::*;
 pub use square::*;
 pub use user::*;
+pub use watch_grid::*;

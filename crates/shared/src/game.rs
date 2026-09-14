@@ -62,6 +62,7 @@ pub struct RecentGame {
     pub my_result: RecentGameResult,
     /// Which side the querying user played.
     pub my_side: crate::Side,
+    pub rated: bool,
 }
 
 #[derive(Debug, Clone)]

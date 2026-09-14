@@ -8,6 +8,7 @@ pub mod matchmaking;
 pub mod pages;
 pub mod puzzle;
 pub mod sound;
+pub mod watch;
 pub mod websocket;
 
 #[cfg(feature = "ssr")]

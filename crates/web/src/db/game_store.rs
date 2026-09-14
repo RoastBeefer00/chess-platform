@@ -362,19 +362,19 @@ impl GameStore {
         let rows = sqlx::query!(
             r#"WITH my_games AS (
                 (SELECT id, white_user_id, black_user_id, result, status,
-                        white_rating_after, black_rating_after, ended_at
+                        white_rating_after, black_rating_after, ended_at, rated
                  FROM games
                  WHERE white_user_id = $1 AND status IN ('finished', 'aborted')
                  ORDER BY ended_at DESC LIMIT $2)
                 UNION ALL
                 (SELECT id, white_user_id, black_user_id, result, status,
-                        white_rating_after, black_rating_after, ended_at
+                        white_rating_after, black_rating_after, ended_at, rated
                  FROM games
                  WHERE black_user_id = $1 AND status IN ('finished', 'aborted')
                  ORDER BY ended_at DESC LIMIT $2)
             )
             SELECT mg.id AS "id!", mg.white_user_id AS "white_user_id!", mg.black_user_id AS "black_user_id!",
-                   mg.result, mg.status AS "status!",
+                   mg.result, mg.status AS "status!", mg.rated AS "rated!",
                    mg.white_rating_after, mg.black_rating_after,
                    wu.username AS white_username, wu.avatar_url AS white_avatar_url,
                    bu.username AS black_username, bu.avatar_url AS black_avatar_url
@@ -422,6 +422,7 @@ impl GameStore {
                     } else {
                         Side::Black
                     },
+                    rated: r.rated,
                 }
             })
             .collect())
@@ -767,5 +768,43 @@ mod tests {
 
         let rows = store.list_recent_games(white_id, 2).await.unwrap();
         assert_eq!(rows.len(), 2, "limit should cap the result count");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn list_recent_games_reports_rated_flag(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+
+        let rated_game_id = Uuid::new_v4();
+        insert_game_row(&pool, rated_game_id, white_id, black_id, true).await;
+        let rated_plan = make_plan(
+            rated_game_id,
+            white_id,
+            black_id,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Checkmate,
+        );
+        store.finalize_game(rated_plan).await.unwrap();
+
+        let casual_game_id = Uuid::new_v4();
+        insert_game_row(&pool, casual_game_id, white_id, black_id, false).await;
+        let casual_plan = make_plan(
+            casual_game_id,
+            white_id,
+            black_id,
+            false,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Checkmate,
+        );
+        store.finalize_game(casual_plan).await.unwrap();
+
+        let rows = store.list_recent_games(white_id, 10).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        let rated_row = rows.iter().find(|r| r.id == rated_game_id).unwrap();
+        let casual_row = rows.iter().find(|r| r.id == casual_game_id).unwrap();
+        assert!(rated_row.rated);
+        assert!(!casual_row.rated);
     }
 }

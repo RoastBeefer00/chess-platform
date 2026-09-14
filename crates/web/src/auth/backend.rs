@@ -53,6 +53,7 @@ pub struct User {
     pub bio: Option<String>,
     pub country: Option<String>,
     pub created_at: time::OffsetDateTime,
+    pub is_guest: bool,
 }
 
 impl AuthUser for User {
@@ -73,6 +74,7 @@ impl AuthUser for User {
 pub enum Credentials {
     GitHubOAuth { code: String },
     GoogleOAuth { code: String, nonce: String },
+    Guest,
 }
 
 #[derive(Clone, Debug)]
@@ -243,7 +245,7 @@ impl AuthnBackend for AuthBackend {
                 // Look up existing oauth_accounts row
                 let existing = sqlx::query_as!(
                     User,
-                    r#"SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at
+                    r#"SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at, u.is_guest
                        FROM users u
                        JOIN oauth_accounts oa ON oa.user_id = u.id
                        WHERE oa.provider = 'github' AND oa.provider_user_id = $1"#,
@@ -272,7 +274,7 @@ impl AuthnBackend for AuthBackend {
                 let existing_by_email = if has_verified_email {
                     sqlx::query_as!(
                         User,
-                        r#"SELECT id, email, username, avatar_url, bio, country, created_at
+                        r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest
                            FROM users WHERE email = $1"#,
                         email
                     )
@@ -288,7 +290,7 @@ impl AuthnBackend for AuthBackend {
                         let new_user = sqlx::query_as!(
                             User,
                             r#"INSERT INTO users (id, email) VALUES ($1, $2)
-                               RETURNING id, email, username, avatar_url, bio, country, created_at"#,
+                               RETURNING id, email, username, avatar_url, bio, country, created_at, is_guest"#,
                             user_id,
                             email,
                         )
@@ -382,7 +384,7 @@ impl AuthnBackend for AuthBackend {
 
                 let existing = sqlx::query_as!(
                     User,
-                    r#"SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at
+                    r#"SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at, u.is_guest
                        FROM users u
                        JOIN oauth_accounts oa ON oa.user_id = u.id
                        WHERE oa.provider = 'google' AND oa.provider_user_id = $1"#,
@@ -404,7 +406,7 @@ impl AuthnBackend for AuthBackend {
                 let existing_by_email = if has_verified_email {
                     sqlx::query_as!(
                         User,
-                        r#"SELECT id, email, username, avatar_url, bio, country, created_at
+                        r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest
                            FROM users WHERE email = $1"#,
                         email
                     )
@@ -420,7 +422,7 @@ impl AuthnBackend for AuthBackend {
                         let new_user = sqlx::query_as!(
                             User,
                             r#"INSERT INTO users (id, email) VALUES ($1, $2)
-                               RETURNING id, email, username, avatar_url, bio, country, created_at"#,
+                               RETURNING id, email, username, avatar_url, bio, country, created_at, is_guest"#,
                             user_id,
                             email,
                         )
@@ -445,6 +447,34 @@ impl AuthnBackend for AuthBackend {
                 tracing::info!(user_id = %user.id, provider = "google", "login_success");
                 Ok(Some(user))
             }
+            Credentials::Guest => {
+                // No lookup step: a guest is always a brand-new row, keyed
+                // off a fresh UUID rather than any external identity. The
+                // synthetic email/username both derive from that same UUID
+                // — `guest_<id>` mirrors the existing `github_<id>`/
+                // `google_<id>` fallback pattern above, and deriving the
+                // username from it too means no separate uniqueness check
+                // is needed before insert (a UUID collision is effectively
+                // impossible).
+                let user_id = Uuid::new_v4();
+                let short_id = &user_id.simple().to_string()[..8];
+                let email = format!("guest_{short_id}");
+                let username = format!("Guest{short_id}");
+
+                let user = sqlx::query_as!(
+                    User,
+                    r#"INSERT INTO users (id, email, username, is_guest) VALUES ($1, $2, $3, true)
+                       RETURNING id, email, username, avatar_url, bio, country, created_at, is_guest"#,
+                    user_id,
+                    email,
+                    username,
+                )
+                .fetch_one(&self.pool)
+                .await?;
+
+                tracing::info!(user_id = %user.id, "guest_account_created");
+                Ok(Some(user))
+            }
         }
     }
 
@@ -452,7 +482,7 @@ impl AuthnBackend for AuthBackend {
     async fn get_user(&self, id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
         Ok(query_as!(
             User,
-            r#"SELECT id, email, username, avatar_url, bio, country, created_at
+            r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest
                FROM users WHERE id = $1"#,
             id
         )

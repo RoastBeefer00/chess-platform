@@ -69,7 +69,7 @@ impl UserStore {
     pub async fn find_by_id(&self, id: &Uuid) -> Result<Option<User>, AuthError> {
         Ok(sqlx::query_as!(
             User,
-            r#"SELECT id, email, username, avatar_url, bio, country, created_at
+            r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest
                FROM users WHERE id = $1"#,
             id
         )

@@ -13,6 +13,7 @@ pub struct UserSummary {
     pub avatar_url: Option<String>,
     pub bio: Option<String>,
     pub country: Option<String>,
+    pub is_guest: bool,
 }
 
 #[server]
@@ -27,6 +28,7 @@ pub async fn current_user() -> Result<Option<UserSummary>, ServerFnError> {
         avatar_url: u.avatar_url,
         bio: u.bio,
         country: u.country,
+        is_guest: u.is_guest,
     }))
 }
 

@@ -23,7 +23,6 @@ pub fn Nav() -> impl IntoView {
                     <a href="/" class="px-3 py-1.5 rounded-md hover:text-white hover:bg-zinc-800 transition-colors">"Play"</a>
                     <a href="/analysis" class="px-3 py-1.5 rounded-md hover:text-white hover:bg-zinc-800 transition-colors">"Analysis"</a>
                     <a href="/puzzles" class="px-3 py-1.5 rounded-md hover:text-white hover:bg-zinc-800 transition-colors">"Puzzles"</a>
-                    <a href="/learn" class="px-3 py-1.5 rounded-md hover:text-white hover:bg-zinc-800 transition-colors">"Learn"</a>
                     <a href="/watch" class="px-3 py-1.5 rounded-md hover:text-white hover:bg-zinc-800 transition-colors">"Watch"</a>
                 </div>
 
@@ -47,7 +46,6 @@ pub fn Nav() -> impl IntoView {
                         <a href="/" on:click=close_mobile class="px-3 py-3 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-md transition-colors">"Play"</a>
                         <a href="/analysis" on:click=close_mobile class="px-3 py-3 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-md transition-colors">"Analysis"</a>
                         <a href="/puzzles" on:click=close_mobile class="px-3 py-3 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-md transition-colors">"Puzzles"</a>
-                        <a href="/learn" on:click=close_mobile class="px-3 py-3 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-md transition-colors">"Learn"</a>
                         <a href="/watch" on:click=close_mobile class="px-3 py-3 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-md transition-colors">"Watch"</a>
                     </div>
                 </div>
