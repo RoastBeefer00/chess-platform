@@ -245,10 +245,20 @@ pub fn AnalysisBoard(#[prop(optional, into)] game_id: Signal<Option<Uuid>>) -> i
     let opening = Signal::derive(move || tree.with(|t| openings::lookup(t, cursor.get())));
 
     view! {
-        <div class="flex flex-col items-center justify-center w-full py-2 h-[calc(100dvh-3.5rem)]">
-            <div class="flex flex-row items-stretch gap-2">
-                <EvalBar white_score=white_score engine_on=engine_on perspective=perspective />
-                <div class="relative w-[min(calc(100vw-2.25rem),calc(100dvh-15rem))] md:w-[min(calc(100vw-2.75rem),calc(100dvh-12.5rem))]">
+        // `min-h-` (not a hard `h-`) + `justify-start md:justify-center`:
+        // mobile stacks (top row + board + bottom row + opening/candidates/
+        // moves/controls) can be taller than the viewport slot on a normal
+        // phone, so this needs to scroll rather than clip both ends around
+        // a hard-centered, fixed-height box. `px-2` gives the eval bar a
+        // real gutter instead of sitting flush on the screen edge.
+        <div class="flex flex-col items-center w-full px-2 py-2 min-h-[calc(100dvh-3.5rem)] justify-start md:justify-center">
+            // The board column's width is `min(100% of the padded
+            // container, height-derived cap)` — `w-full` + `max-w-` gives
+            // exactly that `min()` for free, and unlike a `100vw` formula
+            // it's measured against the container's *actual* layout width,
+            // so it already accounts for the `px-2` gutter and any vertical
+            // scrollbar without needing to guess their size.
+            <div class="relative w-full max-w-[calc(100dvh-15rem)] md:max-w-[calc(100dvh-12.5rem)]">
                 // Top row
                 <div class="flex flex-row items-center pl-2 py-2 gap-2 overflow-hidden">
                     {move || view! { <CapturedPieces position={position} color={top_color.get()} /> }}
@@ -269,16 +279,25 @@ pub fn AnalysisBoard(#[prop(optional, into)] game_id: Signal<Option<Uuid>>) -> i
                         </Show>
                     </div>
                 </div>
-                <ChessBoard
-                    position={position}
-                    perspective={perspective}
-                    last_move={last_move}
-                    on_move={on_move}
-                    on_premove={on_premove}
-                    can_drag_piece={can_drag_piece}
-                    is_my_turn={is_my_turn}
-                    arrows={arrows}
-                />
+                // Eval bar + board: `ChessBoard` is the row's only other
+                // item, so `items-stretch` gives `EvalBar` (which sets no
+                // height of its own) exactly the board's rendered height —
+                // see `EvalBar`'s own comment for why that's the right
+                // height to match, not this whole column's.
+                <div class="flex flex-row items-stretch gap-2">
+                    <EvalBar white_score=white_score engine_on=engine_on perspective=perspective />
+                    <ChessBoard
+                        position={position}
+                        perspective={perspective}
+                        last_move={last_move}
+                        on_move={on_move}
+                        on_premove={on_premove}
+                        can_drag_piece={can_drag_piece}
+                        is_my_turn={is_my_turn}
+                        arrows={arrows}
+                        size_class="flex-1 min-w-0 aspect-square"
+                    />
+                </div>
                 // Bottom row
                 <div class="flex flex-row items-center pl-2 py-2 gap-2 overflow-hidden">
                     {move || view! { <CapturedPieces position={position} color={bottom_color.get()} /> }}
@@ -306,20 +325,23 @@ pub fn AnalysisBoard(#[prop(optional, into)] game_id: Signal<Option<Uuid>>) -> i
                     <AnalysisMovesPanel tree=tree cursor=cursor compact=true />
                     <AnalysisControls tree=tree cursor=cursor flipped=flipped last_move=last_move position=position engine_on=engine_on />
                 </div>
-                // Desktop side column: move list + controls. Same
-                // board-height pinning as `EvalBar` (see its comment) —
-                // `top-1/2 -translate-y-1/2` centers this fixed-height
-                // column within the parent's taller (top/bottom-row-
-                // inclusive) height, landing flush with the board's actual
-                // top/bottom edges.
-                <div class="hidden md:flex absolute top-1/2 -translate-y-1/2 left-full ml-4 w-64 h-[min(100vw,calc(100dvh-15rem))] md:h-[min(100vw,calc(100dvh-12.5rem))] flex-col gap-3">
+                // Desktop side column: move list + controls. `md:h-` here
+                // matches the board's own rendered height at desktop widths
+                // — the column's `max-w-` cap above is what actually binds
+                // there (plenty of horizontal room), so the board's
+                // resolved width, and thus its square height, equals that
+                // same formula. `top-1/2 -translate-y-1/2` then centers
+                // this fixed-height column within the parent's taller
+                // (top/bottom-row-inclusive) height, landing flush with the
+                // board's actual top/bottom edges since those rows are
+                // symmetric.
+                <div class="hidden md:flex absolute top-1/2 -translate-y-1/2 left-full ml-4 w-64 md:h-[calc(100dvh-12.5rem)] flex-col gap-3">
                     <OpeningName opening=opening />
                     <CandidateMoves lines=lines engine_on=engine_on />
                     <div class="flex-1 min-h-0 flex flex-col rounded-md bg-zinc-900/60 border border-zinc-800 p-2">
                         <AnalysisMovesPanel tree=tree cursor=cursor />
                     </div>
                     <AnalysisControls tree=tree cursor=cursor flipped=flipped last_move=last_move position=position engine_on=engine_on />
-                </div>
                 </div>
             </div>
         </div>
@@ -405,26 +427,15 @@ fn EvalBar(
     // color's actual edge of the (possibly flipped) bar.
     let label_at_bottom = Signal::derive(move || white_advantage.get() == white_at_bottom.get());
 
-    // `ChessBoard` requests `w-[min(100vw,calc(100dvh-11.5rem))]`, but it's
-    // shrunk by its actual flex parent below — the `relative w-[...]` div
-    // in `AnalysisBoard`'s own view — so *that* formula, not `ChessBoard`'s
-    // own, is what actually governs the board's rendered size. Matching it
-    // here (rather than `ChessBoard`'s formula) pins the bar to the board's
-    // true height regardless of the top/bottom capture-piece rows' height
-    // — rather than stretching to match this flex row's full height (which
-    // includes those rows) the way it did before. `self-center` then
-    // centers it within that taller row, landing flush against the
-    // board's top/bottom edges since those rows are symmetric.
-    //
-    // The `vw` term also has this bar's own width (`w-7`/`w-9`) plus the
-    // `gap-2` between it and the board subtracted out — the sibling board
-    // div does the same subtraction for the same reason: without it, on a
-    // tall/narrow viewport where the height cap doesn't bind, the board
-    // alone would claim the full `100vw` and this bar would overflow the
-    // row off the left edge instead of actually sitting beside the board.
+    // Deliberately no `h-` class here: `AnalysisBoard` places this bar in a
+    // flex row (`items-stretch`) whose *only* other item is `ChessBoard`
+    // itself (not the whole top/board/bottom column), so the row's height
+    // is exactly the board's rendered height and `items-stretch` matches
+    // this bar to it for free — no viewport-unit arithmetic predicting the
+    // board's size needed.
     view! {
         <Show when=move || engine_on.get()>
-            <div class="relative self-center w-7 md:w-9 h-[min(calc(100vw-2.25rem),calc(100dvh-15rem))] md:h-[min(calc(100vw-2.75rem),calc(100dvh-12.5rem))] flex-shrink-0 rounded-md overflow-hidden bg-zinc-900 border border-zinc-800">
+            <div class="relative w-7 md:w-9 flex-shrink-0 rounded-md overflow-hidden bg-zinc-900 border border-zinc-800">
                 <div class="absolute inset-0 bg-zinc-950"></div>
                 <div
                     class="absolute inset-x-0 bg-white transition-[height] duration-500 ease-out"
