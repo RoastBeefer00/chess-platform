@@ -3,9 +3,8 @@ use leptos_router::{lazy_route, LazyRoute};
 use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Color, Position as _, Square};
 
 use crate::components::{BoardPerspective, ChessBoard};
-use crate::puzzle::{check_puzzle_move, get_puzzle_hint, get_random_puzzle};
+use crate::puzzle::get_random_puzzle;
 use crate::sound::{self, sfx};
-use shared::MoveCheck;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SolveStatus {
@@ -29,6 +28,41 @@ fn parse_fen(fen: &str) -> Option<Chess> {
         .ok()?
         .into_position::<Chess>(CastlingMode::Standard)
         .ok()
+}
+
+/// Result of checking a solver's move against the (now fully client-side)
+/// solution.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum LocalCheck {
+    Correct {
+        /// The opponent's forced reply to auto-play, if the puzzle isn't
+        /// solved yet.
+        reply: Option<String>,
+        solved: bool,
+    },
+    Incorrect,
+}
+
+/// Checks the solver's move at `ply` (0-indexed among the solver's own
+/// moves) against `solution`. `solution[0]` is the opponent's setup move
+/// (auto-played before the solver acts, not part of `ply` counting), so
+/// the solver's `ply`-th move lives at `solution[1 + 2*ply]` and, if
+/// present, the opponent's forced reply follows immediately after. A
+/// puzzle whose solution is odd-length (lichess's own convention: always
+/// ends on a solver move) is solved once that final index is reached
+/// correctly, with no reply to auto-play.
+fn check_move_local(solution: &[String], ply: usize, uci: &str) -> LocalCheck {
+    let idx = 1 + 2 * ply;
+
+    if solution.get(idx).map(String::as_str) != Some(uci) {
+        return LocalCheck::Incorrect;
+    }
+
+    if idx == solution.len() - 1 {
+        return LocalCheck::Correct { reply: None, solved: true };
+    }
+
+    LocalCheck::Correct { reply: solution.get(idx + 1).cloned(), solved: false }
 }
 
 /// The vendored icon set has no dedicated `mateIn1`..`mateIn5` files (only
@@ -158,7 +192,7 @@ impl LazyRoute for PuzzlesPage {
             |_| async move { get_random_puzzle().await },
         );
 
-        let puzzle_id = RwSignal::new(String::new());
+        let solution = RwSignal::new(Vec::<String>::new());
         let rating = RwSignal::new(0_i32);
         let themes = RwSignal::new(String::new());
         let position = RwSignal::new(Chess::default());
@@ -186,7 +220,11 @@ impl LazyRoute for PuzzlesPage {
             let Some(start_pos) = parse_fen(&puzzle.fen) else {
                 return;
             };
-            let Ok(setup_uci) = puzzle.first_move.parse::<UciMove>() else {
+            let sol: Vec<String> = puzzle.moves.split_whitespace().map(String::from).collect();
+            let Some(setup_uci) = sol.first() else {
+                return;
+            };
+            let Ok(setup_uci) = setup_uci.parse::<UciMove>() else {
                 return;
             };
             let Ok(setup_move) = setup_uci.to_move(&start_pos) else {
@@ -196,7 +234,7 @@ impl LazyRoute for PuzzlesPage {
                 return;
             };
 
-            puzzle_id.set(puzzle.id.clone());
+            solution.set(sol);
             rating.set(puzzle.rating);
             themes.set(puzzle.themes.clone());
             solver_color.set(Some(solving_pos.turn()));
@@ -223,30 +261,30 @@ impl LazyRoute for PuzzlesPage {
         let on_move = Callback::new(move |m: shakmaty::Move| {
             let uci = m.to_uci(CastlingMode::Standard).to_string();
             let current_ply = ply.get_untracked();
-            let id = puzzle_id.get_untracked();
+            let sol = solution.get_untracked();
             let pos = position.get_untracked();
             let Ok(new_pos) = pos.clone().play(m.clone()) else {
                 return;
             };
             status.set(SolveStatus::Solving);
 
-            leptos::task::spawn_local(async move {
-                match check_puzzle_move(id, current_ply, uci).await {
-                    Ok(MoveCheck::Correct { reply, solved }) => {
-                        sound::play(sound::for_move(&new_pos, &m));
-                        position.set(new_pos.clone());
-                        last_move.set(m.from().map(|f| (f, m.to())));
-                        ply.set(current_ply + 1);
-                        hint_stage.set(HintStage::None);
-                        hint_move.set(None);
+            match check_move_local(&sol, current_ply, &uci) {
+                LocalCheck::Correct { reply, solved } => {
+                    sound::play(sound::for_move(&new_pos, &m));
+                    position.set(new_pos.clone());
+                    last_move.set(m.from().map(|f| (f, m.to())));
+                    ply.set(current_ply + 1);
+                    hint_stage.set(HintStage::None);
+                    hint_move.set(None);
 
-                        if solved {
-                            status.set(SolveStatus::Solved);
-                            sound::play(sfx::VICTORY);
-                            return;
-                        }
+                    if solved {
+                        status.set(SolveStatus::Solved);
+                        sound::play(sfx::VICTORY);
+                        return;
+                    }
 
-                        if let Some(reply_uci) = reply {
+                    if let Some(reply_uci) = reply {
+                        leptos::task::spawn_local(async move {
                             gloo_timers::future::TimeoutFuture::new(300).await;
                             let reply_move = reply_uci
                                 .parse::<UciMove>()
@@ -259,24 +297,23 @@ impl LazyRoute for PuzzlesPage {
                                     last_move.set(reply_move.from().map(|f| (f, reply_move.to())));
                                 }
                             }
-                        }
-                    }
-                    Ok(MoveCheck::Incorrect) => {
-                        status.set(SolveStatus::Wrong);
-                        sound::play(sfx::ERROR);
-                        let mut squares = vec![m.to()];
-                        if let Some(from) = m.from() {
-                            squares.push(from);
-                        }
-                        wrong_squares.set(squares);
-                        gloo_timers::future::TimeoutFuture::new(500).await;
-                        wrong_squares.set(vec![]);
-                    }
-                    Err(e) => {
-                        leptos::logging::warn!("check_puzzle_move failed: {e}");
+                        });
                     }
                 }
-            });
+                LocalCheck::Incorrect => {
+                    status.set(SolveStatus::Wrong);
+                    sound::play(sfx::ERROR);
+                    let mut squares = vec![m.to()];
+                    if let Some(from) = m.from() {
+                        squares.push(from);
+                    }
+                    wrong_squares.set(squares);
+                    leptos::task::spawn_local(async move {
+                        gloo_timers::future::TimeoutFuture::new(500).await;
+                        wrong_squares.set(vec![]);
+                    });
+                }
+            }
         });
 
         // First press fetches the correct move and reveals only its origin
@@ -285,20 +322,17 @@ impl LazyRoute for PuzzlesPage {
         // the button once `hint_stage` reaches `Arrow`.
         let on_hint = Callback::new(move |_: ()| match hint_stage.get_untracked() {
             HintStage::None => {
-                let id = puzzle_id.get_untracked();
+                let sol = solution.get_untracked();
                 let current_ply = ply.get_untracked();
-                leptos::task::spawn_local(async move {
-                    let Ok(Some(uci)) = get_puzzle_hint(id, current_ply).await else {
-                        return;
-                    };
-                    let pos = position.get_untracked();
-                    let Some(mv) = uci.parse::<UciMove>().ok().and_then(|u| u.to_move(&pos).ok()) else {
-                        return;
-                    };
-                    let Some(from) = mv.from() else { return };
-                    hint_move.set(Some((from, mv.to())));
-                    hint_stage.set(HintStage::Square);
-                });
+                let idx = 1 + 2 * current_ply;
+                let Some(uci) = sol.get(idx) else { return };
+                let pos = position.get_untracked();
+                let Some(mv) = uci.parse::<UciMove>().ok().and_then(|u| u.to_move(&pos).ok()) else {
+                    return;
+                };
+                let Some(from) = mv.from() else { return };
+                hint_move.set(Some((from, mv.to())));
+                hint_stage.set(HintStage::Square);
             }
             HintStage::Square => hint_stage.set(HintStage::Arrow),
             HintStage::Arrow => {}
@@ -391,5 +425,39 @@ impl LazyRoute for PuzzlesPage {
             </div>
         }
         .into_any()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn solution(moves: &str) -> Vec<String> {
+        moves.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn correct_mid_puzzle_move_returns_reply() {
+        // setup, solver(0), reply, solver(1) — 4 moves total.
+        let sol = solution("e2e4 e7e5 g1f3 b8c6");
+        let result = check_move_local(&sol, 0, "e7e5");
+        assert_eq!(
+            result,
+            LocalCheck::Correct { reply: Some("g1f3".to_string()), solved: false }
+        );
+    }
+
+    #[test]
+    fn correct_final_move_solves_puzzle() {
+        let sol = solution("e2e4 e7e5 g1f3 b8c6");
+        let result = check_move_local(&sol, 1, "b8c6");
+        assert_eq!(result, LocalCheck::Correct { reply: None, solved: true });
+    }
+
+    #[test]
+    fn wrong_move_is_incorrect() {
+        let sol = solution("e2e4 e7e5 g1f3 b8c6");
+        let result = check_move_local(&sol, 0, "d7d5");
+        assert_eq!(result, LocalCheck::Incorrect);
     }
 }
