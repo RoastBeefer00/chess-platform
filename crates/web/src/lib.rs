@@ -6,6 +6,7 @@ pub mod elo;
 pub mod game;
 pub mod matchmaking;
 pub mod pages;
+pub mod puzzle;
 pub mod sound;
 pub mod websocket;
 
