@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, username, avatar_url, bio, country, created_at\n                           FROM users WHERE email = $1",
+  "query": "INSERT INTO users (id, email) VALUES ($1, $2)\n                               RETURNING id, email, username, avatar_url, bio, country, created_at, is_guest",
   "describe": {
     "columns": [
       {
@@ -37,10 +37,16 @@
         "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_guest",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Text"
       ]
     },
@@ -51,8 +57,9 @@
       true,
       true,
       true,
+      false,
       false
     ]
   },
-  "hash": "194394951a6248058fd26c9c300abc51ac2642ae9d937ccbb9b3a64f53ea047d"
+  "hash": "081f65cb21d3f940d5923fa4508fc5c6322c7d64e41d12b0c75882fec6a24455"
 }

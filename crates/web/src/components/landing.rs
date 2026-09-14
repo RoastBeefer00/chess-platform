@@ -14,20 +14,19 @@ pub fn Landing() -> impl IntoView {
                 <p class="text-zinc-400 text-lg sm:text-xl mb-10 max-w-lg">
                     "Free, open source, and secure. No ads, no tracking, no nonsense."
                 </p>
-                <div class="flex flex-col sm:flex-row items-center gap-3">
-                    <a
-                        href="/login"
-                        class="w-full sm:w-auto px-6 py-3 text-sm font-semibold bg-white text-zinc-950 rounded-md hover:bg-zinc-100 transition-colors"
-                    >
-                        "Get started"
-                    </a>
-                    <a
-                        href="/login"
-                        class="w-full sm:w-auto px-6 py-3 text-sm font-medium text-zinc-300 hover:text-white transition-colors"
-                    >
-                        "Sign in →"
-                    </a>
-                </div>
+                <a
+                    href="/login"
+                    class="w-full sm:w-auto px-6 py-3 text-sm font-semibold bg-white text-zinc-950 rounded-md hover:bg-zinc-100 transition-colors"
+                >
+                    "Get started"
+                </a>
+                <a
+                    href="/auth/guest"
+                    rel="external"
+                    class="mt-4 text-sm text-zinc-500 hover:text-zinc-300 transition-colors"
+                >
+                    "Just here to look around? Try it now, no sign-up →"
+                </a>
             </div>
         </section>
     }

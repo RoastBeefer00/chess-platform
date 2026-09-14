@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at\n                       FROM users u\n                       JOIN oauth_accounts oa ON oa.user_id = u.id\n                       WHERE oa.provider = 'github' AND oa.provider_user_id = $1",
+  "query": "SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at, u.is_guest\n                       FROM users u\n                       JOIN oauth_accounts oa ON oa.user_id = u.id\n                       WHERE oa.provider = 'google' AND oa.provider_user_id = $1",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,11 @@
         "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_guest",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
@@ -51,8 +56,9 @@
       true,
       true,
       true,
+      false,
       false
     ]
   },
-  "hash": "1ca5618211ba07f4b4b048a481c3cc133dd541b7abeb1aeb7467522634a91404"
+  "hash": "b6b801c3c6ac8022c3402d3a0fbae46033598f6c7bec2d993b6f68ccc0fd798f"
 }

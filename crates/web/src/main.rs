@@ -30,7 +30,7 @@ async fn main() {
     use tracing::info;
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
     use web::app::*;
-    use web::auth::{github_callback, github_login, google_callback, google_login};
+    use web::auth::{github_callback, github_login, google_callback, google_login, guest_login};
     use web::state::AppState;
 
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
@@ -223,6 +223,12 @@ async fn main() {
         .route("/auth/github/callback", get(github_callback))
         .route("/auth/google", get(google_login))
         .route("/auth/google/callback", get(google_callback))
+        // Guest creation is a real INSERT with no external provider
+        // round-trip to naturally bottleneck it (unlike OAuth), so it needs
+        // this rate limit at least as much as the OAuth routes do — more,
+        // arguably, since nothing else stands between a script and a flood
+        // of guest rows.
+        .route("/auth/guest", get(guest_login))
         .layer(GovernorLayer::new(oauth_governor));
 
     // CSP allowances:
