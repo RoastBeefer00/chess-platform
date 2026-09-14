@@ -219,7 +219,15 @@ pub fn ChessBoard(
     /// origin square of the correct next move. Defaults to empty so other
     /// call sites need no changes.
     #[prop(optional, into)] hint_squares: Signal<Vec<shakmaty::Square>>,
+    /// Overrides the board's sizing classes — e.g. a small fixed size for a
+    /// grid tile. Defaults to the full interactive-board sizing so every
+    /// existing call site is unaffected.
+    #[prop(optional)] size_class: Option<&'static str>,
 ) -> impl IntoView {
+    let board_class = format!(
+        "relative grid grid-cols-8 grid-rows-8 {}",
+        size_class.unwrap_or("w-[min(100vw,calc(100dvh-11.5rem))] aspect-square")
+    );
     let selected_square = RwSignal::new(None::<shakmaty::Square>);
     let pending_promotion = RwSignal::new(None::<PendingPromotion>);
     let drag_state = RwSignal::new(None::<DragState>);
@@ -505,7 +513,7 @@ pub fn ChessBoard(
     view! {
         <div class="flex items-center justify-center">
             <div
-                class="relative grid grid-cols-8 grid-rows-8 w-[min(100vw,calc(100dvh-11.5rem))] aspect-square"
+                class=board_class
                 on:pointerdown=on_board_pointer_down
                 on:contextmenu=move |e| {
                     e.prevent_default();
