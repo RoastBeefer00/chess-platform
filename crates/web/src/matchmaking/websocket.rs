@@ -29,7 +29,7 @@ pub async fn matchmaking_websocket(
     use crate::auth::AuthBackend;
     use crate::state::AppState;
     use axum_login::AuthSession;
-    use shared::{GameConfig, Side, Variant};
+    use shared::{GameConfig, RatingMode, Side, Variant};
     use tokio_stream::StreamExt as _;
 
     let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
@@ -44,6 +44,7 @@ pub async fn matchmaking_websocket(
         return Err(ServerFnError::new("complete onboarding first"));
     }
     let player_id = user.id;
+    let is_guest = user.is_guest;
     let state = expect_context::<AppState>();
 
     let (tx, rx) =
@@ -76,6 +77,15 @@ pub async fn matchmaking_websocket(
             else {
                 let _ = tx.unbounded_send(Err(ServerFnError::new("expected Join")));
                 return Err(());
+            };
+            // A guest is one click and zero cost to create, so honoring a
+            // client-sent `Rated` here would make rating-boosting free: farm
+            // guests, throw games, climb. Coerce rather than reject — the
+            // guest still gets a game, just an unrated one.
+            let rating_mode = if is_guest {
+                RatingMode::Casual
+            } else {
+                rating_mode
             };
 
             let key = time_control.bucket(rating_mode);

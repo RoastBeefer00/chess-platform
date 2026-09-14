@@ -68,7 +68,12 @@ fn RecentGameRow(game: RecentGame) -> impl IntoView {
                 <PlayerHalf player={game.white.clone()} is_me={game.my_side == Side::White} />
                 <PlayerHalf player={game.black.clone()} is_me={game.my_side == Side::Black} />
             </div>
-            <span class={format!("text-sm font-semibold flex-shrink-0 {color_class}")}>{label}</span>
+            <div class="flex flex-col items-end gap-1 flex-shrink-0">
+                <span class={format!("text-sm font-semibold {color_class}")}>{label}</span>
+                <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                    {if game.rated { "Rated" } else { "Casual" }}
+                </span>
+            </div>
         </a>
     }
 }
