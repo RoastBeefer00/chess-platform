@@ -248,7 +248,7 @@ pub fn AnalysisBoard(#[prop(optional, into)] game_id: Signal<Option<Uuid>>) -> i
         <div class="flex flex-col items-center justify-center w-full py-2 h-[calc(100dvh-3.5rem)]">
             <div class="flex flex-row items-stretch gap-2">
                 <EvalBar white_score=white_score engine_on=engine_on perspective=perspective />
-                <div class="relative w-[min(100vw,calc(100dvh-15rem))] md:w-[min(100vw,calc(100dvh-12.5rem))]">
+                <div class="relative w-[min(calc(100vw-2.25rem),calc(100dvh-15rem))] md:w-[min(calc(100vw-2.75rem),calc(100dvh-12.5rem))]">
                 // Top row
                 <div class="flex flex-row items-center pl-2 py-2 gap-2 overflow-hidden">
                     {move || view! { <CapturedPieces position={position} color={top_color.get()} /> }}
@@ -407,18 +407,24 @@ fn EvalBar(
 
     // `ChessBoard` requests `w-[min(100vw,calc(100dvh-11.5rem))]`, but it's
     // shrunk by its actual flex parent below — the `relative w-[...]` div
-    // in `AnalysisBoard`'s own view, which uses a narrower `-15rem`/
-    // `-12.5rem` formula — so *that* formula, not `ChessBoard`'s own, is
-    // what actually governs the board's rendered size. Matching it here
-    // (rather than `ChessBoard`'s formula) pins the bar to the board's
+    // in `AnalysisBoard`'s own view — so *that* formula, not `ChessBoard`'s
+    // own, is what actually governs the board's rendered size. Matching it
+    // here (rather than `ChessBoard`'s formula) pins the bar to the board's
     // true height regardless of the top/bottom capture-piece rows' height
     // — rather than stretching to match this flex row's full height (which
     // includes those rows) the way it did before. `self-center` then
     // centers it within that taller row, landing flush against the
     // board's top/bottom edges since those rows are symmetric.
+    //
+    // The `vw` term also has this bar's own width (`w-7`/`w-9`) plus the
+    // `gap-2` between it and the board subtracted out — the sibling board
+    // div does the same subtraction for the same reason: without it, on a
+    // tall/narrow viewport where the height cap doesn't bind, the board
+    // alone would claim the full `100vw` and this bar would overflow the
+    // row off the left edge instead of actually sitting beside the board.
     view! {
         <Show when=move || engine_on.get()>
-            <div class="relative self-center w-7 md:w-9 h-[min(100vw,calc(100dvh-15rem))] md:h-[min(100vw,calc(100dvh-12.5rem))] flex-shrink-0 rounded-md overflow-hidden bg-zinc-900 border border-zinc-800">
+            <div class="relative self-center w-7 md:w-9 h-[min(calc(100vw-2.25rem),calc(100dvh-15rem))] md:h-[min(calc(100vw-2.75rem),calc(100dvh-12.5rem))] flex-shrink-0 rounded-md overflow-hidden bg-zinc-900 border border-zinc-800">
                 <div class="absolute inset-0 bg-zinc-950"></div>
                 <div
                     class="absolute inset-x-0 bg-white transition-[height] duration-500 ease-out"
