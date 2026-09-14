@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::auth::{AuthBackend, AuthError};
-use crate::db::{GameStore, RatingStore, UserStore};
+use crate::db::{GameStore, PuzzleStore, RatingStore, UserStore};
 use crate::game_room::GameRoom;
 
 pub type GameId = Uuid;
@@ -39,6 +39,7 @@ pub struct AppState {
     pub auth_backend: AuthBackend,
     pub user_store: UserStore,
     pub game_store: GameStore,
+    pub puzzle_store: PuzzleStore,
     pub rating_store: RatingStore,
     pub redis_client: RedisClient,
     pub match_inboxes: MatchInbox,
@@ -60,6 +61,7 @@ impl AppState {
         let redis_client = RedisClient::new(redis_pool).await;
         let user_store = UserStore::new(pool.clone());
         let game_store = GameStore::new(pool.clone());
+        let puzzle_store = PuzzleStore::new(pool.clone());
         let rating_store = RatingStore::new(pool.clone());
         let auth_backend = AuthBackend::new(pool, http_client).await;
         AppState {
@@ -68,6 +70,7 @@ impl AppState {
             auth_backend,
             user_store,
             game_store,
+            puzzle_store,
             rating_store,
             redis_client,
             match_inboxes: Arc::new(Mutex::new(HashMap::new())),

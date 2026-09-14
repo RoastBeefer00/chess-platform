@@ -11,6 +11,11 @@ pub fn Square(
     file: usize,
     piece: Signal<Option<Piece>>,
     perspective: Signal<BoardPerspective>,
+    #[prop(optional, into)] wrong_squares: Signal<Vec<shakmaty::Square>>,
+    /// Squares highlighted by `PuzzlesPage`'s hint button — the origin
+    /// square of the correct next move. Defaults to empty so other call
+    /// sites need no changes.
+    #[prop(optional, into)] hint_squares: Signal<Vec<shakmaty::Square>>,
 ) -> impl IntoView {
     let valid_move_targets = expect_context::<Signal<Vec<shakmaty::Square>>>();
     let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
@@ -108,6 +113,8 @@ pub fn Square(
         let Some(p) = premoves_ctx else { return false };
         p.get().iter().any(|(f, t)| *f == this_sq || *t == this_sq)
     });
+    let is_wrong = Signal::derive(move || wrong_squares.get().contains(&this_sq));
+    let is_hinted = Signal::derive(move || hint_squares.get().contains(&this_sq));
 
     view! {
         <div
@@ -123,6 +130,12 @@ pub fn Square(
         >
             <Show when=move || in_check.get()>
                 <div class="absolute inset-0 bg-red-500 pointer-events-none animate-pulse"></div>
+            </Show>
+            <Show when=move || is_wrong.get()>
+                <div class="absolute inset-0 bg-red-500/70 pointer-events-none"></div>
+            </Show>
+            <Show when=move || is_hinted.get()>
+                <div class="absolute inset-0 bg-blue-400/70 pointer-events-none"></div>
             </Show>
             <Show
                 when=move || valid_move_targets.get().contains(&Square::new((rank * 8 + file) as u32))

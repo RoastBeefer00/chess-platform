@@ -211,6 +211,14 @@ pub fn ChessBoard(
     /// candidates); defaults to empty so `PlayBoard`'s call site needs no
     /// changes.
     #[prop(optional, into)] arrows: Signal<Vec<(shakmaty::Square, shakmaty::Square, usize)>>,
+    /// Squares to briefly flash red — e.g. `PuzzlesPage` marking an
+    /// incorrect attempt. Defaults to empty so other call sites need no
+    /// changes; the caller is responsible for clearing it after a beat.
+    #[prop(optional, into)] wrong_squares: Signal<Vec<shakmaty::Square>>,
+    /// Squares to ring in yellow — `PuzzlesPage`'s hint button marking the
+    /// origin square of the correct next move. Defaults to empty so other
+    /// call sites need no changes.
+    #[prop(optional, into)] hint_squares: Signal<Vec<shakmaty::Square>>,
 ) -> impl IntoView {
     let selected_square = RwSignal::new(None::<shakmaty::Square>);
     let pending_promotion = RwSignal::new(None::<PendingPromotion>);
@@ -536,7 +544,7 @@ pub fn ChessBoard(
                         });
 
                         view! {
-                            <Square rank={rank} file={file} piece={piece} perspective={perspective} />
+                            <Square rank={rank} file={file} piece={piece} perspective={perspective} wrong_squares={wrong_squares} hint_squares={hint_squares} />
                         }
                     }
                 </For>
