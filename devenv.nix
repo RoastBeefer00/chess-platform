@@ -30,6 +30,16 @@
     enable = true;
     initialDatabases = [ { name = "chess_dev"; } ];
     listen_addresses = "127.0.0.1";
+    # Pinned rather than left to devenv's own default: that default has
+    # drifted at least once already (silently, between 5432 and 5433 across
+    # `devenv update`s — visible in old vs. new `.devenv/shell-*.sh`'s
+    # `PGPORT`), and unlike redis's port (see below), devenv *does*
+    # regenerate postgresql.conf's `port` line from this value on every
+    # `devenv up`, even against an existing data directory — "skipping
+    # initialization" only skips `initdb`, not conf regeneration. So this
+    # single value, matched by `DATABASE_URL` below, is now the one source
+    # of truth for both.
+    port = 5432;
   };
 
   services.redis = {
@@ -48,12 +58,14 @@
   };
 
   env = {
-    # Postgres's own port lives in its persisted postgresql.conf, written
-    # once at first init — devenv doesn't regenerate it on later `devenv up`
-    # restarts the way it does for redis, so a `services.postgres.port`
-    # setting here has no effect on an already-initialized data directory.
-    # Check `.devenv/state/postgres/postgresql.conf` directly if it ever
-    # drifts again.
+    # Port must match `services.postgres.port` above exactly — devenv
+    # regenerates `.devenv/state/postgres/postgresql.conf`'s `port` line
+    # from that value on every `devenv up` (confirmed directly: manually
+    # editing the conf file gets silently overwritten back on the next
+    # `up`), so that Nix value, not this literal, is the actual source of
+    # truth. If connections ever start timing out again, check
+    # `services.postgres.port` was actually changed and this was updated to
+    # match, rather than editing the persisted conf — that edit won't stick.
     #
     # The `roastbeefer@` user is required, not optional: sqlx-cli 0.9.0
     # (picked up by the same `devenv update` as the redis/wasm-bindgen
