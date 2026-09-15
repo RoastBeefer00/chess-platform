@@ -238,6 +238,45 @@ async fn main() {
         }
     });
 
+    // Middleware: route a game-websocket connect request to whichever
+    // instance actually owns that game's in-memory `GameRoom`, once more
+    // than one instance can be running (see the N-instance statelessness
+    // plan). `ws_session.rs`'s client appends `game_id` to the connect
+    // URL specifically so this can run BEFORE the WebSocket upgrade
+    // completes — `fly-replay` only works pre-upgrade; per Fly's own docs,
+    // "an application returning fly-replay headers should not negotiate a
+    // web socket upgrade itself." A miss (no `game_id`, malformed, no
+    // ownership record, or the record names this instance) just falls
+    // through to the normal handler — a truly-unknown/expired game still
+    // gets today's "game not found" from inside it.
+    let game_route_redis = app_state.redis_client.clone();
+    let this_instance = std::env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "local".to_string());
+    let game_route = from_fn(move |req: Request, next: Next| {
+        let redis = game_route_redis.clone();
+        let this_instance = this_instance.clone();
+        async move {
+            if req.uri().path().starts_with("/api/game_websocket") {
+                let game_id = req
+                    .uri()
+                    .query()
+                    .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("game_id=")))
+                    .and_then(|v| uuid::Uuid::parse_str(v).ok());
+                if let Some(game_id) = game_id {
+                    if let Some(owner) = redis.active_game_owner(game_id).await {
+                        if owner != this_instance {
+                            return Response::builder()
+                                .status(StatusCode::OK)
+                                .header("fly-replay", format!("instance={owner}"))
+                                .body(axum::body::Body::empty())
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+            next.run(req).await
+        }
+    });
+
     let oauth_routes = Router::new()
         .route("/auth/github", get(github_login))
         .route("/auth/github/callback", get(github_callback))
@@ -314,6 +353,7 @@ async fn main() {
         .layer(no_cache_pkg)
         .layer(long_cache_engine)
         .layer(api_rate_limit)
+        .layer(game_route)
         .layer(TraceLayer::new_for_http())
         .layer(auth_layer);
 
