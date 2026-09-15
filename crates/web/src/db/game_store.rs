@@ -315,6 +315,33 @@ impl GameStore {
         Ok(())
     }
 
+    /// Marks every still-`active` game as `aborted` at server boot. A fresh
+    /// process starts with an empty in-memory `GameRoom` map, so any row
+    /// still `active` at this point can only be one orphaned by a prior
+    /// restart/redeploy (the room died with the process, but nothing ever
+    /// updated the DB row) — never a legitimately in-progress game. Leaves
+    /// `moves`/`clocks`/`final_fen` untouched since real history already
+    /// exists on these rows; only flips status/result/termination/ended_at,
+    /// same fields `abort_game` sets.
+    #[tracing::instrument(skip(self))]
+    pub async fn reconcile_orphaned_active_games(&self) -> Result<u64, AuthError> {
+        let result = sqlx::query!(
+            r#"UPDATE games
+               SET status = 'aborted',
+                   result = NULL,
+                   termination = 'abandonment',
+                   ended_at = now()
+               WHERE status = 'active'"#
+        )
+        .execute(&self.pool)
+        .await?;
+        let count = result.rows_affected();
+        if count > 0 {
+            tracing::warn!(count, "reconciled_orphaned_active_games");
+        }
+        Ok(count)
+    }
+
     /// Loads a game's move/clock history for the analysis board. `None` if
     /// the game doesn't exist or is still in progress — `moves`/`clocks`
     /// aren't written until `finalize_game`/`abort_game` runs.

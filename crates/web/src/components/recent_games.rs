@@ -32,7 +32,10 @@ pub async fn get_recent_games(username: Option<String>) -> Result<Vec<RecentGame
             auth.user.as_ref().map(|u| u.id).ok_or_else(|| ServerFnError::new("not signed in"))?
         }
     };
-    Ok(state.game_store.list_recent_games(user_id, 10).await?)
+    state.game_store.list_recent_games(user_id, 10).await.map_err(|e| {
+        tracing::error!(%user_id, error = %e, "get_recent_games failed");
+        ServerFnError::from(e)
+    })
 }
 
 fn player_name(p: &RecentGamePlayer) -> String {
@@ -96,12 +99,36 @@ fn RecentGameRow(game: RecentGame) -> impl IntoView {
     }
 }
 
+/// Mirrors `EloCard`'s retry schedule — same root cause (a Fly autostop
+/// reboot kills the in-flight request), same fix.
+#[cfg(feature = "hydrate")]
+const RECENT_GAMES_RETRY_BACKOFF_MS: [u32; 4] = [1_000, 2_000, 4_000, 8_000];
+
 #[component]
 pub fn RecentGames(#[prop(optional)] username: Option<String>) -> impl IntoView {
     let games = Resource::new(
         move || username.clone(),
-        move |username| async move { get_recent_games(username).await.ok() },
+        move |username| async move { get_recent_games(username).await },
     );
+
+    #[cfg(feature = "hydrate")]
+    {
+        let retry_count = RwSignal::new(0usize);
+        Effect::new(move |_| match games.get() {
+            Some(Err(_)) => {
+                let attempt = retry_count.get_untracked();
+                if let Some(backoff) = RECENT_GAMES_RETRY_BACKOFF_MS.get(attempt).copied() {
+                    retry_count.set(attempt + 1);
+                    leptos::task::spawn_local(async move {
+                        gloo_timers::future::TimeoutFuture::new(backoff).await;
+                        games.refetch();
+                    });
+                }
+            }
+            Some(Ok(_)) => retry_count.set(0),
+            None => {}
+        });
+    }
 
     let fallback = move || {
         view! {
@@ -118,7 +145,7 @@ pub fn RecentGames(#[prop(optional)] username: Option<String>) -> impl IntoView 
             <h2 class="text-xl font-bold tracking-tighter text-white mb-4">"Recent games"</h2>
             <Transition fallback=fallback>
                 {move || {
-                    let rows = games.get().flatten().unwrap_or_default();
+                    let rows = games.get().and_then(|r| r.ok()).unwrap_or_default();
                     if rows.is_empty() {
                         view! {
                             <p class="text-zinc-500 text-sm italic px-1">"No games yet"</p>

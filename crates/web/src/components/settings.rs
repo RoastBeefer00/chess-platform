@@ -59,18 +59,7 @@ pub fn Settings() -> impl IntoView {
     let user = use_current_user();
     let auth_trigger = use_auth_trigger();
 
-    let save = Action::new(move |settings: &UserSettings| {
-        let settings = *settings;
-        async move {
-            let result = update_settings(settings).await;
-            if result.is_ok() {
-                auth_trigger.0.update(|v| *v += 1);
-            }
-            result
-        }
-    });
-
-    let auto_queen = move || {
+    let server_auto_queen = move || {
         user.get()
             .and_then(|r| r.ok())
             .flatten()
@@ -78,9 +67,41 @@ pub fn Settings() -> impl IntoView {
             .unwrap_or(false)
     };
 
+    // Optimistic override for the toggle below: `Some(v)` while a save is in
+    // flight (or has just succeeded), so the switch flips the instant it's
+    // clicked instead of waiting on `update_settings` plus the
+    // `current_user` refetch it triggers. Cleared once the server-confirmed
+    // value catches up to the override, or reset to `None` (falling back to
+    // the pre-toggle server value) if the save fails. Any future settings
+    // toggle should follow this same three-piece shape: an override signal,
+    // an effect that clears it once confirmed, and a read that prefers it.
+    let auto_queen_override = RwSignal::new(None::<bool>);
+
+    let save = Action::new(move |settings: &UserSettings| {
+        let settings = *settings;
+        async move {
+            let result = update_settings(settings).await;
+            match &result {
+                Ok(()) => auth_trigger.0.update(|v| *v += 1),
+                Err(_) => auto_queen_override.set(None),
+            }
+            result
+        }
+    });
+
+    Effect::new(move |_| {
+        if auto_queen_override.get().is_some_and(|pending| pending == server_auto_queen()) {
+            auto_queen_override.set(None);
+        }
+    });
+
+    let auto_queen = move || auto_queen_override.get().unwrap_or_else(server_auto_queen);
+
     let toggle_auto_queen = move |_: ()| {
+        let new_value = !auto_queen();
+        auto_queen_override.set(Some(new_value));
         save.dispatch(UserSettings {
-            auto_queen: !auto_queen(),
+            auto_queen: new_value,
         });
     };
 

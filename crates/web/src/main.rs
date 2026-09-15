@@ -96,6 +96,15 @@ async fn main() {
 
     let app_state = AppState::new(leptos_options.clone(), pool, redis).await;
 
+    // A fresh boot always starts with an empty in-memory `GameRooms` map, so
+    // any DB row still `status='active'` at this point was orphaned by a
+    // prior restart/redeploy, not a real in-progress game. Reconcile before
+    // accepting traffic so stale rows never resurface as false "you have an
+    // active game" banners.
+    if let Err(err) = app_state.game_store.reconcile_orphaned_active_games().await {
+        tracing::error!(?err, "failed to reconcile orphaned active games at startup");
+    }
+
     // Refresh Google's OIDC metadata (JWKS signing keys) every 6 hours so that
     // key rotation doesn't silently break logins until the next restart.
     // Startup already ran discovery, so skip the first tick.
