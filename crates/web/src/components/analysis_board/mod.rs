@@ -4,7 +4,7 @@ mod openings;
 mod tree;
 
 pub use engine::{EngineHandle, EngineInfo, Score};
-pub use moves_tree::AnalysisMovesPanel;
+pub use moves_tree::{AnalysisMovesPanel, MoveNavButtons};
 pub use tree::{DisplayNode, LineItem, MoveLine, MoveTree, NodeId, Segment};
 
 use leptos::prelude::*;
@@ -334,11 +334,22 @@ pub fn AnalysisBoard(
                         </Show>
                     </div>
                 </div>
-                // Eval bar + board: `ChessBoard` is the row's only other
-                // item, so `items-stretch` gives `EvalBar` (which sets no
-                // height of its own) exactly the board's rendered height —
-                // see `EvalBar`'s own comment for why that's the right
-                // height to match, not this whole column's.
+                // Mobile: horizontal eval bar + top-2 candidates, stacked
+                // above the board instead of squeezed beside it — mobile
+                // has no width to spare for a side-by-side eval bar without
+                // shrinking the board itself, so the bar moves to its own
+                // row and the board gets the full width below.
+                <div class="md:hidden flex flex-col gap-2 px-2 pb-2">
+                    <EvalBar white_score=white_score engine_on=engine_on perspective=perspective horizontal=true />
+                    <CandidateMoves lines=lines engine_on=engine_on max=2 />
+                </div>
+                // Eval bar (desktop, vertical — hides itself on mobile via
+                // its own `hidden md:block`) + board. `ChessBoard` is the
+                // row's only *other* item, so at desktop widths
+                // `items-stretch` gives `EvalBar` exactly the board's
+                // rendered height — see `EvalBar`'s own comment for why
+                // that's the right height to match, not this whole
+                // column's.
                 <div class="flex flex-row items-stretch gap-2">
                     <EvalBar white_score=white_score engine_on=engine_on perspective=perspective />
                     <ChessBoard
@@ -350,7 +361,7 @@ pub fn AnalysisBoard(
                         can_drag_piece={can_drag_piece}
                         is_my_turn={is_my_turn}
                         arrows={arrows}
-                        size_class="flex-1 min-w-0 aspect-square"
+                        size_class="w-full md:flex-1 md:min-w-0 aspect-square"
                     />
                 </div>
                 // Bottom row
@@ -373,11 +384,19 @@ pub fn AnalysisBoard(
                         </Show>
                     </div>
                 </div>
-                // Mobile-only compact moves strip + controls
+                // Mobile-only compact moves strip + controls. Navigation
+                // (`MoveNavButtons`) goes first, directly under the board —
+                // it's the one interactive piece here, and previously sat
+                // last, below the opening name and candidate moves,
+                // off-screen without scrolling on a typical phone. It's now
+                // its own row too, not sharing space with the scrolling
+                // move list the way the old compact panel's embedded
+                // buttons did. Candidate moves already showed (top 2) above
+                // the board, so they don't repeat here.
                 <div class="md:hidden px-2 pb-1 flex flex-col gap-2">
-                    <OpeningName opening=opening />
-                    <CandidateMoves lines=lines engine_on=engine_on />
+                    <MoveNavButtons tree=tree cursor=cursor />
                     <AnalysisMovesPanel tree=tree cursor=cursor compact=true />
+                    <OpeningName opening=opening />
                     <AnalysisControls tree=tree cursor=cursor flipped=flipped last_move=last_move position=position engine_on=engine_on />
                 </div>
                 // Desktop side column: move list + controls. `md:h-` here
@@ -423,7 +442,14 @@ fn OpeningName(opening: Signal<Option<(String, String)>>) -> impl IntoView {
 /// show for the single best line alone, now per-line here instead (that
 /// separate box is gone; this replaces it).
 #[component]
-fn CandidateMoves(lines: RwSignal<[Option<DisplayLine>; 3]>, engine_on: RwSignal<bool>) -> impl IntoView {
+fn CandidateMoves(
+    lines: RwSignal<[Option<DisplayLine>; 3]>,
+    engine_on: RwSignal<bool>,
+    /// Caps how many lines render — the mobile eval-bar/board gap only has
+    /// room for the top 2; the desktop side column still shows all 3.
+    #[prop(optional)]
+    max: Option<usize>,
+) -> impl IntoView {
     view! {
         <Show when=move || engine_on.get()>
             <div class="rounded-md bg-zinc-900/60 border border-zinc-800 p-2 text-xs font-mono flex flex-col gap-2">
@@ -436,6 +462,7 @@ fn CandidateMoves(lines: RwSignal<[Option<DisplayLine>; 3]>, engine_on: RwSignal
                         .into_iter()
                         .enumerate()
                         .filter_map(|(i, line)| line.map(|line| (i, line)))
+                        .take(max.unwrap_or(3))
                         .map(|(i, line)| {
                             let mv = line.san.first().cloned().unwrap_or_default();
                             let continuation = format!("depth {} — {}", line.depth, line.san.join(" "));
@@ -471,49 +498,95 @@ fn EvalBar(
     white_score: Signal<Option<Score>>,
     engine_on: RwSignal<bool>,
     perspective: Signal<BoardPerspective>,
+    /// Full-width horizontal strip above the board (mobile) instead of a
+    /// narrow vertical bar beside it (desktop) — mobile has no room to
+    /// spare on the board's side, so the bar moves to its own row instead
+    /// of competing with the board for horizontal space.
+    #[prop(optional)]
+    horizontal: bool,
 ) -> impl IntoView {
     let white_pct = Signal::derive(move || {
         white_score.get().map(white_fraction).unwrap_or(0.5) * 100.0
     });
     let label = Signal::derive(move || white_score.get().map(format_white_score));
-    let white_at_bottom = Signal::derive(move || perspective.get() == BoardPerspective::White);
+    // "start" = the bottom edge in the vertical bar, the left edge in the
+    // horizontal one — whichever edge White currently occupies, so the
+    // fill always lines up with the physical side of the board White sits
+    // on (top/bottom for vertical, and analogously left/right here).
+    let white_at_start = Signal::derive(move || perspective.get() == BoardPerspective::White);
     let white_advantage = Signal::derive(move || white_pct.get() >= 50.0);
-    // The label sits on whichever color is ahead, positioned at that
-    // color's actual edge of the (possibly flipped) bar.
-    let label_at_bottom = Signal::derive(move || white_advantage.get() == white_at_bottom.get());
+    let label_at_start = Signal::derive(move || white_advantage.get() == white_at_start.get());
 
-    // Deliberately no `h-` class here: `AnalysisBoard` places this bar in a
-    // flex row (`items-stretch`) whose *only* other item is `ChessBoard`
-    // itself (not the whole top/board/bottom column), so the row's height
-    // is exactly the board's rendered height and `items-stretch` matches
-    // this bar to it for free — no viewport-unit arithmetic predicting the
-    // board's size needed.
-    view! {
-        <Show when=move || engine_on.get()>
-            <div class="relative w-7 md:w-9 flex-shrink-0 rounded-md overflow-hidden bg-zinc-900 border border-zinc-800">
-                <div class="absolute inset-0 bg-zinc-950"></div>
-                <div
-                    class="absolute inset-x-0 bg-white transition-[height] duration-500 ease-out"
-                    style=move || {
-                        let pct = white_pct.get();
-                        if white_at_bottom.get() {
-                            format!("top: auto; bottom: 0; height: {pct}%")
-                        } else {
-                            format!("top: 0; bottom: auto; height: {pct}%")
+    if horizontal {
+        view! {
+            <Show when=move || engine_on.get()>
+                <div class="relative w-full h-4 rounded-md overflow-hidden bg-zinc-900 border border-zinc-800">
+                    <div class="absolute inset-0 bg-zinc-950"></div>
+                    <div
+                        class="absolute inset-y-0 bg-white transition-[width] duration-500 ease-out"
+                        style=move || {
+                            let pct = white_pct.get();
+                            if white_at_start.get() {
+                                format!("left: 0; right: auto; width: {pct}%")
+                            } else {
+                                format!("left: auto; right: 0; width: {pct}%")
+                            }
                         }
-                    }
-                ></div>
-                <span
-                    class="absolute inset-x-0 text-center text-[10px] leading-none font-bold select-none"
-                    class:bottom-1=label_at_bottom
-                    class:top-1=move || !label_at_bottom.get()
-                    class:text-zinc-950=white_advantage
-                    class:text-white=move || !white_advantage.get()
-                >
-                    {move || label.get().unwrap_or_default()}
-                </span>
-            </div>
-        </Show>
+                    ></div>
+                    <span
+                        class="absolute inset-y-0 flex items-center px-1.5 text-[10px] leading-none font-bold select-none"
+                        class:left-0=label_at_start
+                        class:right-0=move || !label_at_start.get()
+                        class:text-zinc-950=white_advantage
+                        class:text-white=move || !white_advantage.get()
+                    >
+                        {move || label.get().unwrap_or_default()}
+                    </span>
+                </div>
+            </Show>
+        }
+        .into_any()
+    } else {
+        // Deliberately no `h-` class here: `AnalysisBoard` places this bar
+        // in a flex row (`items-stretch`) whose *only* other item is
+        // `ChessBoard` itself (not the whole top/board/bottom column), so
+        // the row's height is exactly the board's rendered height and
+        // `items-stretch` matches this bar to it for free — no
+        // viewport-unit arithmetic predicting the board's size needed.
+        view! {
+            <Show when=move || engine_on.get()>
+                // `hidden md:block` directly here (not an extra wrapper div
+                // around this component) — an extra wrapper would itself
+                // become the actual flex item in `AnalysisBoard`'s eval
+                // bar/board row, leaving *this* inner sizing invisible to
+                // `items-stretch` the same way it broke `ChessBoard` before
+                // `size_class` moved onto its own true outer element.
+                <div class="hidden md:block relative w-7 md:w-9 flex-shrink-0 rounded-md overflow-hidden bg-zinc-900 border border-zinc-800">
+                    <div class="absolute inset-0 bg-zinc-950"></div>
+                    <div
+                        class="absolute inset-x-0 bg-white transition-[height] duration-500 ease-out"
+                        style=move || {
+                            let pct = white_pct.get();
+                            if white_at_start.get() {
+                                format!("top: auto; bottom: 0; height: {pct}%")
+                            } else {
+                                format!("top: 0; bottom: auto; height: {pct}%")
+                            }
+                        }
+                    ></div>
+                    <span
+                        class="absolute inset-x-0 text-center text-[10px] leading-none font-bold select-none"
+                        class:bottom-1=label_at_start
+                        class:top-1=move || !label_at_start.get()
+                        class:text-zinc-950=white_advantage
+                        class:text-white=move || !white_advantage.get()
+                    >
+                        {move || label.get().unwrap_or_default()}
+                    </span>
+                </div>
+            </Show>
+        }
+        .into_any()
     }
 }
 

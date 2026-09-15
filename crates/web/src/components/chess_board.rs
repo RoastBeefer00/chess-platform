@@ -224,8 +224,16 @@ pub fn ChessBoard(
     /// existing call site is unaffected.
     #[prop(optional)] size_class: Option<&'static str>,
 ) -> impl IntoView {
-    let board_class = format!(
-        "relative grid grid-cols-8 grid-rows-8 {}",
+    // The sizing/flex-participation classes (`size_class`, or the default
+    // fixed-viewport formula) belong on the *outer* wrapper below, not this
+    // inner grid — this div is the actual flex item any parent layout
+    // (e.g. `AnalysisBoard`'s `flex-1 min-w-0` row) sizes, so putting them
+    // here instead left the true flex item unconstrained, sized to the
+    // grid's own content width, and overflowing its row on mobile instead
+    // of shrinking to fit. The inner grid just fills whatever box the
+    // outer wrapper resolves to.
+    let outer_class = format!(
+        "flex items-center justify-center {}",
         size_class.unwrap_or("w-[min(100vw,calc(100dvh-11.5rem))] aspect-square")
     );
     let selected_square = RwSignal::new(None::<shakmaty::Square>);
@@ -511,9 +519,9 @@ pub fn ChessBoard(
     let on_board_pointer_down = |_: leptos::ev::PointerEvent| {};
 
     view! {
-        <div class="flex items-center justify-center">
+        <div class=outer_class>
             <div
-                class=board_class
+                class="relative grid grid-cols-8 grid-rows-8 w-full h-full"
                 on:pointerdown=on_board_pointer_down
                 on:contextmenu=move |e| {
                     e.prevent_default();

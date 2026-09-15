@@ -596,16 +596,6 @@ impl LazyRoute for PuzzlesPage {
                         </Show>
                         <Show when=move || puzzle_loaded.get()>
                             <div class="flex flex-col items-center gap-3 w-full">
-                                // Mobile: status panel stacked above the board —
-                                // no room to the side on a narrow screen.
-                                <div class="md:hidden w-full max-w-md">
-                                    <PuzzleStatusPanel
-                                        rating=rating themes=themes solver_color=solver_color status=status
-                                        hint_stage=hint_stage board_locked=board_locked
-                                        on_next=next_puzzle on_hint=on_hint on_back=back_to_filters
-                                        analysis_href=analysis_href
-                                    />
-                                </div>
                                 <div class="relative w-[min(100vw,calc(100dvh-15rem))] md:w-[min(100vw,calc(100dvh-12.5rem))]">
                                     <ChessBoard
                                         position={position}
@@ -630,6 +620,19 @@ impl LazyRoute for PuzzlesPage {
                                             analysis_href=analysis_href
                                         />
                                     </div>
+                                </div>
+                                // Mobile: status panel below the board, not
+                                // above — its height changes (e.g. the
+                                // "Solved!" block appearing) so it must never
+                                // sit above the board, or the board itself
+                                // would visibly jump every time it happens.
+                                <div class="md:hidden w-full max-w-md">
+                                    <PuzzleStatusPanel
+                                        rating=rating themes=themes solver_color=solver_color status=status
+                                        hint_stage=hint_stage board_locked=board_locked
+                                        on_next=next_puzzle on_hint=on_hint on_back=back_to_filters
+                                        analysis_href=analysis_href
+                                    />
                                 </div>
                             </div>
                         </Show>

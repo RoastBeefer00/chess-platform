@@ -82,6 +82,67 @@ where
     view! { <div class="flex flex-col gap-0.5">{children}</div> }.into_any()
 }
 
+/// Standalone forward/back/jump navigation, decoupled from the move list
+/// itself — the compact (mobile) move strip used to bake these buttons
+/// into the same horizontally-scrolling row as the moves, which made them
+/// small and easy to fat-finger and tied their size to however much room
+/// the list left over. A dedicated, full-width row of larger buttons is
+/// friendlier to tap and doesn't compete with the list for space.
+#[component]
+pub fn MoveNavButtons(tree: RwSignal<MoveTree>, cursor: RwSignal<NodeId>) -> impl IntoView {
+    let play_sound_for = move |id: NodeId| {
+        tree.with_untracked(|t| {
+            if id == t.root() {
+                return;
+            }
+            let uci = t.uci(id);
+            if let Ok(parsed) = uci.parse::<shakmaty::uci::UciMove>() {
+                let parent_pos = t.position(t.parent(id).unwrap()).clone();
+                if let Ok(m) = parsed.to_move(&parent_pos) {
+                    sound::play(sound::for_move(t.position(id), &m));
+                }
+            }
+        });
+    };
+    let go_to = move |id: NodeId| {
+        cursor.set(id);
+        play_sound_for(id);
+    };
+    let go_back = move |_| {
+        let parent = tree.with_untracked(|t| t.parent(cursor.get_untracked()));
+        if let Some(p) = parent {
+            go_to(p);
+        }
+    };
+    let go_forward = move |_| {
+        let child = tree.with_untracked(|t| t.first_child(cursor.get_untracked()));
+        if let Some(c) = child {
+            go_to(c);
+        }
+    };
+    let go_beginning = move |_| {
+        let root = tree.with_untracked(MoveTree::root);
+        go_to(root);
+    };
+    let go_end = move |_| {
+        let end = tree.with_untracked(|t| t.last_mainline_from(t.root()));
+        go_to(end);
+    };
+    let can_back = Signal::derive(move || cursor.get() != 0);
+    let can_forward = Signal::derive(move || tree.with(|t| t.first_child(cursor.get()).is_some()));
+
+    let btn_class = "flex-1 py-2.5 text-3xl leading-none font-medium text-zinc-300 border border-zinc-700 rounded-md hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-700 disabled:hover:text-zinc-300";
+
+    view! {
+        <div class="flex flex-row items-stretch gap-1.5 w-full">
+            <button on:click=move |_| go_beginning(()) disabled=move || !can_back.get() aria-label="Jump to start" class=btn_class>"«"</button>
+            <button on:click=move |_| go_back(()) disabled=move || !can_back.get() aria-label="Previous move" class=btn_class>"‹"</button>
+            <button on:click=move |_| go_forward(()) disabled=move || !can_forward.get() aria-label="Next move" class=btn_class>"›"</button>
+            <button on:click=move |_| go_end(()) disabled=move || !can_forward.get() aria-label="Jump to end" class=btn_class>"»"</button>
+        </div>
+    }
+}
+
 #[component]
 pub fn AnalysisMovesPanel(
     tree: RwSignal<MoveTree>,
@@ -198,11 +259,9 @@ pub fn AnalysisMovesPanel(
         });
     }
 
-    let nav_btn_class = if compact {
-        "px-1.5 py-1 text-xs font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-700 disabled:hover:text-zinc-300 flex-shrink-0"
-    } else {
-        "flex-1 px-2 py-1.5 text-sm font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-700 disabled:hover:text-zinc-300"
-    };
+    // Only the non-compact (desktop) layout still embeds its own button
+    // row below — compact's are a separate `MoveNavButtons` instance now.
+    let nav_btn_class = "flex-1 px-2 py-1.5 text-sm font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-700 disabled:hover:text-zinc-300";
 
     let move_button = move |id: NodeId, san: String, show_number: bool, fullmove: u32, is_white: bool| {
         let label = if show_number {
@@ -271,15 +330,12 @@ pub fn AnalysisMovesPanel(
     let is_empty = Signal::derive(move || segments.with(Vec::is_empty));
 
     if compact {
+        // Just the scrolling move strip now — navigation is a separate
+        // `MoveNavButtons` instance the caller places wherever makes sense
+        // (see that component's doc comment for why).
         view! {
-            <div class="flex flex-row items-center gap-1 w-full text-xs font-mono rounded-md bg-zinc-900/60 border border-zinc-800 px-1 py-1">
-                <button on:click=move |_| go_beginning(()) disabled=move || !can_back.get() aria-label="Jump to start" class=nav_btn_class>"«"</button>
-                <button on:click=move |_| go_back(()) disabled=move || !can_back.get() aria-label="Previous move" class=nav_btn_class>"‹"</button>
-                <div class="flex-1 min-w-0 overflow-x-auto flex flex-row items-center gap-2 whitespace-nowrap pb-1.5">
-                    {body}
-                </div>
-                <button on:click=move |_| go_forward(()) disabled=move || !can_forward.get() aria-label="Next move" class=nav_btn_class>"›"</button>
-                <button on:click=move |_| go_end(()) disabled=move || !can_forward.get() aria-label="Jump to end" class=nav_btn_class>"»"</button>
+            <div class="w-full overflow-x-auto flex flex-row items-center gap-2 whitespace-nowrap text-xs font-mono rounded-md bg-zinc-900/60 border border-zinc-800 px-2 py-1.5">
+                {body}
             </div>
         }.into_any()
     } else {

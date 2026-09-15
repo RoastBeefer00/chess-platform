@@ -77,7 +77,12 @@
     REDIS_URL = "redis://localhost:6379";
     LEPTOS_OUTPUT_NAME = "web";
     LEPTOS_SITE_ROOT = "target/site";
-    LEPTOS_SITE_ADDR = "127.0.0.1:3000";
+    # 0.0.0.0 (not 127.0.0.1) so the dev server is reachable from other
+    # devices on the same network (e.g. a phone, for mobile testing). This
+    # env var wins over crates/web/Cargo.toml's `site-addr` default, which
+    # is why that alone wasn't enough. Prod is unaffected — fly.toml sets
+    # its own LEPTOS_SITE_ADDR for the deployed container.
+    LEPTOS_SITE_ADDR = "0.0.0.0:3000";
     RUST_LOG = "web=debug,tower_http=info,tower_sessions=debug";
   };
 
