@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH my_game AS (\n                (SELECT id, white_user_id, black_user_id FROM games\n                 WHERE white_user_id = $1 AND status = 'active' LIMIT 1)\n                UNION ALL\n                (SELECT id, white_user_id, black_user_id FROM games\n                 WHERE black_user_id = $1 AND status = 'active' LIMIT 1)\n            )\n            SELECT mg.id AS \"id!\", mg.white_user_id AS \"white_user_id!\", mg.black_user_id AS \"black_user_id!\",\n                   wu.username AS white_username, wu.avatar_url AS white_avatar_url,\n                   bu.username AS black_username, bu.avatar_url AS black_avatar_url\n            FROM my_game mg\n            JOIN users wu ON wu.id = mg.white_user_id\n            JOIN users bu ON bu.id = mg.black_user_id\n            LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "white_user_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "black_user_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "white_username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "white_avatar_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "black_username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "black_avatar_url",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "fba81346e7eed6854db47bdc5ea6f5ca87f9d56d076dc14605cb7d22875ff18a"
+}

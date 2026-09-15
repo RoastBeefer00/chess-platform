@@ -5,8 +5,11 @@ use leptos_router::{
     Lazy, ParamSegment, StaticSegment,
 };
 
-use crate::components::{Nav, RequireAuth};
+use crate::components::{ChallengeToast, Nav, RequireAuth};
+use crate::friends::provide_friends_presence;
 use crate::pages::play::PlayPage;
+use crate::pages::profile::ProfilePage;
+use crate::pages::settings::SettingsPage;
 use crate::pages::watch::WatchPage;
 use crate::pages::{AnalysisPage, HomePage, LoginPage, NotFoundPage, PuzzlesPage};
 use crate::{components::auth::provide_current_user, pages::CreateUsernamePage};
@@ -33,6 +36,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 pub fn App() -> impl IntoView {
     provide_meta_context();
     provide_current_user();
+    provide_friends_presence();
 
     view! {
         <Stylesheet id="leptos" href="/pkg/web.css"/>
@@ -40,6 +44,7 @@ pub fn App() -> impl IntoView {
 
         <Router>
             <Nav/>
+            <ChallengeToast/>
             <main class="pt-14 min-h-screen bg-zinc-950 max-w-7xl mx-auto">
                 <Routes fallback=NotFoundPage>
                     <Route path=StaticSegment("/") view={Lazy::<HomePage>::new()}/>
@@ -48,6 +53,8 @@ pub fn App() -> impl IntoView {
                     <ParentRoute path=StaticSegment("/") view=RequireAuth>
                         <Route path=(StaticSegment("game"), ParamSegment("game_id")) view={Lazy::<PlayPage>::new()}/>
                         <Route path=StaticSegment("watch") view={Lazy::<WatchPage>::new()}/>
+                        <Route path=(StaticSegment("u"), ParamSegment("username")) view={Lazy::<ProfilePage>::new()}/>
+                        <Route path=StaticSegment("settings") view={Lazy::<SettingsPage>::new()}/>
                         <Route path=StaticSegment("create-username") view={Lazy::<CreateUsernamePage>::new()}/>
                     </ParentRoute>
                     <Route path=StaticSegment("/login") view={Lazy::<LoginPage>::new()}/>

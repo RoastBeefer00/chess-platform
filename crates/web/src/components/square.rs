@@ -3,7 +3,11 @@ use shakmaty::{Color, Piece, Square};
 
 use crate::components::BoardPerspective;
 #[cfg(feature = "hydrate")]
-use crate::components::{chess_board::matching_moves, DragState, PendingPromotion};
+use crate::components::{
+    chess_board::{auto_queen_move, matching_moves},
+    settings::auto_queen_enabled,
+    DragState, PendingPromotion,
+};
 
 #[component]
 pub fn Square(
@@ -86,12 +90,15 @@ pub fn Square(
                     selected_square.set(None);
                     on_move.run(*m);
                 }
-                _ => {
+                many => {
                     selected_square.set(None);
-                    pending_promotion.set(Some(PendingPromotion {
-                        from: from_sq,
-                        to: this_square,
-                    }));
+                    match auto_queen_enabled().then(|| auto_queen_move(many)).flatten() {
+                        Some(m) => on_move.run(m),
+                        None => pending_promotion.set(Some(PendingPromotion {
+                            from: from_sq,
+                            to: this_square,
+                        })),
+                    }
                 }
             }
         } else {

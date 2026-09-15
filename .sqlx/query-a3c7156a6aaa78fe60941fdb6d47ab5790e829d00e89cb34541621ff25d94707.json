@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT 1 AS \"one!\" FROM friendships\n               WHERE status = 'accepted'\n                 AND ((requester_id = $1 AND addressee_id = $2)\n                   OR (requester_id = $2 AND addressee_id = $1))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "one!",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a3c7156a6aaa78fe60941fdb6d47ab5790e829d00e89cb34541621ff25d94707"
+}

@@ -3,8 +3,6 @@ use leptos::prelude::*;
 use shared::Category;
 use uuid::Uuid;
 
-use crate::components::use_current_user;
-
 #[server]
 pub async fn get_user_rating_and_diff(
     id: Uuid,
@@ -13,6 +11,42 @@ pub async fn get_user_rating_and_diff(
     use crate::state::AppState;
 
     let app_state = expect_context::<AppState>();
+    app_state
+        .rating_store
+        .get_rating_with_diff(&id, category)
+        .await
+        .map_err(|e| ServerFnError::new(format!("Error getting rating for user {id}: {e}")))
+}
+
+/// Same as `get_user_rating_and_diff`, but by username, resolved server-side
+/// in the same round trip (`None` = the signed-in caller). Lets `EloCard` on
+/// a profile page take just a `username` string prop with no dependency on
+/// any other resource resolving first — nesting a fresh `Resource` inside
+/// another resource's already-resolved branch (as this page originally did,
+/// keying off the profile fetch's returned user id) intermittently desynced
+/// SSR and hydration for sibling resources created that way.
+#[server]
+pub async fn get_user_rating_and_diff_by_username(
+    username: Option<String>,
+    category: Category,
+) -> Result<(u32, i32), ServerFnError> {
+    use crate::auth::AuthBackend;
+    use crate::state::AppState;
+    use axum_login::AuthSession;
+
+    let app_state = expect_context::<AppState>();
+    let id = match username {
+        Some(name) => app_state
+            .user_store
+            .find_by_username(&name)
+            .await?
+            .ok_or_else(|| ServerFnError::new("user not found"))?
+            .id,
+        None => {
+            let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
+            auth.user.as_ref().map(|u| u.id).ok_or_else(|| ServerFnError::new("not signed in"))?
+        }
+    };
     app_state
         .rating_store
         .get_rating_with_diff(&id, category)
@@ -57,20 +91,10 @@ fn category_icon(category: Category) -> AnyView {
 }
 
 #[component]
-pub fn EloCard(category: Category) -> impl IntoView {
-    let user = use_current_user();
-
+pub fn EloCard(category: Category, #[prop(optional)] username: Option<String>) -> impl IntoView {
     let user_rating = Resource::new(
-        move || user.get(),
-        move |u| async move {
-            match u {
-                Some(Ok(Some(user))) => get_user_rating_and_diff(user.id, category).await.ok(),
-                _ => {
-                    leptos::logging::warn!("unable to get user info!");
-                    None
-                }
-            }
-        },
+        move || username.clone(),
+        move |username| async move { get_user_rating_and_diff_by_username(username, category).await.ok() },
     );
 
     let fallback = move || {

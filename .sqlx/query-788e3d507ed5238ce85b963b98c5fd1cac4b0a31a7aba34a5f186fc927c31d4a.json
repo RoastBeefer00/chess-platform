@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT status, requester_id FROM friendships\n               WHERE (LEAST(requester_id, addressee_id), GREATEST(requester_id, addressee_id))\n                   = (LEAST($1::uuid, $2::uuid), GREATEST($1::uuid, $2::uuid))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "requester_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "788e3d507ed5238ce85b963b98c5fd1cac4b0a31a7aba34a5f186fc927c31d4a"
+}

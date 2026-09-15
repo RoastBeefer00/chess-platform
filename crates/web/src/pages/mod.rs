@@ -4,7 +4,9 @@ pub mod home;
 pub mod login;
 pub mod not_found;
 pub mod play;
+pub mod profile;
 pub mod puzzles;
+pub mod settings;
 pub mod watch;
 
 pub use analysis::AnalysisPage;
@@ -12,4 +14,6 @@ pub use create_username::CreateUsernamePage;
 pub use home::HomePage;
 pub use login::LoginPage;
 pub use not_found::NotFoundPage;
+pub use profile::ProfilePage;
 pub use puzzles::PuzzlesPage;
+pub use settings::SettingsPage;

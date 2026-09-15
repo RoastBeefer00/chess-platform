@@ -1,7 +1,7 @@
 use shakmaty::KnownOutcome;
 use shared::{
-    messages::GameOverReason, AnalysisGameData, Category, GameStatus, RecentGame,
-    RecentGamePlayer, RecentGameResult, Side,
+    messages::GameOverReason, ActiveGame, AnalysisGameData, Category, FriendActiveGame, GameStatus,
+    RecentGame, RecentGamePlayer, RecentGameResult, Side,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -427,6 +427,105 @@ impl GameStore {
             })
             .collect())
     }
+
+    /// `user_id`'s currently in-progress game, if any. A user is only ever
+    /// `status = 'active'` in one game at a time, so `LIMIT 1` on a
+    /// `UNION ALL` of the two indexed branches is enough — no `ORDER BY`
+    /// needed since at most one row can come back.
+    #[tracing::instrument(skip(self), fields(%user_id))]
+    pub async fn find_active_game(&self, user_id: Uuid) -> Result<Option<ActiveGame>, AuthError> {
+        let row = sqlx::query!(
+            r#"WITH my_game AS (
+                (SELECT id, white_user_id, black_user_id FROM games
+                 WHERE white_user_id = $1 AND status = 'active' LIMIT 1)
+                UNION ALL
+                (SELECT id, white_user_id, black_user_id FROM games
+                 WHERE black_user_id = $1 AND status = 'active' LIMIT 1)
+            )
+            SELECT mg.id AS "id!", mg.white_user_id AS "white_user_id!", mg.black_user_id AS "black_user_id!",
+                   wu.username AS white_username, wu.avatar_url AS white_avatar_url,
+                   bu.username AS black_username, bu.avatar_url AS black_avatar_url
+            FROM my_game mg
+            JOIN users wu ON wu.id = mg.white_user_id
+            JOIN users bu ON bu.id = mg.black_user_id
+            LIMIT 1"#,
+            user_id,
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| {
+            let (my_side, opponent) = if user_id == r.white_user_id {
+                (
+                    Side::White,
+                    RecentGamePlayer {
+                        username: r.black_username,
+                        avatar_url: r.black_avatar_url,
+                        rating: None,
+                    },
+                )
+            } else {
+                (
+                    Side::Black,
+                    RecentGamePlayer {
+                        username: r.white_username,
+                        avatar_url: r.white_avatar_url,
+                        rating: None,
+                    },
+                )
+            };
+            ActiveGame {
+                id: r.id,
+                opponent,
+                my_side,
+            }
+        }))
+    }
+
+    /// Which of `user_ids` are currently in an active game, and against whom.
+    /// One scan over the small `status = 'active'` partial index rather than
+    /// N calls to `find_active_game` — the friends-list "in game" column
+    /// needs this for a whole list at once. Keyed by *participant* user_id,
+    /// so a game between two friends appears twice, once under each side.
+    #[tracing::instrument(skip(self, user_ids), fields(n = user_ids.len()))]
+    pub async fn active_games_for(
+        &self,
+        user_ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, FriendActiveGame>, AuthError> {
+        if user_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let rows = sqlx::query!(
+            r#"SELECT g.id, g.white_user_id, g.black_user_id,
+                      wu.username AS white_username, bu.username AS black_username
+               FROM games g
+               JOIN users wu ON wu.id = g.white_user_id
+               JOIN users bu ON bu.id = g.black_user_id
+               WHERE g.status = 'active' AND (g.white_user_id = ANY($1) OR g.black_user_id = ANY($1))"#,
+            user_ids,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let wanted: std::collections::HashSet<Uuid> = user_ids.iter().copied().collect();
+        let mut result = std::collections::HashMap::new();
+        for r in rows {
+            if wanted.contains(&r.white_user_id) {
+                result.insert(
+                    r.white_user_id,
+                    FriendActiveGame { game_id: r.id, opponent_username: r.black_username.clone() },
+                );
+            }
+            if wanted.contains(&r.black_user_id) {
+                result.insert(
+                    r.black_user_id,
+                    FriendActiveGame { game_id: r.id, opponent_username: r.white_username.clone() },
+                );
+            }
+        }
+        Ok(result)
+    }
 }
 
 pub fn spawn_finalize(game_store: GameStore, plan: Option<GameFinalization>) {
@@ -806,5 +905,94 @@ mod tests {
         let casual_row = rows.iter().find(|r| r.id == casual_game_id).unwrap();
         assert!(rated_row.rated);
         assert!(!casual_row.rated);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn find_active_game_returns_the_ongoing_game_for_either_side(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+
+        let white_view = store.find_active_game(white_id).await.unwrap().unwrap();
+        assert_eq!(white_view.id, game_id);
+        assert_eq!(white_view.my_side, Side::White);
+
+        let black_view = store.find_active_game(black_id).await.unwrap().unwrap();
+        assert_eq!(black_view.id, game_id);
+        assert_eq!(black_view.my_side, Side::Black);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn find_active_game_ignores_finished_and_aborted_games(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+
+        let finished_game_id = Uuid::new_v4();
+        insert_game_row(&pool, finished_game_id, white_id, black_id, true).await;
+        let plan = make_plan(
+            finished_game_id,
+            white_id,
+            black_id,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Checkmate,
+        );
+        store.finalize_game(plan).await.unwrap();
+
+        assert!(store.find_active_game(white_id).await.unwrap().is_none());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn find_active_game_none_when_no_game_in_progress(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+
+        assert!(store.find_active_game(user_id).await.unwrap().is_none());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn active_games_for_empty_input_skips_query(pool: PgPool) {
+        let store = GameStore::new(pool);
+        assert!(store.active_games_for(&[]).await.unwrap().is_empty());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn active_games_for_finds_both_participants(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let bystander_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+
+        let result = store.active_games_for(&[white_id, black_id, bystander_id]).await.unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[&white_id].game_id, game_id);
+        assert_eq!(result[&black_id].game_id, game_id);
+        assert!(!result.contains_key(&bystander_id));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn active_games_for_excludes_finished_and_aborted(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await; // 'active'
+        let plan = make_plan(
+            game_id,
+            white_id,
+            black_id,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Checkmate,
+        );
+        store.finalize_game(plan).await.unwrap();
+
+        assert!(store.active_games_for(&[white_id, black_id]).await.unwrap().is_empty());
     }
 }

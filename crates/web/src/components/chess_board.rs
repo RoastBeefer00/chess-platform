@@ -4,6 +4,8 @@ use shakmaty::attacks::attacks;
 use shakmaty::{Bitboard, File};
 use shared::{PlayerRole, Side};
 
+#[cfg(feature = "hydrate")]
+use crate::components::settings::auto_queen_enabled;
 use crate::components::{PromotionPicker, Square};
 
 /// A move whose destination is ambiguous only in promotion role (Q/R/B/N) —
@@ -60,6 +62,15 @@ pub(crate) fn matching_moves(legal: &[shakmaty::Move], from: shakmaty::Square, t
         .filter(|m| m.from() == Some(from) && move_target(m) == to)
         .copied()
         .collect()
+}
+
+/// Picks the queen-promotion move out of an ambiguous set (see
+/// `matching_moves`), for the auto-queen setting. `None` if the ambiguity
+/// wasn't actually a promotion (shouldn't happen — `matching_moves` only
+/// ever returns >1 result for one), so callers fall back to the picker.
+#[cfg(feature = "hydrate")]
+pub(crate) fn auto_queen_move(matches: &[shakmaty::Move]) -> Option<shakmaty::Move> {
+    matches.iter().find(|m| m.promotion() == Some(shakmaty::Role::Queen)).copied()
 }
 
 /// Square the user visually drops on for a given move.
@@ -473,12 +484,15 @@ pub fn ChessBoard(
                         selected_square.set(None);
                         on_move.run(*m);
                     }
-                    _ => {
+                    many => {
                         selected_square.set(None);
-                        pending_promotion.set(Some(PendingPromotion {
-                            from: from_sq,
-                            to: dropped_square,
-                        }));
+                        match auto_queen_enabled().then(|| auto_queen_move(many)).flatten() {
+                            Some(m) => on_move.run(m),
+                            None => pending_promotion.set(Some(PendingPromotion {
+                                from: from_sq,
+                                to: dropped_square,
+                            })),
+                        }
                     }
                 }
             } else {

@@ -14,14 +14,19 @@ pub struct UserSummary {
     pub bio: Option<String>,
     pub country: Option<String>,
     pub is_guest: bool,
+    pub settings: shared::UserSettings,
 }
 
 #[server]
 pub async fn current_user() -> Result<Option<UserSummary>, ServerFnError> {
     use crate::auth::AuthBackend;
+    use crate::state::AppState;
     use axum_login::AuthSession;
     let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
-    Ok(auth.user.map(|u| UserSummary {
+    let Some(u) = auth.user else { return Ok(None) };
+    let state = expect_context::<AppState>();
+    let settings = state.user_store.get_settings(u.id).await?;
+    Ok(Some(UserSummary {
         id: u.id,
         email: u.email,
         username: u.username,
@@ -29,6 +34,7 @@ pub async fn current_user() -> Result<Option<UserSummary>, ServerFnError> {
         bio: u.bio,
         country: u.country,
         is_guest: u.is_guest,
+        settings,
     }))
 }
 
@@ -82,6 +88,22 @@ pub fn RequireAuth() -> impl IntoView {
     let user = use_current_user();
     let location = leptos_router::hooks::use_location();
 
+    // `<Show>`'s `when` is read directly off the resource *inside*
+    // `<Transition>`'s children (required — reading a resource via a `Memo`
+    // built outside a Suspense/Transition boundary, even one whose value
+    // feeds a view rendered inside one, logs a "reading a resource outside
+    // Suspense/Transition" warning and forgoes SSR's wait-for-resolution).
+    // `<Show>` has its own internal dedup on `when`'s boolean output, so
+    // repeated resolutions that don't change the boolean (a settings save
+    // bumping `AuthTrigger`, refetching `current_user`, while still signed
+    // in as the same user) don't reconstruct `<Outlet/>` — which tears down
+    // and re-fetches every resource on the entire routed page from scratch
+    // (this is what made the profile page intermittently go blank/empty
+    // right after toggling a setting). The other branches (redirects, the
+    // create-username form) have no comparable state worth protecting, so
+    // they're left as a plain match in the `fallback`.
+    let onboarded = move || matches!(&user.get(), Some(Ok(Some(u))) if u.username.is_some());
+
     // `Transition` instead of `Suspense`: keep the previously rendered DOM
     // mounted while inner resources refetch. Otherwise any resource read
     // inside the Outlet (e.g. the username-availability check on the
@@ -89,21 +111,27 @@ pub fn RequireAuth() -> impl IntoView {
     // — losing focus on inputs, scroll position, etc.
     view! {
         <Transition>
-            {move || user.get().map(|res| match res {
-                Ok(Some(user)) => {
-                    let on_username_page = location.pathname.get() == "/create-username";
-                    match user.username {
-                        // Onboarded — let the route render.
-                        Some(_) => view! { <Outlet/> }.into_any(),
-                        // Not onboarded, already on the username page — render it
+            <Show
+                when=onboarded
+                fallback=move || match user.get() {
+                    // Still genuinely pending (first load) — render nothing
+                    // rather than redirecting; `<Transition>` covers this in
+                    // practice since SSR always waits for resolution.
+                    None => ().into_any(),
+                    // Signed in, but hasn't picked a username yet.
+                    Some(Ok(Some(_))) => if location.pathname.get() == "/create-username" {
+                        // Already on the username page — render it
                         // (otherwise we'd redirect to ourselves forever).
-                        None if on_username_page => view! { <Outlet/> }.into_any(),
-                        // Not onboarded, on any other route — force them through onboarding.
-                        None => view! { <Redirect path="/create-username"/> }.into_any(),
-                    }
-                },
-                _ => view! { <Redirect path="/login"/> }.into_any(),
-            })}
+                        view! { <Outlet/> }.into_any()
+                    } else {
+                        // Force them through onboarding.
+                        view! { <Redirect path="/create-username"/> }.into_any()
+                    },
+                    _ => view! { <Redirect path="/login"/> }.into_any(),
+                }
+            >
+                <Outlet/>
+            </Show>
         </Transition>
     }
 }

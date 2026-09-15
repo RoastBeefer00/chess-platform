@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO friendships (requester_id, addressee_id, status)\n               VALUES ($1, $2, 'pending')\n               ON CONFLICT DO NOTHING\n               RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5c1217b5d1e50b57e3ac165826ec7fa541b26de96574fe68b2861d3a11565edf"
+}
