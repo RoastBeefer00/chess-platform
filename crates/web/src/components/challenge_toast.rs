@@ -23,6 +23,7 @@ fn time_control_label(tc: &shared::TimeControl) -> String {
 pub fn ChallengeToast() -> impl IntoView {
     let presence = use_friends_presence();
     let navigate = leptos_router::hooks::use_navigate();
+    let navigate_acceptor = navigate.clone();
 
     Effect::new(move |_| {
         if let Some(game_id) = presence.navigate_to_game.get() {
@@ -64,6 +65,17 @@ pub fn ChallengeToast() -> impl IntoView {
     Effect::new(move |_| {
         if respond.value().get().is_some() {
             presence.incoming.set(None);
+        }
+    });
+    // The acceptor's own navigation — distinct from `ChallengeToast`'s other
+    // effect (top of this component) that navigates the *challenger* when a
+    // `ChallengeAccepted` push arrives over the friends websocket. Without
+    // this, accepting only cleared the toast: nothing ever read the accepted
+    // response's `Ok(Some(game_id))` to send the acceptor into their own
+    // new game.
+    Effect::new(move |_| {
+        if let Some(Ok(Some(game_id))) = respond.value().get() {
+            navigate_acceptor(&format!("/game/{game_id}"), Default::default());
         }
     });
     Effect::new(move |_| {

@@ -73,22 +73,48 @@ pub fn AnalysisBoard(
     // Load a stored game once `game_id` resolves. Mirrors `AnalysisControls`'
     // PGN-import path: replace the tree, jump the cursor to the end of the
     // mainline.
-    let game_data = Resource::new(
-        move || game_id.get(),
-        |id| async move {
+    //
+    // `LocalResource`, not `Resource` — this board has no use for
+    // server-rendering the fetched game (it's a fully interactive,
+    // JS-required page regardless), and `LocalResource` sidesteps SSR for
+    // it entirely: in `ssr` mode its future is simply always pending and
+    // never read, so there's no server-side thread/ownership concern for
+    // it at all. A plain `Resource` here previously caused a genuine, 100%
+    // reproducible SSR panic ("Dereferenced SendWrapper<T> variable from a
+    // thread different to the one it has been created with") whenever
+    // `game_id` resolved to an error, traced to the Stockfish engine
+    // handle's `LocalStorage`-scoped cleanup running on the wrong thread
+    // during that resource's SSR-side async suspension. The only read site
+    // is inside the `Effect` below, which never runs during SSR anyway —
+    // exactly the safe shape `LocalResource` requires (reading one outside
+    // Suspense in `ssr` mode hangs the response, since it never resolves
+    // there).
+    let game_data = LocalResource::new(move || {
+        let id = game_id.get();
+        async move {
             match id {
-                Some(id) => get_game_for_analysis(id).await.ok(),
+                Some(id) => Some(get_game_for_analysis(id).await.map_err(|e| e.to_string())),
                 None => None,
             }
-        },
-    );
+        }
+    });
+    // Distinct from a genuinely-empty game (which also shows "No moves
+    // yet") — this is specifically "we tried to load one and couldn't",
+    // e.g. the game hasn't finished/aborted yet (no moves are written to
+    // Postgres at all until then) or the id doesn't exist.
+    let load_error = RwSignal::new(None::<String>);
     Effect::new(move || {
-        if let Some(data) = game_data.get().flatten() {
-            if let Ok(loaded) = MoveTree::from_uci_moves(&data.moves, &data.clocks, data.initial_time_ms) {
-                let end = loaded.last_mainline_from(loaded.root());
-                tree.set(loaded);
-                cursor.set(end);
+        match game_data.get().flatten() {
+            Some(Ok(data)) => {
+                load_error.set(None);
+                if let Ok(loaded) = MoveTree::from_uci_moves(&data.moves, &data.clocks, data.initial_time_ms) {
+                    let end = loaded.last_mainline_from(loaded.root());
+                    tree.set(loaded);
+                    cursor.set(end);
+                }
             }
+            Some(Err(e)) => load_error.set(Some(e)),
+            None => {}
         }
     });
 
@@ -307,6 +333,11 @@ pub fn AnalysisBoard(
         // a hard-centered, fixed-height box. `px-2` gives the eval bar a
         // real gutter instead of sitting flush on the screen edge.
         <div class="flex flex-col items-center w-full px-2 py-2 min-h-[calc(100dvh-3.5rem)] justify-start md:justify-center">
+            <Show when=move || load_error.get().is_some()>
+                <div class="w-full max-w-[calc(100dvh-15rem)] md:max-w-[calc(100dvh-12.5rem)] mb-2 px-3 py-2 rounded-lg bg-amber-950/40 border border-amber-800/50 text-amber-200 text-xs">
+                    "Couldn't load this game for analysis — it may still be in progress."
+                </div>
+            </Show>
             // The board column's width is `min(100% of the padded
             // container, height-derived cap)` — `w-full` + `max-w-` gives
             // exactly that `min()` for free, and unlike a `100vw` formula
