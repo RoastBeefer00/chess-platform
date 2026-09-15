@@ -65,6 +65,15 @@ pub struct RecentGame {
     pub rated: bool,
 }
 
+/// The querying user's currently in-progress game, if any — lets a client
+/// offer a "resume game" shortcut after a dropped tab or device switch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveGame {
+    pub id: Uuid,
+    pub opponent: RecentGamePlayer,
+    pub my_side: crate::Side,
+}
+
 #[derive(Debug, Clone)]
 pub enum GameStatus {
     Ongoing,

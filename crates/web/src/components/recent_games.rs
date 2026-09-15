@@ -1,19 +1,37 @@
 use leptos::prelude::*;
 use shared::{RecentGame, RecentGamePlayer, RecentGameResult, Side};
 
-use crate::components::use_current_user;
-
+/// `username: None` means "the signed-in caller" — the shape existing call
+/// sites (the play hub, showing your own recent games) already rely on.
+/// Passing a specific username (the profile page, showing anyone's) requires
+/// no special privilege — recent game results are public the same way they
+/// already are via `/analysis?game=`.
+///
+/// Takes a username rather than a `Uuid` so `RecentGames` needs no
+/// dependency on any other resource resolving first — nesting a fresh
+/// `Resource` inside another resource's already-resolved branch (as the
+/// profile page originally did, keying off a separately-fetched user id)
+/// intermittently desynced SSR and hydration for sibling resources created
+/// that way.
 #[server]
-pub async fn get_recent_games() -> Result<Vec<RecentGame>, ServerFnError> {
+pub async fn get_recent_games(username: Option<String>) -> Result<Vec<RecentGame>, ServerFnError> {
     use crate::auth::AuthBackend;
     use crate::state::AppState;
     use axum_login::AuthSession;
 
-    let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
-    let Some(user_id) = auth.user.as_ref().map(|u| u.id) else {
-        return Err(ServerFnError::ServerError("not signed in".to_string()));
-    };
     let state = expect_context::<AppState>();
+    let user_id = match username {
+        Some(name) => state
+            .user_store
+            .find_by_username(&name)
+            .await?
+            .ok_or_else(|| ServerFnError::new("user not found"))?
+            .id,
+        None => {
+            let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
+            auth.user.as_ref().map(|u| u.id).ok_or_else(|| ServerFnError::new("not signed in"))?
+        }
+    };
     Ok(state.game_store.list_recent_games(user_id, 10).await?)
 }
 
@@ -79,17 +97,10 @@ fn RecentGameRow(game: RecentGame) -> impl IntoView {
 }
 
 #[component]
-pub fn RecentGames() -> impl IntoView {
-    let user = use_current_user();
-
+pub fn RecentGames(#[prop(optional)] username: Option<String>) -> impl IntoView {
     let games = Resource::new(
-        move || user.get(),
-        move |u| async move {
-            match u {
-                Some(Ok(Some(_))) => get_recent_games().await.ok(),
-                _ => None,
-            }
-        },
+        move || username.clone(),
+        move |username| async move { get_recent_games(username).await.ok() },
     );
 
     let fallback = move || {
@@ -103,7 +114,7 @@ pub fn RecentGames() -> impl IntoView {
     };
 
     view! {
-        <div class="px-6 pb-10">
+        <div>
             <h2 class="text-xl font-bold tracking-tighter text-white mb-4">"Recent games"</h2>
             <Transition fallback=fallback>
                 {move || {

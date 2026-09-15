@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT CASE WHEN requester_id = $1 THEN addressee_id ELSE requester_id END AS \"friend_id!\"\n               FROM friendships\n               WHERE status = 'accepted' AND (requester_id = $1 OR addressee_id = $1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "friend_id!",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8035608569bcfa19d4cc48591cbf49cb093f978a089fdd0aeff8547c530f5d23"
+}

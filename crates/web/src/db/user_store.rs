@@ -1,4 +1,5 @@
-use shared::{Category, PlayerInfo};
+use shared::{Category, PlayerInfo, UserSettings};
+use sqlx::types::Json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -66,12 +67,47 @@ impl UserStore {
     }
 
     #[tracing::instrument(skip(self), fields(user_id = %id))]
+    pub async fn get_settings(&self, id: Uuid) -> Result<UserSettings, AuthError> {
+        let row = sqlx::query!(
+            r#"SELECT settings AS "settings: Json<UserSettings>" FROM users WHERE id = $1"#,
+            id
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.settings.0)
+    }
+
+    #[tracing::instrument(skip(self, settings), fields(user_id = %id))]
+    pub async fn update_settings(&self, id: Uuid, settings: &UserSettings) -> Result<(), AuthError> {
+        sqlx::query!(
+            "UPDATE users SET settings = $1 WHERE id = $2",
+            Json(settings) as _,
+            id
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), fields(user_id = %id))]
     pub async fn find_by_id(&self, id: &Uuid) -> Result<Option<User>, AuthError> {
         Ok(sqlx::query_as!(
             User,
             r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest
                FROM users WHERE id = $1"#,
             id
+        )
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    #[tracing::instrument(skip(self))]
+    pub async fn find_by_username(&self, username: &str) -> Result<Option<User>, AuthError> {
+        Ok(sqlx::query_as!(
+            User,
+            r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest
+               FROM users WHERE username = $1"#,
+            username
         )
         .fetch_optional(&self.pool)
         .await?)
@@ -132,5 +168,42 @@ mod tests {
             matches!(result, Err(crate::auth::AuthError::UsernameTaken(_))),
             "expected UsernameTaken error"
         );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn get_settings_defaults_for_fresh_user(pool: PgPool) {
+        let store = UserStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+
+        let settings = store.get_settings(user_id).await.unwrap();
+        assert_eq!(settings, UserSettings::default());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn update_settings_persists_and_round_trips(pool: PgPool) {
+        let store = UserStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+
+        let new_settings = UserSettings { auto_queen: true };
+        store.update_settings(user_id, &new_settings).await.unwrap();
+
+        let loaded = store.get_settings(user_id).await.unwrap();
+        assert_eq!(loaded, new_settings);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn find_by_username_returns_matching_user(pool: PgPool) {
+        let store = UserStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+        store.set_username(user_id, "findme".to_string()).await.unwrap();
+
+        let found = store.find_by_username("findme").await.unwrap().unwrap();
+        assert_eq!(found.id, user_id);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn find_by_username_none_for_unknown(pool: PgPool) {
+        let store = UserStore::new(pool);
+        assert!(store.find_by_username("nobody_has_this_name").await.unwrap().is_none());
     }
 }

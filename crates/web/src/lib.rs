@@ -3,6 +3,7 @@
 pub mod app;
 pub mod components;
 pub mod elo;
+pub mod friends;
 pub mod game;
 pub mod matchmaking;
 pub mod pages;

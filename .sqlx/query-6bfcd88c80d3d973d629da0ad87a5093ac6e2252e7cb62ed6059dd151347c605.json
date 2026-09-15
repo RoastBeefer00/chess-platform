@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM friendships\n               WHERE requester_id = $1 AND addressee_id = $2 AND status = 'pending'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6bfcd88c80d3d973d629da0ad87a5093ac6e2252e7cb62ed6059dd151347c605"
+}

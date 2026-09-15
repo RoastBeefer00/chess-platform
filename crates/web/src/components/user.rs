@@ -2,11 +2,52 @@ use leptos::prelude::*;
 
 use crate::components::auth::{use_current_user, Logout};
 
+/// The "Profile"/"Settings" dropdown panel, gated by `<Show>` in `UserMenu`
+/// so it's only ever constructed once `open` is `true` — same reason
+/// `PromotionPickerCard` is split out and `Show`-gated: registering
+/// `on_click_outside` against a `NodeRef` that might never attach (because
+/// the element it's meant to attach to doesn't exist yet) crashes on mount.
+#[component]
+fn UserDropdown(username: String, open: RwSignal<bool>) -> impl IntoView {
+    let menu_ref = NodeRef::<leptos::html::Div>::new();
+
+    #[cfg(feature = "hydrate")]
+    {
+        let stop = leptos_use::on_click_outside(menu_ref, move |_| open.set(false));
+        on_cleanup(stop);
+    }
+
+    let profile_href = format!("/u/{username}");
+
+    view! {
+        <div
+            node_ref=menu_ref
+            class="absolute right-0 top-full mt-2 w-40 flex flex-col rounded-md overflow-hidden shadow-xl bg-zinc-900 border border-zinc-800 z-50"
+        >
+            <a
+                href={profile_href}
+                on:click=move |_| open.set(false)
+                class="px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
+            >
+                "Profile"
+            </a>
+            <a
+                href="/settings"
+                on:click=move |_| open.set(false)
+                class="px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
+            >
+                "Settings"
+            </a>
+        </div>
+    }
+}
+
 #[component]
 pub fn UserMenu() -> impl IntoView {
     let user = use_current_user();
     let logout_action = ServerAction::<Logout>::new();
     let logout_value = logout_action.value();
+    let dropdown_open = RwSignal::new(false);
 
     // Logout is session-changing — same race as login/register: a client-side
     // navigation would leave the stale `current_user` showing the signed-in
@@ -20,7 +61,12 @@ pub fn UserMenu() -> impl IntoView {
     });
 
     view! {
-        <Suspense fallback=|| view! {
+        // `Transition`, not `Suspense`: keeps the previously rendered nav
+        // (username, sign-out button) visible while `current_user` refetches
+        // — e.g. every time the settings page bumps `AuthTrigger` on save.
+        // `Suspense` would swap in its pulsing-skeleton fallback on every
+        // such refetch, flickering the whole nav bar.
+        <Transition fallback=|| view! {
             <div class="w-24 h-8 bg-zinc-800 rounded-md animate-pulse"/>
         }>
             {move || user.get().map(|res| match res {
@@ -33,6 +79,7 @@ pub fn UserMenu() -> impl IntoView {
                             .to_string()
                     });
                     let is_guest = user.is_guest;
+                    let username = user.username.clone();
                     view! {
                         <div class="flex items-center gap-2">
                             <Show when=move || is_guest>
@@ -40,7 +87,23 @@ pub fn UserMenu() -> impl IntoView {
                                     "Guest"
                                 </span>
                             </Show>
-                            <span class="text-sm text-zinc-400">{display}</span>
+                            {match username.clone() {
+                                Some(username) => view! {
+                                    <div class="relative">
+                                        <button
+                                            type="button"
+                                            on:click=move |_| dropdown_open.update(|v| *v = !*v)
+                                            class="text-sm text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                                        >
+                                            {display}
+                                        </button>
+                                        <Show when=move || dropdown_open.get()>
+                                            <UserDropdown username=username.clone() open=dropdown_open/>
+                                        </Show>
+                                    </div>
+                                }.into_any(),
+                                None => view! { <span class="text-sm text-zinc-400">{display}</span> }.into_any(),
+                            }}
                             <ActionForm action=logout_action>
                                 <button
                                     type="submit"
@@ -61,6 +124,6 @@ pub fn UserMenu() -> impl IntoView {
                     </a>
                 }.into_any()
             })}
-        </Suspense>
+        </Transition>
     }
 }

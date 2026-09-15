@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT u.id, u.username, u.avatar_url,\n                      f.status AS \"relation_status?\", f.requester_id AS \"relation_requester?\"\n               FROM users u\n               LEFT JOIN friendships f\n                 ON (f.requester_id = u.id AND f.addressee_id = $2)\n                 OR (f.addressee_id = u.id AND f.requester_id = $2)\n               WHERE u.id <> $2\n                 AND u.is_guest = false\n                 AND u.username IS NOT NULL\n                 AND lower(u.username) LIKE lower($1) || '%'\n               ORDER BY u.username\n               LIMIT $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "avatar_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "relation_status?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "relation_requester?",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "79ef375ab16d42ce73aae1611e992f6ce690d90926c130963a848a9ef164ad56"
+}

@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT u.id, u.username, u.avatar_url\n               FROM friendships f\n               JOIN users u ON u.id = f.requester_id\n               WHERE f.addressee_id = $1 AND f.status = 'pending'\n               ORDER BY f.created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "avatar_url",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "7d55bc26cd68604c8aa0823397b9294a7e6cbd6840eb0943120b1b72d48d36be"
+}

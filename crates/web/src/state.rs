@@ -5,13 +5,16 @@ use fred::prelude::*;
 use futures::channel::mpsc::UnboundedSender;
 use leptos::config::LeptosOptions;
 use leptos::prelude::ServerFnError;
-use shared::{Game, GameConfig, GameStatus, MatchmakingServerMessage, Side};
+use shared::{
+    FriendSummary, FriendsServerMessage, Game, GameConfig, GameStatus, MatchmakingServerMessage,
+    RatingMode, Side, TimeControl,
+};
 use sqlx::PgPool;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::auth::{AuthBackend, AuthError};
-use crate::db::{GameStore, PuzzleStore, RatingStore, UserStore};
+use crate::db::{FriendStore, GameStore, PuzzleStore, RatingStore, UserStore};
 use crate::game_room::GameRoom;
 
 pub type GameId = Uuid;
@@ -32,6 +35,49 @@ pub struct PendingMatch {
 }
 pub type PendingMatches = Arc<Mutex<HashMap<Uuid, PendingMatch>>>;
 
+pub type FriendsInboxSender = UnboundedSender<Result<FriendsServerMessage, ServerFnError>>;
+/// Maps user_id → session_id → sender. Unlike `MatchInbox`'s single slot per
+/// user (where a second tab evicts the first), presence must fan out to
+/// every open tab and stay "online" until the *last* one closes — the inner
+/// map's `len()` is the tab refcount, so no separate counter is needed.
+pub type FriendsInboxes = Arc<Mutex<HashMap<Uuid, HashMap<Uuid, FriendsInboxSender>>>>;
+
+#[derive(Debug, Clone)]
+pub struct PendingChallenge {
+    pub id: Uuid,
+    pub from: Uuid,
+    pub from_summary: FriendSummary,
+    pub to: Uuid,
+    pub time_control: TimeControl,
+    pub rating_mode: RatingMode,
+    created_at: std::time::Instant,
+}
+
+impl PendingChallenge {
+    pub fn new(
+        from: Uuid,
+        from_summary: FriendSummary,
+        to: Uuid,
+        time_control: TimeControl,
+        rating_mode: RatingMode,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            from,
+            from_summary,
+            to,
+            time_control,
+            rating_mode,
+            created_at: std::time::Instant::now(),
+        }
+    }
+}
+/// challenge_id → challenge. In-memory and non-durable on purpose — a 60s
+/// offer has no meaning across a restart, and both parties reconnect anyway.
+pub type PendingChallenges = Arc<Mutex<HashMap<Uuid, PendingChallenge>>>;
+/// Mirrors `PendingMatch`'s 60s window (see `take_pending_match`).
+const CHALLENGE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
 #[derive(FromRef, Clone, Debug)]
 pub struct AppState {
     pub leptos_options: LeptosOptions,
@@ -41,10 +87,13 @@ pub struct AppState {
     pub game_store: GameStore,
     pub puzzle_store: PuzzleStore,
     pub rating_store: RatingStore,
+    pub friend_store: FriendStore,
     pub redis_client: RedisClient,
     pub match_inboxes: MatchInbox,
     pub pending_matches: PendingMatches,
     pub matchmaking_refcount: MatchmakingRefcount,
+    pub friends_inboxes: FriendsInboxes,
+    pub pending_challenges: PendingChallenges,
 }
 
 impl AppState {
@@ -63,6 +112,7 @@ impl AppState {
         let game_store = GameStore::new(pool.clone());
         let puzzle_store = PuzzleStore::new(pool.clone());
         let rating_store = RatingStore::new(pool.clone());
+        let friend_store = FriendStore::new(pool.clone());
         let auth_backend = AuthBackend::new(pool, http_client).await;
         AppState {
             leptos_options,
@@ -72,10 +122,13 @@ impl AppState {
             game_store,
             puzzle_store,
             rating_store,
+            friend_store,
             redis_client,
             match_inboxes: Arc::new(Mutex::new(HashMap::new())),
             pending_matches: Arc::new(Mutex::new(HashMap::new())),
             matchmaking_refcount: Arc::new(Mutex::new(HashMap::new())),
+            friends_inboxes: Arc::new(Mutex::new(HashMap::new())),
+            pending_challenges: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -109,7 +162,28 @@ impl AppState {
             )
             .await?;
         tracing::info!(%game_id, "game_created");
+
+        // Best-effort: tell each player's online friends they just started a
+        // game, so a friends-list Challenge button disables without needing
+        // a page reload. Never pushed on game *end* — that runs from a
+        // detached finalize task, not this chokepoint, and staleness there
+        // fails safe (button stays disabled a little longer than necessary).
+        self.broadcast_in_game(white_player, Some(game_id)).await;
+        self.broadcast_in_game(black_player, Some(game_id)).await;
+
         Ok(game_id)
+    }
+
+    /// Notifies `user_id`'s online friends that `user_id` entered (or, if
+    /// ever wired up, left) an active game.
+    async fn broadcast_in_game(&self, user_id: Uuid, game_id: Option<GameId>) {
+        let Ok(friend_ids) = self.friend_store.list_friend_ids(user_id).await else {
+            return;
+        };
+        for friend_id in friend_ids {
+            self.notify_friend(friend_id, FriendsServerMessage::InGameUpdate { user_id, game_id })
+                .await;
+        }
     }
 
     pub async fn get_game_room(&self, game_id: &GameId) -> Option<Arc<Mutex<GameRoom>>> {
@@ -175,6 +249,134 @@ impl AppState {
             _ => None,
         }
     }
+
+    /// Registers a presence tab. Returns `true` when this was the user's
+    /// FIRST open tab — the caller should then broadcast
+    /// `PresenceUpdate { online: true }` to their friends.
+    #[tracing::instrument(skip(self, tx), fields(user_id = %user_id, %session_id))]
+    pub async fn add_friends_inbox(&self, user_id: Uuid, session_id: Uuid, tx: FriendsInboxSender) -> bool {
+        friends_inbox_add(&self.friends_inboxes, user_id, session_id, tx).await
+    }
+
+    /// Deregisters one tab. Returns `true` when this was the LAST tab for
+    /// this user (map entry fully removed) — the caller should then
+    /// broadcast `PresenceUpdate { online: false }`. Removing an unknown or
+    /// already-removed `session_id` is a no-op that returns `false`, so a
+    /// stale cleanup can never mark a still-connected user offline.
+    #[tracing::instrument(skip(self), fields(user_id = %user_id, %session_id))]
+    pub async fn remove_friends_inbox(&self, user_id: &Uuid, session_id: Uuid) -> bool {
+        friends_inbox_remove(&self.friends_inboxes, user_id, session_id).await
+    }
+
+    /// Fans a message out to every open tab `user_id` has. Prunes senders
+    /// whose receiver has already dropped. Returns `true` if at least one
+    /// tab received it.
+    #[tracing::instrument(skip(self, message), fields(user_id = %user_id))]
+    pub async fn notify_friend(&self, user_id: Uuid, message: FriendsServerMessage) -> bool {
+        friends_inbox_notify(&self.friends_inboxes, user_id, message).await
+    }
+
+    pub async fn is_online(&self, user_id: &Uuid) -> bool {
+        self.friends_inboxes.lock().await.contains_key(user_id)
+    }
+
+    pub async fn online_among(&self, user_ids: &[Uuid]) -> std::collections::HashSet<Uuid> {
+        let map = self.friends_inboxes.lock().await;
+        user_ids.iter().copied().filter(|id| map.contains_key(id)).collect()
+    }
+
+    pub async fn insert_challenge(&self, challenge: PendingChallenge) {
+        self.pending_challenges.lock().await.insert(challenge.id, challenge);
+    }
+
+    /// Removes and returns the challenge iff it exists and is within the
+    /// TTL. Take-not-peek is what makes a double-accept from two tabs create
+    /// exactly one game — the second caller finds nothing.
+    pub async fn take_challenge(&self, id: &Uuid) -> Option<PendingChallenge> {
+        challenge_take(&self.pending_challenges, id).await
+    }
+
+    /// Non-expired challenges addressed to `user_id`, for the reconnect
+    /// replay. Sweeps expired entries while holding the lock.
+    pub async fn challenges_for(&self, user_id: &Uuid) -> Vec<PendingChallenge> {
+        challenges_for_user(&self.pending_challenges, user_id).await
+    }
+
+    /// Drops every outstanding challenge sent by `from`, returning them so
+    /// the caller can push `ChallengeCancelled` to each target. Call when
+    /// the challenger's last tab closes — otherwise a target could accept
+    /// into a game against someone who has left the site.
+    pub async fn cancel_challenges_from(&self, from: &Uuid) -> Vec<PendingChallenge> {
+        challenges_cancel_from(&self.pending_challenges, from).await
+    }
+}
+
+pub(crate) async fn friends_inbox_add(
+    inboxes: &FriendsInboxes,
+    user_id: Uuid,
+    session_id: Uuid,
+    tx: FriendsInboxSender,
+) -> bool {
+    let mut map = inboxes.lock().await;
+    let tabs = map.entry(user_id).or_default();
+    let was_empty = tabs.is_empty();
+    tabs.insert(session_id, tx);
+    was_empty
+}
+
+pub(crate) async fn friends_inbox_remove(inboxes: &FriendsInboxes, user_id: &Uuid, session_id: Uuid) -> bool {
+    let mut map = inboxes.lock().await;
+    let Some(tabs) = map.get_mut(user_id) else { return false };
+    if tabs.remove(&session_id).is_none() {
+        return false;
+    }
+    if tabs.is_empty() {
+        map.remove(user_id);
+        return true;
+    }
+    false
+}
+
+pub(crate) async fn friends_inbox_notify(
+    inboxes: &FriendsInboxes,
+    user_id: Uuid,
+    message: FriendsServerMessage,
+) -> bool {
+    let mut map = inboxes.lock().await;
+    let Some(tabs) = map.get_mut(&user_id) else { return false };
+    let mut sent = false;
+    tabs.retain(|_, tx| {
+        if tx.unbounded_send(Ok(message.clone())).is_ok() {
+            sent = true;
+            true
+        } else {
+            false
+        }
+    });
+    if tabs.is_empty() {
+        map.remove(&user_id);
+    }
+    sent
+}
+
+pub(crate) async fn challenge_take(challenges: &PendingChallenges, id: &Uuid) -> Option<PendingChallenge> {
+    let mut map = challenges.lock().await;
+    match map.remove(id) {
+        Some(c) if c.created_at.elapsed() < CHALLENGE_TTL => Some(c),
+        _ => None,
+    }
+}
+
+pub(crate) async fn challenges_for_user(challenges: &PendingChallenges, user_id: &Uuid) -> Vec<PendingChallenge> {
+    let mut map = challenges.lock().await;
+    map.retain(|_, c| c.created_at.elapsed() < CHALLENGE_TTL);
+    map.values().filter(|c| c.to == *user_id).cloned().collect()
+}
+
+pub(crate) async fn challenges_cancel_from(challenges: &PendingChallenges, from: &Uuid) -> Vec<PendingChallenge> {
+    let mut map = challenges.lock().await;
+    let ids: Vec<Uuid> = map.values().filter(|c| c.from == *from).map(|c| c.id).collect();
+    ids.into_iter().filter_map(|id| map.remove(&id)).collect()
 }
 
 #[derive(Clone, Debug)]
@@ -503,5 +705,196 @@ mod tests {
         // tab_2 closes normally.
         let tab2_result = refcount_leave(&rc, &player).await;
         assert_eq!(tab2_result.as_deref(), Some("bucket"), "tab_2 close must ZREM");
+    }
+
+    fn make_friends_inboxes() -> FriendsInboxes {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    fn make_challenges() -> PendingChallenges {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    fn dummy_sender() -> (FriendsInboxSender, futures::channel::mpsc::UnboundedReceiver<Result<FriendsServerMessage, ServerFnError>>) {
+        futures::channel::mpsc::unbounded()
+    }
+
+    #[tokio::test]
+    async fn friends_inbox_add_first_tab_returns_true() {
+        let inboxes = make_friends_inboxes();
+        let (tx, _rx) = dummy_sender();
+        let first = friends_inbox_add(&inboxes, Uuid::new_v4(), Uuid::new_v4(), tx).await;
+        assert!(first);
+    }
+
+    #[tokio::test]
+    async fn friends_inbox_add_second_tab_returns_false() {
+        let inboxes = make_friends_inboxes();
+        let user = Uuid::new_v4();
+        let (tx1, _rx1) = dummy_sender();
+        let (tx2, _rx2) = dummy_sender();
+        friends_inbox_add(&inboxes, user, Uuid::new_v4(), tx1).await;
+        let second = friends_inbox_add(&inboxes, user, Uuid::new_v4(), tx2).await;
+        assert!(!second);
+    }
+
+    #[tokio::test]
+    async fn friends_inbox_remove_non_last_tab_returns_false() {
+        let inboxes = make_friends_inboxes();
+        let user = Uuid::new_v4();
+        let (tx1, _rx1) = dummy_sender();
+        let (tx2, _rx2) = dummy_sender();
+        let session1 = Uuid::new_v4();
+        friends_inbox_add(&inboxes, user, session1, tx1).await;
+        friends_inbox_add(&inboxes, user, Uuid::new_v4(), tx2).await;
+
+        let was_last = friends_inbox_remove(&inboxes, &user, session1).await;
+        assert!(!was_last, "closing one of two tabs must not report offline");
+        assert!(inboxes.lock().await.contains_key(&user), "user must still be present with one tab left");
+    }
+
+    #[tokio::test]
+    async fn friends_inbox_remove_last_tab_returns_true_and_clears_entry() {
+        let inboxes = make_friends_inboxes();
+        let user = Uuid::new_v4();
+        let session = Uuid::new_v4();
+        let (tx, _rx) = dummy_sender();
+        friends_inbox_add(&inboxes, user, session, tx).await;
+
+        let was_last = friends_inbox_remove(&inboxes, &user, session).await;
+        assert!(was_last);
+        assert!(!inboxes.lock().await.contains_key(&user), "no phantom empty entry");
+    }
+
+    // Regression test for the single-slot MatchInbox bug this design avoids:
+    // a stale/already-removed session_id must never flip a still-connected
+    // user's presence to offline.
+    #[tokio::test]
+    async fn friends_inbox_remove_unknown_session_id_is_noop_and_stays_online() {
+        let inboxes = make_friends_inboxes();
+        let user = Uuid::new_v4();
+        let real_session = Uuid::new_v4();
+        let stale_session = Uuid::new_v4();
+        let (tx, _rx) = dummy_sender();
+        friends_inbox_add(&inboxes, user, real_session, tx).await;
+
+        let result = friends_inbox_remove(&inboxes, &user, stale_session).await;
+        assert!(!result, "unknown session_id must not report itself as the last tab");
+        assert!(inboxes.lock().await.contains_key(&user), "user must remain online — real tab is still open");
+    }
+
+    #[tokio::test]
+    async fn friends_inbox_remove_unknown_user_returns_false() {
+        let inboxes = make_friends_inboxes();
+        let result = friends_inbox_remove(&inboxes, &Uuid::new_v4(), Uuid::new_v4()).await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn friends_inbox_notify_reaches_all_tabs() {
+        let inboxes = make_friends_inboxes();
+        let user = Uuid::new_v4();
+        let (tx1, mut rx1) = dummy_sender();
+        let (tx2, mut rx2) = dummy_sender();
+        friends_inbox_add(&inboxes, user, Uuid::new_v4(), tx1).await;
+        friends_inbox_add(&inboxes, user, Uuid::new_v4(), tx2).await;
+
+        let sent = friends_inbox_notify(&inboxes, user, FriendsServerMessage::FriendListChanged).await;
+        assert!(sent);
+
+        use futures::StreamExt;
+        assert!(matches!(rx1.next().await, Some(Ok(FriendsServerMessage::FriendListChanged))));
+        assert!(matches!(rx2.next().await, Some(Ok(FriendsServerMessage::FriendListChanged))));
+    }
+
+    #[tokio::test]
+    async fn friends_inbox_notify_returns_false_for_offline_user() {
+        let inboxes = make_friends_inboxes();
+        let sent = friends_inbox_notify(&inboxes, Uuid::new_v4(), FriendsServerMessage::FriendListChanged).await;
+        assert!(!sent);
+    }
+
+    fn make_test_challenge(from: Uuid, to: Uuid) -> PendingChallenge {
+        PendingChallenge {
+            id: Uuid::new_v4(),
+            from,
+            from_summary: FriendSummary { id: from, username: None, avatar_url: None },
+            to,
+            time_control: TimeControl { initial_time: 300_000, mode: shared::TimeMode::Increment(0) },
+            rating_mode: RatingMode::Rated,
+            created_at: std::time::Instant::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn take_challenge_returns_it_once_then_none() {
+        let challenges = make_challenges();
+        let c = make_test_challenge(Uuid::new_v4(), Uuid::new_v4());
+        let id = c.id;
+        challenges.lock().await.insert(id, c);
+
+        let taken = challenge_take(&challenges, &id).await;
+        assert!(taken.is_some());
+        let taken_again = challenge_take(&challenges, &id).await;
+        assert!(taken_again.is_none(), "double-take must not yield the challenge twice");
+    }
+
+    #[tokio::test]
+    async fn take_challenge_expired_returns_none() {
+        let challenges = make_challenges();
+        let mut c = make_test_challenge(Uuid::new_v4(), Uuid::new_v4());
+        c.created_at = std::time::Instant::now() - (CHALLENGE_TTL + std::time::Duration::from_secs(1));
+        let id = c.id;
+        challenges.lock().await.insert(id, c);
+
+        assert!(challenge_take(&challenges, &id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn challenges_for_user_filters_by_addressee_and_sweeps_expired() {
+        let challenges = make_challenges();
+        let target = Uuid::new_v4();
+        let live = make_test_challenge(Uuid::new_v4(), target);
+        let live_id = live.id;
+        let mut expired = make_test_challenge(Uuid::new_v4(), target);
+        expired.created_at = std::time::Instant::now() - (CHALLENGE_TTL + std::time::Duration::from_secs(1));
+        let expired_id = expired.id;
+        let not_for_me = make_test_challenge(Uuid::new_v4(), Uuid::new_v4());
+
+        {
+            let mut map = challenges.lock().await;
+            map.insert(live_id, live);
+            map.insert(expired_id, expired);
+            map.insert(not_for_me.id, not_for_me);
+        }
+
+        let result = challenges_for_user(&challenges, &target).await;
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, live_id);
+        assert!(!challenges.lock().await.contains_key(&expired_id), "expired entry must be swept");
+    }
+
+    #[tokio::test]
+    async fn cancel_challenges_from_removes_only_that_challenger() {
+        let challenges = make_challenges();
+        let challenger = Uuid::new_v4();
+        let mine1 = make_test_challenge(challenger, Uuid::new_v4());
+        let mine2 = make_test_challenge(challenger, Uuid::new_v4());
+        let others = make_test_challenge(Uuid::new_v4(), Uuid::new_v4());
+        let others_id = others.id;
+
+        {
+            let mut map = challenges.lock().await;
+            map.insert(mine1.id, mine1);
+            map.insert(mine2.id, mine2);
+            map.insert(others_id, others);
+        }
+
+        let cancelled = challenges_cancel_from(&challenges, &challenger).await;
+        assert_eq!(cancelled.len(), 2);
+
+        let map = challenges.lock().await;
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&others_id));
     }
 }
