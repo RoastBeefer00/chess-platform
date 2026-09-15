@@ -314,6 +314,17 @@ pub fn AnalysisBoard(
             // so it already accounts for the `px-2` gutter and any vertical
             // scrollbar without needing to guess their size.
             <div class="relative w-full max-w-[calc(100dvh-15rem)] md:max-w-[calc(100dvh-12.5rem)]">
+                // Mobile: horizontal eval bar + top-2 candidates, above
+                // *everything* else — including the captured-pieces row,
+                // which stays adjacent to the board itself (its natural
+                // spot) rather than getting pushed below the eval bar.
+                // Mobile has no width to spare for a side-by-side eval bar
+                // without shrinking the board itself, so the bar moves up
+                // here instead and the board gets the full width below.
+                <div class="md:hidden flex flex-col gap-2 pt-2 px-2">
+                    <EvalBar white_score=white_score engine_on=engine_on perspective=perspective horizontal=true />
+                    <CandidateMoves lines=lines engine_on=engine_on max=2 />
+                </div>
                 // Top row
                 <div class="flex flex-row items-center pl-2 py-2 gap-2 overflow-hidden">
                     {move || view! { <CapturedPieces position={position} color={top_color.get()} /> }}
@@ -333,15 +344,6 @@ pub fn AnalysisBoard(
                             />
                         </Show>
                     </div>
-                </div>
-                // Mobile: horizontal eval bar + top-2 candidates, stacked
-                // above the board instead of squeezed beside it — mobile
-                // has no width to spare for a side-by-side eval bar without
-                // shrinking the board itself, so the bar moves to its own
-                // row and the board gets the full width below.
-                <div class="md:hidden flex flex-col gap-2 px-2 pb-2">
-                    <EvalBar white_score=white_score engine_on=engine_on perspective=perspective horizontal=true />
-                    <CandidateMoves lines=lines engine_on=engine_on max=2 />
                 </div>
                 // Eval bar (desktop, vertical — hides itself on mobile via
                 // its own `hidden md:block`) + board. `ChessBoard` is the
