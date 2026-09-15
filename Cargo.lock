@@ -4973,6 +4973,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "serde",
+ "serde_json",
  "server_fn",
  "shakmaty",
  "shared",

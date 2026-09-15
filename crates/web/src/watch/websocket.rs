@@ -12,6 +12,23 @@ pub const WATCH_GRID_LIMIT: usize = 24;
 #[cfg(feature = "ssr")]
 const WATCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// Parses the lowercase category string stored in the cross-instance
+/// `active_games:{id}` Redis hash (see `RedisClient::active_game_upsert`)
+/// back into `Category`. `Category` has a `Display` impl for the other
+/// direction but no `FromStr` — this is the one place that needs the
+/// reverse, so it stays local rather than growing the shared crate's public
+/// surface for a single call site.
+#[cfg(feature = "ssr")]
+fn parse_category(s: &str) -> Option<shared::Category> {
+    match s {
+        "bullet" => Some(shared::Category::Bullet),
+        "blitz" => Some(shared::Category::Blitz),
+        "rapid" => Some(shared::Category::Rapid),
+        "classical" => Some(shared::Category::Classical),
+        _ => None,
+    }
+}
+
 #[server(protocol = Websocket<JsonEncoding, JsonEncoding>)]
 pub async fn watch_websocket(
     input: BoxedStream<WatchClientMessage, ServerFnError>,
@@ -19,6 +36,8 @@ pub async fn watch_websocket(
     use futures::StreamExt as _;
     use shakmaty::{fen::Fen, EnPassantMode};
     use shared::{Category, GameStatus, PlayerInfo, WatchGameSummary};
+    use std::collections::HashSet;
+    use std::sync::Arc;
     use tokio::sync::Mutex;
     use tokio_stream::{wrappers::BroadcastStream, StreamMap};
     use uuid::Uuid;
@@ -42,8 +61,13 @@ pub async fn watch_websocket(
     tokio::spawn(async move {
         let mut input = input;
         // game_id -> the room handle, kept alongside the subscription so a
-        // move event can re-lock the same room to re-derive its FEN.
-        let mut rooms: std::collections::HashMap<Uuid, std::sync::Arc<Mutex<GameRoom>>> =
+        // move event can re-lock the same room to re-derive its FEN. Only
+        // ever holds LOCALLY-owned rooms — a game owned by another instance
+        // has no `GameRoom` here to lock, so it can't get the fast
+        // subscription-driven update below; it still appears in the roster,
+        // refreshed only on the periodic tick (its `fen` sourced from the
+        // cross-instance Redis hash instead of a live lock).
+        let mut rooms: std::collections::HashMap<Uuid, Arc<Mutex<GameRoom>>> =
             std::collections::HashMap::new();
         let mut moves: StreamMap<Uuid, BroadcastStream<shared::GameServerMessage>> =
             StreamMap::new();
@@ -66,38 +90,58 @@ pub async fn watch_websocket(
                 _ = refresh.tick() => {
                     // Snapshot the map only long enough to clone the Arcs out —
                     // same shape as AppState::get_game_room.
-                    let all_rooms: Vec<(Uuid, std::sync::Arc<Mutex<GameRoom>>)> = {
+                    let all_rooms: Vec<(Uuid, Arc<Mutex<GameRoom>>)> = {
                         let games = state.games.lock().await;
                         games.iter().map(|(id, r)| (*id, r.clone())).collect()
                     };
 
-                    let mut candidates = Vec::new();
+                    // `room: None` marks a remote candidate (owned by another
+                    // instance) — its `fen` comes pre-populated from Redis
+                    // since there's no local room to lock for a fresh one.
+                    let mut local_ids: HashSet<Uuid> = HashSet::new();
+                    let mut candidates: Vec<(Uuid, Option<Arc<Mutex<GameRoom>>>, Category, bool, Uuid, Uuid, Option<String>)> =
+                        Vec::new();
                     for (id, room) in &all_rooms {
                         let gr = room.lock().await;
                         if !matches!(gr.status, GameStatus::Ongoing) {
                             continue;
                         }
+                        local_ids.insert(*id);
                         candidates.push((
                             *id,
-                            room.clone(),
-                            gr.game.white_player,
-                            gr.game.black_player,
+                            Some(room.clone()),
                             gr.game.config.time_control.category(),
                             gr.game.config.rated.is_rated(),
+                            gr.game.white_player,
+                            gr.game.black_player,
+                            None,
+                        ));
+                    }
+
+                    for entry in state.redis_client.active_games_excluding(&local_ids).await {
+                        let Some(category) = parse_category(&entry.category) else { continue };
+                        candidates.push((
+                            entry.game_id,
+                            None,
+                            category,
+                            entry.rated,
+                            entry.white_id,
+                            entry.black_id,
+                            Some(entry.fen),
                         ));
                     }
                     let total_active = candidates.len();
 
-                    let resolved: Vec<(Uuid, std::sync::Arc<Mutex<GameRoom>>, Category, bool, PlayerInfo, PlayerInfo)> =
+                    let resolved: Vec<(Uuid, Option<Arc<Mutex<GameRoom>>>, Category, bool, PlayerInfo, PlayerInfo, Option<String>)> =
                         futures::future::join_all(candidates.into_iter().map(
-                            |(id, room, white_id, black_id, category, rated)| {
+                            |(id, room, category, rated, white_id, black_id, fen)| {
                                 let state = state.clone();
                                 async move {
                                     let (white, black) = tokio::try_join!(
                                         state.user_store.get_player_info(&white_id, category.clone()),
                                         state.user_store.get_player_info(&black_id, category.clone()),
                                     )?;
-                                    Ok::<_, crate::auth::AuthError>((id, room, category, rated, white, black))
+                                    Ok::<_, crate::auth::AuthError>((id, room, category, rated, white, black, fen))
                                 }
                             },
                         ))
@@ -107,14 +151,15 @@ pub async fn watch_websocket(
                         .collect();
 
                     let mut ranked = resolved;
-                    ranked.sort_by_key(|(_, _, _, _, white, black)| {
+                    ranked.sort_by_key(|(_, _, _, _, white, black, _)| {
                         std::cmp::Reverse(white.rating + black.rating)
                     });
                     ranked.truncate(WATCH_GRID_LIMIT);
 
                     // Diff subscriptions: drop games no longer in the roster,
-                    // add newly-visible ones.
-                    let new_ids: std::collections::HashSet<Uuid> =
+                    // add newly-visible ones. Only ever touches LOCAL rooms —
+                    // `moves`/`rooms` never gain an entry for a remote game.
+                    let new_ids: HashSet<Uuid> =
                         ranked.iter().map(|(id, ..)| *id).collect();
                     rooms.retain(|id, _| new_ids.contains(id));
                     let stale: Vec<Uuid> = moves
@@ -127,12 +172,17 @@ pub async fn watch_websocket(
                     }
 
                     let mut summaries = Vec::with_capacity(ranked.len());
-                    for (id, room, category, rated, white, black) in ranked {
-                        if !rooms.contains_key(&id) {
-                            rooms.insert(id, room.clone());
-                            moves.insert(id, BroadcastStream::new(room.lock().await.subscribe()));
-                        }
-                        let fen = game_fen(&room).await;
+                    for (id, room, category, rated, white, black, remote_fen) in ranked {
+                        let fen = match &room {
+                            Some(room) => {
+                                if !rooms.contains_key(&id) {
+                                    rooms.insert(id, room.clone());
+                                    moves.insert(id, BroadcastStream::new(room.lock().await.subscribe()));
+                                }
+                                game_fen(room).await
+                            }
+                            None => remote_fen.unwrap_or_default(),
+                        };
                         summaries.push(WatchGameSummary {
                             game_id: id,
                             white,
