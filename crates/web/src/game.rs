@@ -11,12 +11,16 @@ pub async fn get_game_for_analysis(game_id: Uuid) -> Result<AnalysisGameData, Se
     use crate::state::AppState;
 
     let state = expect_context::<AppState>();
-    state
+    let result = state
         .game_store
         .get_game_for_analysis(game_id)
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))?
-        .ok_or_else(|| ServerFnError::new("game not found"))
+        .ok_or_else(|| ServerFnError::new("game not found or still in progress"));
+    if let Err(ref e) = result {
+        tracing::info!(%game_id, error = %e, "get_game_for_analysis failed");
+    }
+    result
 }
 
 #[server]
