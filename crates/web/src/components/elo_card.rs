@@ -15,7 +15,10 @@ pub async fn get_user_rating_and_diff(
         .rating_store
         .get_rating_with_diff(&id, category)
         .await
-        .map_err(|e| ServerFnError::new(format!("Error getting rating for user {id}: {e}")))
+        .map_err(|e| {
+            tracing::error!(%id, ?category, error = %e, "get_user_rating_and_diff failed");
+            ServerFnError::new(format!("Error getting rating for user {id}: {e}"))
+        })
 }
 
 /// Same as `get_user_rating_and_diff`, but by username, resolved server-side
@@ -51,7 +54,10 @@ pub async fn get_user_rating_and_diff_by_username(
         .rating_store
         .get_rating_with_diff(&id, category)
         .await
-        .map_err(|e| ServerFnError::new(format!("Error getting rating for user {id}: {e}")))
+        .map_err(|e| {
+            tracing::error!(%id, ?category, error = %e, "get_user_rating_and_diff_by_username failed");
+            ServerFnError::new(format!("Error getting rating for user {id}: {e}"))
+        })
 }
 
 fn category_icon(category: Category) -> AnyView {
@@ -90,12 +96,39 @@ fn category_icon(category: Category) -> AnyView {
     }
 }
 
+/// Backoff schedule for retrying a failed rating fetch. Sized to ride out a
+/// Fly autostop reboot (machine stops on idle, cold-starts on the next
+/// request — see `fly.toml`'s `auto_stop_machines`): every in-flight request
+/// during that window dies, and without a retry the card would otherwise
+/// show "\u{2014}" forever until the user manually reloads.
+#[cfg(feature = "hydrate")]
+const RATING_RETRY_BACKOFF_MS: [u32; 4] = [1_000, 2_000, 4_000, 8_000];
+
 #[component]
 pub fn EloCard(category: Category, #[prop(optional)] username: Option<String>) -> impl IntoView {
     let user_rating = Resource::new(
         move || username.clone(),
-        move |username| async move { get_user_rating_and_diff_by_username(username, category).await.ok() },
+        move |username| async move { get_user_rating_and_diff_by_username(username, category).await },
     );
+
+    #[cfg(feature = "hydrate")]
+    {
+        let retry_count = RwSignal::new(0usize);
+        Effect::new(move |_| match user_rating.get() {
+            Some(Err(_)) => {
+                let attempt = retry_count.get_untracked();
+                if let Some(backoff) = RATING_RETRY_BACKOFF_MS.get(attempt).copied() {
+                    retry_count.set(attempt + 1);
+                    leptos::task::spawn_local(async move {
+                        gloo_timers::future::TimeoutFuture::new(backoff).await;
+                        user_rating.refetch();
+                    });
+                }
+            }
+            Some(Ok(_)) => retry_count.set(0),
+            None => {}
+        });
+    }
 
     let fallback = move || {
         view! {
@@ -120,17 +153,17 @@ pub fn EloCard(category: Category, #[prop(optional)] username: Option<String>) -
                 <div class="flex flex-col gap-1">
                     <span class="text-3xl font-bold tracking-tighter text-white leading-none">
                         {move || user_rating.get()
-                            .flatten()
+                            .and_then(|r| r.ok())
                             .map(|(r, _)| r.to_string())
                             .unwrap_or_else(|| "\u{2014}".to_string())}
                     </span>
                     <span class=move || {
-                        let diff = user_rating.get().flatten().map(|(_, d)| d).unwrap_or(0);
+                        let diff = user_rating.get().and_then(|r| r.ok()).map(|(_, d)| d).unwrap_or(0);
                         if diff > 0 { "text-[11px] font-semibold text-emerald-400/80" }
                         else if diff < 0 { "text-[11px] font-semibold text-red-400/80" }
                         else { "text-[11px] font-semibold text-zinc-600" }
                     }>
-                        {move || match user_rating.get().flatten().map(|(_, d)| d) {
+                        {move || match user_rating.get().and_then(|r| r.ok()).map(|(_, d)| d) {
                             Some(d) if d > 0 => format!("+{d}"),
                             Some(d) if d < 0 => format!("{d}"),
                             _ => "\u{2014}".to_string(),
