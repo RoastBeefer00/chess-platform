@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO puzzles (id, fen, moves, rating, rating_deviation, popularity, nb_plays, themes)\n               VALUES ('testB', 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', 'd2d4 d7d5', 2400, 75, 90, 1000, 'endgame rookEndgame')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "f856c2d5783b5f5d1b006f239bc26d2f5eb272baf37db6a64f04581bb4a92940"
+}

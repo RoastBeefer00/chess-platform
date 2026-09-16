@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE games\n               SET status = 'aborted',\n                   result = NULL,\n                   termination = 'abandonment',\n                   ended_at = now()\n               WHERE id = ANY($1) AND status = 'active'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fb0734a14d237f5d11cc6525bb697d738f83e89a181708ca435494a1ca37704e"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO rating_history (user_id, mode, rating, recorded_at) VALUES ($1, 'blitz', 1480, now() - INTERVAL '10 days')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4fb8eb5d4075e0a614033d28be037af0f399406accb2cd646351882eaf756f04"
+}

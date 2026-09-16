@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users (id, email, username, is_guest) VALUES ($1, $2, 'zebraguest', true)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "076a5c4ec56a83312422a31c59738715a872c0381671d667eeaec793cb04c747"
+}
