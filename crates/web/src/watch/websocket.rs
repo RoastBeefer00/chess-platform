@@ -47,6 +47,13 @@ pub async fn watch_websocket(
     use crate::state::AppState;
     use axum_login::AuthSession;
 
+    // `room: None` marks a remote candidate (owned by another instance) — see
+    // the roster-building loop below for what each field means at that
+    // point in the pipeline.
+    type WatchCandidate = (Uuid, Option<Arc<Mutex<GameRoom>>>, Category, bool, Uuid, Uuid, Option<String>);
+    type ResolvedWatchCandidate =
+        (Uuid, Option<Arc<Mutex<GameRoom>>>, Category, bool, PlayerInfo, PlayerInfo, Option<String>);
+
     let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
     // Real users and guests alike are ordinary `users` rows, so this gate
     // only turns away someone with no session at all — the one-click
@@ -99,8 +106,7 @@ pub async fn watch_websocket(
                     // instance) — its `fen` comes pre-populated from Redis
                     // since there's no local room to lock for a fresh one.
                     let mut local_ids: HashSet<Uuid> = HashSet::new();
-                    let mut candidates: Vec<(Uuid, Option<Arc<Mutex<GameRoom>>>, Category, bool, Uuid, Uuid, Option<String>)> =
-                        Vec::new();
+                    let mut candidates: Vec<WatchCandidate> = Vec::new();
                     for (id, room) in &all_rooms {
                         let gr = room.lock().await;
                         if !matches!(gr.status, GameStatus::Ongoing) {
@@ -132,14 +138,14 @@ pub async fn watch_websocket(
                     }
                     let total_active = candidates.len();
 
-                    let resolved: Vec<(Uuid, Option<Arc<Mutex<GameRoom>>>, Category, bool, PlayerInfo, PlayerInfo, Option<String>)> =
+                    let resolved: Vec<ResolvedWatchCandidate> =
                         futures::future::join_all(candidates.into_iter().map(
                             |(id, room, category, rated, white_id, black_id, fen)| {
                                 let state = state.clone();
                                 async move {
                                     let (white, black) = tokio::try_join!(
-                                        state.user_store.get_player_info(&white_id, category.clone()),
-                                        state.user_store.get_player_info(&black_id, category.clone()),
+                                        state.user_store.get_player_info(&white_id, category),
+                                        state.user_store.get_player_info(&black_id, category),
                                     )?;
                                     Ok::<_, crate::auth::AuthError>((id, room, category, rated, white, black, fen))
                                 }
@@ -175,8 +181,8 @@ pub async fn watch_websocket(
                     for (id, room, category, rated, white, black, remote_fen) in ranked {
                         let fen = match &room {
                             Some(room) => {
-                                if !rooms.contains_key(&id) {
-                                    rooms.insert(id, room.clone());
+                                if let std::collections::hash_map::Entry::Vacant(e) = rooms.entry(id) {
+                                    e.insert(room.clone());
                                     moves.insert(id, BroadcastStream::new(room.lock().await.subscribe()));
                                 }
                                 game_fen(room).await

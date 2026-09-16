@@ -737,7 +737,7 @@ pub async fn finalize_now(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::{Category, GameConfig, GameStatus, RatingMode, TimeControl, TimeMode, Variant};
+    use shared::Category;
     use sqlx::PgPool;
     use uuid::Uuid;
 

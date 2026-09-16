@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::components::{BoardPerspective, ChessBoard};
 use crate::watch::WATCH_GRID_LIMIT;
 
+#[cfg(feature = "hydrate")]
 fn parse_fen(fen: &str) -> Option<shakmaty::Chess> {
     fen.parse::<shakmaty::fen::Fen>()
         .ok()?
@@ -143,11 +144,17 @@ pub fn WatchGrid() -> impl IntoView {
         });
     }
 
+    // Bound as a named closure rather than inlined into the `when=` attribute
+    // below: an unparenthesized `>` there is ambiguous with the RSX tag-close
+    // `>` for the `view!` macro's parser, and removing the disambiguating
+    // parens (as `unused_parens` otherwise suggests) breaks the parse.
+    let has_more_than_shown = move || total_active.get() > WATCH_GRID_LIMIT;
+
     view! {
         <div class="max-w-5xl mx-auto px-6 py-8">
             <div class="flex items-center justify-between mb-6">
                 <h1 class="text-3xl font-bold tracking-tighter text-white">"Watch"</h1>
-                <Show when=move || (total_active.get() > WATCH_GRID_LIMIT)>
+                <Show when=has_more_than_shown>
                     <span class="text-xs text-zinc-500">
                         {move || format!("Showing {} of {} active games", games.get().len(), total_active.get())}
                     </span>

@@ -395,7 +395,7 @@ impl LazyRoute for PuzzlesPage {
             let Ok(setup_move) = setup_uci.to_move(&start_pos) else {
                 return;
             };
-            let Ok(solving_pos) = start_pos.clone().play(setup_move.clone()) else {
+            let Ok(solving_pos) = start_pos.clone().play(setup_move) else {
                 return;
             };
 
@@ -458,7 +458,7 @@ impl LazyRoute for PuzzlesPage {
             let current_ply = ply.get_untracked();
             let sol = solution.get_untracked();
             let pos = position.get_untracked();
-            let Ok(new_pos) = pos.clone().play(m.clone()) else {
+            let Ok(new_pos) = pos.clone().play(m) else {
                 return;
             };
             status.set(SolveStatus::Solving);
@@ -486,7 +486,7 @@ impl LazyRoute for PuzzlesPage {
                                 .ok()
                                 .and_then(|u| u.to_move(&new_pos).ok());
                             if let Some(reply_move) = reply_move {
-                                if let Ok(after_reply) = new_pos.clone().play(reply_move.clone()) {
+                                if let Ok(after_reply) = new_pos.clone().play(reply_move) {
                                     sound::play(sound::for_move(&after_reply, &reply_move));
                                     position.set(after_reply);
                                     last_move.set(reply_move.from().map(|f| (f, reply_move.to())));

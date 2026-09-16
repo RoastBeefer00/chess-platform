@@ -1178,7 +1178,6 @@ pub struct ActiveGameEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fred::prelude::*;
 
     async fn make_redis_client_with_inboxes() -> (RedisClient, FriendsInboxes, MatchInbox) {
         let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
