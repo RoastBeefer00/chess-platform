@@ -119,8 +119,8 @@ impl Game {
     /// Attempts to play a move on the current position.
     ///
     /// Returns `Ok(Outcome)` on success or `Err(PlayError)` if the move is illegal.
-    pub fn make_move(&mut self, r#move: Move) -> Result<Outcome, PlayError<Chess>> {
-        self.position = self.position.clone().play(r#move)?;
+    pub fn make_move(&mut self, r#move: Move) -> Result<Outcome, Box<PlayError<Chess>>> {
+        self.position = self.position.clone().play(r#move).map_err(Box::new)?;
         Ok(self.position.outcome())
     }
 
