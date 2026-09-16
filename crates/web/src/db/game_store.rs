@@ -622,28 +622,38 @@ pub fn spawn_progress_persist(game_store: GameStore, game_id: Uuid, moves: Vec<S
     });
 }
 
-pub fn spawn_finalize(
-    game_store: GameStore,
-    redis_client: crate::state::RedisClient,
+/// Persists a just-ended game's result and clears its cross-instance
+/// watch-grid/ownership entry (see `AppState::create_game` and
+/// `RedisClient::active_game_upsert` for where that entry starts). A no-op
+/// for `None` (the game was already finished — defensive, shouldn't
+/// normally happen on the calling code's paths).
+///
+/// Deliberately awaited directly rather than spawned detached — the caller
+/// should `drop` any `GameRoom` lock guard it's still holding first (this
+/// does one Postgres transaction, no need to hold the room locked for it).
+/// A detached task takes an extra scheduling hop to even begin running,
+/// which is exactly what turned a game decided by timeout into a silently
+/// lost result: the process was killed before the detached finalize task
+/// was ever polled. See main.rs's shutdown grace period for the other half
+/// of this fix — that protects an in-flight write regardless of whether
+/// it's spawned or awaited, but an already-running write has a real head
+/// start on one that hasn't been scheduled yet.
+pub async fn finalize_now(
+    game_store: &GameStore,
+    redis_client: &crate::state::RedisClient,
     plan: Option<GameFinalization>,
 ) {
-    if let Some(plan) = plan {
-        let gs = game_store.clone();
-        let game_id = plan.game_id;
-        tokio::spawn(async move {
-            let result = if matches!(plan.reason, GameOverReason::Abort) {
-                gs.abort_game(plan).await
-            } else {
-                gs.finalize_game(plan).await
-            };
-            if let Err(e) = result {
-                tracing::warn!(?e, "game finalization failed");
-            }
-            // Cross-instance watch-grid roster cleanup — see `AppState::create_game`
-            // and `RedisClient::active_game_upsert` for where this entry starts.
-            redis_client.active_game_remove(game_id).await;
-        });
+    let Some(plan) = plan else { return };
+    let game_id = plan.game_id;
+    let result = if matches!(plan.reason, GameOverReason::Abort) {
+        game_store.abort_game(plan).await
+    } else {
+        game_store.finalize_game(plan).await
+    };
+    if let Err(e) = result {
+        tracing::warn!(?e, "game finalization failed");
     }
+    redis_client.active_game_remove(game_id).await;
 }
 
 #[cfg(test)]

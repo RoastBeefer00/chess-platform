@@ -7,7 +7,7 @@ pub async fn game_websocket(
     input: BoxedStream<GameClientMessage, ServerFnError>,
 ) -> Result<BoxedStream<GameServerMessage, ServerFnError>, ServerFnError> {
     use crate::auth::AuthBackend;
-    use crate::db::spawn_finalize;
+    use crate::db::finalize_now;
     use crate::game_room::{handle_abort_timeout, handle_timeout, MoveError};
     use crate::state::AppState;
     use axum_login::AuthSession;
@@ -376,7 +376,12 @@ pub async fn game_websocket(
                             }
                             Ok(MoveOutcome::Ended(plan)) => {
                                 // end_game already broadcast + cancelled timer.
-                                spawn_finalize(state.game_store.clone(), state.redis_client.clone(), plan);
+                                // Awaited, not detached — see `finalize_now`'s
+                                // doc comment for why that matters. Drop the
+                                // room lock first; nothing below needs it and
+                                // there's no reason to hold it for a DB round trip.
+                                drop(gr);
+                                finalize_now(&state.game_store, &state.redis_client, plan).await;
                             }
                             Err(MoveError::FlagFall) => {
                                 // mover ran out applying their own move — they lose.
@@ -390,7 +395,8 @@ pub async fn game_websocket(
                                     },
                                     GameOverReason::Timeout,
                                 );
-                                spawn_finalize(state.game_store.clone(), state.redis_client.clone(), plan);
+                                drop(gr);
+                                finalize_now(&state.game_store, &state.redis_client, plan).await;
                             }
                             Err(e) => {
                                 tracing::warn!(?e, "move rejected");
@@ -419,7 +425,8 @@ pub async fn game_websocket(
                             },
                             GameOverReason::Resignation,
                         );
-                        spawn_finalize(state.game_store.clone(), state.redis_client.clone(), plan);
+                        drop(gr);
+                        finalize_now(&state.game_store, &state.redis_client, plan).await;
                     }
                     GameClientMessage::DrawOffer => {
                         if !matches!(player_role, shared::PlayerRole::Player(_)) {
@@ -443,7 +450,8 @@ pub async fn game_websocket(
                                 gr.clear_draw_offer();
                                 let plan =
                                     gr.end_game(shakmaty::KnownOutcome::Draw, GameOverReason::DrawAgreement);
-                                spawn_finalize(state.game_store.clone(), state.redis_client.clone(), plan);
+                                drop(gr);
+                                finalize_now(&state.game_store, &state.redis_client, plan).await;
                             }
                         }
                     }

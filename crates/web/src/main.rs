@@ -384,12 +384,50 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("failed to bind site_addr");
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
-    .expect("axum::serve exited with error");
+
+    // Bounded pause before actually exiting on SIGINT/SIGTERM (Fly sends one
+    // of these on every stop — autostop-on-idle, deploys, host migrations —
+    // see fly.toml's kill_timeout, raised specifically to give this room).
+    // Without ANY signal handler at all (the previous state of this file),
+    // the OS default disposition terminates the process immediately, with
+    // zero warning to whatever's currently in flight — including a
+    // just-finished game's finalize write (or a flag-fall's, or an ordinary
+    // per-move persist), fire-and-forget or not. This is what turned a game
+    // that had just been decided by timeout into a silently-lost result,
+    // later misread by the reconciliation reaper as a genuinely abandoned
+    // game. This grace period doesn't make that race impossible — a kill at
+    // the exact wrong instant can still land — but it turns a window of
+    // "however long it takes the OS to schedule the kill, often near-zero"
+    // into one that reliably covers a single fast Postgres round trip.
+    const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(10);
+    async fn shutdown_signal() {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
+        let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = sigint.recv() => tracing::warn!("received SIGINT"),
+            _ = sigterm.recv() => tracing::warn!("received SIGTERM"),
+        }
+    }
+
+    tokio::select! {
+        result = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        ) => {
+            result.expect("axum::serve exited with error");
+        }
+        _ = shutdown_signal() => {
+            tracing::warn!(
+                grace_period_secs = SHUTDOWN_GRACE_PERIOD.as_secs(),
+                "shutdown signal received — pausing before exit so in-flight \
+                 writes get a real chance to land instead of being cut off \
+                 with no warning at all",
+            );
+            tokio::time::sleep(SHUTDOWN_GRACE_PERIOD).await;
+            tracing::info!("shutdown grace period elapsed, exiting");
+        }
+    }
 }
 
 #[cfg(not(feature = "ssr"))]
