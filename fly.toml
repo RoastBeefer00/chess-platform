@@ -5,6 +5,14 @@
 
 app = 'chess-rs'
 primary_region = 'dfw'
+# Default is 5s, which Fly's own docs flag as "almost certainly too short for
+# most applications with background work" — this app has in-flight
+# fire-and-forget Postgres writes (game finalization, move persistence) that
+# need a real window to land before a stop/autostop kill signal arrives. Kept
+# comfortably above main.rs's own SHUTDOWN_GRACE_PERIOD so our own bounded
+# grace sleep never gets cut off by Fly's harder SIGKILL deadline.
+kill_signal = 'SIGINT'
+kill_timeout = 15
 
 [build]
 
