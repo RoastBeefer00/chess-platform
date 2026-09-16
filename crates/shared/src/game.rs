@@ -32,6 +32,8 @@ pub struct AnalysisGameData {
     pub moves: Vec<String>,
     pub clocks: Vec<Option<(i64, i64)>>,
     pub initial_time_ms: i64,
+    pub white: RecentGamePlayer,
+    pub black: RecentGamePlayer,
 }
 
 /// The querying user's outcome in one of their past games.

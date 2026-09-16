@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, fen, moves, rating, themes FROM puzzles WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "fen",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "moves",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "rating",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "themes",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1a4cf25ae56afe9a193d060f8f6cac9e9b5b136c179293c0bcdba31f485ca24c"
+}

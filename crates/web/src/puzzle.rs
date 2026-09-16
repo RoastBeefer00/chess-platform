@@ -24,3 +24,22 @@ pub async fn get_random_puzzle(
         .await
         .map_err(|e| ServerFnError::new(e.to_string()))
 }
+
+/// A specific puzzle by id, for a shared puzzle link (`/puzzles?id=...`) —
+/// see `PuzzleStore::by_id`. No auth: `/puzzles` is a public page.
+#[server]
+pub async fn get_puzzle(id: String) -> Result<PuzzleSummary, ServerFnError> {
+    use crate::state::AppState;
+
+    let state = expect_context::<AppState>();
+    let result = state
+        .puzzle_store
+        .by_id(&id)
+        .await
+        .map_err(|e| ServerFnError::new(e.to_string()))?
+        .ok_or_else(|| ServerFnError::new("puzzle not found"));
+    if let Err(ref e) = result {
+        tracing::info!(%id, error = %e, "get_puzzle failed");
+    }
+    result
+}
