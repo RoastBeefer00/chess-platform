@@ -605,9 +605,14 @@ pub fn spawn_progress_persist(game_store: GameStore, game_id: Uuid, moves: Vec<S
     });
 }
 
-pub fn spawn_finalize(game_store: GameStore, plan: Option<GameFinalization>) {
+pub fn spawn_finalize(
+    game_store: GameStore,
+    redis_client: crate::state::RedisClient,
+    plan: Option<GameFinalization>,
+) {
     if let Some(plan) = plan {
         let gs = game_store.clone();
+        let game_id = plan.game_id;
         tokio::spawn(async move {
             let result = if matches!(plan.reason, GameOverReason::Abort) {
                 gs.abort_game(plan).await
@@ -617,6 +622,9 @@ pub fn spawn_finalize(game_store: GameStore, plan: Option<GameFinalization>) {
             if let Err(e) = result {
                 tracing::warn!(?e, "game finalization failed");
             }
+            // Cross-instance watch-grid roster cleanup — see `AppState::create_game`
+            // and `RedisClient::active_game_upsert` for where this entry starts.
+            redis_client.active_game_remove(game_id).await;
         });
     }
 }

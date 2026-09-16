@@ -12,7 +12,7 @@ pub async fn game_websocket(
     use crate::state::AppState;
     use axum_login::AuthSession;
     use futures::StreamExt;
-    use shakmaty::Position as _;
+    use shakmaty::{fen::Fen, EnPassantMode, Position as _};
     use shared::messages::GameOverReason;
     use shared::PlayerRole;
     use tokio_stream::wrappers::BroadcastStream;
@@ -84,6 +84,7 @@ pub async fn game_websocket(
                 let handle = tokio::spawn(handle_abort_timeout(
                     game_room.clone(),
                     state.game_store.clone(),
+                    state.redis_client.clone(),
                     shakmaty::Color::White,
                 ));
                 gr.abort_task = Some(handle);
@@ -310,6 +311,14 @@ pub async fn game_websocket(
                                     gr.move_history.clone(),
                                     gr.clock_history.clone(),
                                 );
+                                // Fire-and-forget, same as the persist call above —
+                                // never adds latency to the move reaching the
+                                // opponent (that's the instant in-memory broadcast).
+                                let fen = Fen::from_position(&gr.get_position(), EnPassantMode::Legal).to_string();
+                                let redis_client = state.redis_client.clone();
+                                tokio::spawn(async move {
+                                    redis_client.active_game_update_fen(game_id, &fen).await;
+                                });
                                 if let Some(h) = gr.timeout_task.take() {
                                     h.abort();
                                 }
@@ -317,6 +326,7 @@ pub async fn game_websocket(
                                 let handle = tokio::spawn(handle_timeout(
                                     room,
                                     state.game_store.clone(),
+                                    state.redis_client.clone(),
                                     plan.next_color,
                                     plan.ms_until_flag,
                                 ));
@@ -334,6 +344,7 @@ pub async fn game_websocket(
                                         let handle = tokio::spawn(handle_abort_timeout(
                                             game_room.clone(),
                                             state.game_store.clone(),
+                                            state.redis_client.clone(),
                                             shakmaty::Color::Black,
                                         ));
                                         gr.abort_task = Some(handle);
@@ -347,7 +358,7 @@ pub async fn game_websocket(
                             }
                             Ok(MoveOutcome::Ended(plan)) => {
                                 // end_game already broadcast + cancelled timer.
-                                spawn_finalize(state.game_store.clone(), plan);
+                                spawn_finalize(state.game_store.clone(), state.redis_client.clone(), plan);
                             }
                             Err(MoveError::FlagFall) => {
                                 // mover ran out applying their own move — they lose.
@@ -361,7 +372,7 @@ pub async fn game_websocket(
                                     },
                                     GameOverReason::Timeout,
                                 );
-                                spawn_finalize(state.game_store.clone(), plan);
+                                spawn_finalize(state.game_store.clone(), state.redis_client.clone(), plan);
                             }
                             Err(e) => {
                                 tracing::warn!(?e, "move rejected");
@@ -390,7 +401,7 @@ pub async fn game_websocket(
                             },
                             GameOverReason::Resignation,
                         );
-                        spawn_finalize(state.game_store.clone(), plan);
+                        spawn_finalize(state.game_store.clone(), state.redis_client.clone(), plan);
                     }
                     GameClientMessage::DrawOffer => {
                         if !matches!(player_role, shared::PlayerRole::Player(_)) {
@@ -414,7 +425,7 @@ pub async fn game_websocket(
                                 gr.clear_draw_offer();
                                 let plan =
                                     gr.end_game(shakmaty::KnownOutcome::Draw, GameOverReason::DrawAgreement);
-                                spawn_finalize(state.game_store.clone(), plan);
+                                spawn_finalize(state.game_store.clone(), state.redis_client.clone(), plan);
                             }
                         }
                     }

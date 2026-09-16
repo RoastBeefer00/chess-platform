@@ -32,6 +32,7 @@ futures = "0.3"
 gloo-timers = { version = "0.3", features = ["futures"] }
 shared = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 uuid = { workspace = true }
 shakmaty = { workspace = true }
 oauth2 = { version = "5.0.0", features = ["reqwest"], optional = true }
@@ -40,7 +41,7 @@ openidconnect = { version = "4.0.1", optional = true }
 axum-login = { version = "0.18", optional = true }
 tower-sessions = { version = "0.14", optional = true }
 tower-sessions-redis-store = { version = "0.16", default-features = false, optional = true }
-fred = { version = "10.1.0", features = ["sha-1", "i-scripts"], optional = true }
+fred = { version = "10.1.0", features = ["sha-1", "i-scripts", "subscriber-client"], optional = true }
 time = { version = "0.3.47", optional = true }
 thiserror = { version = "2", optional = true }
 dotenvy = { version = "0.15.7", optional = true }
@@ -85,7 +86,7 @@ csr = ["leptos/csr"]
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls-ring", "uuid", "time", "json", "macros", "migrate"] }
-fred = { version = "10.1.0", features = ["sha-1", "i-scripts"] }
+fred = { version = "10.1.0", features = ["sha-1", "i-scripts", "subscriber-client"] }
 uuid = { workspace = true }
 shared = { workspace = true }
 
