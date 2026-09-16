@@ -133,6 +133,92 @@ impl GameRoom {
         }
     }
 
+    /// Rebuilds a room from persisted history — the "adoption" path for a
+    /// game whose owning instance died. `game.position` must be the start
+    /// position (`Chess::default()`); `move_history` is replayed onto it to
+    /// restore both the live position and threefold-repetition counts,
+    /// since `position_counts` has no rebuild API of its own. `Err` on any
+    /// unparseable/illegal move — the caller's signal that this game can't
+    /// be adopted (also how a Chess960 game, which never persists its real
+    /// starting FEN, safely fails rather than silently replaying wrong).
+    ///
+    /// Clocks restore to the last entry in `clock_history` (initial time if
+    /// empty) — downtime is forgiven, never charged to either player.
+    /// `last_move_at` is `Some(Instant::now())` when moves exist (the mover's
+    /// clock starts fresh from adoption) or `None` when none do (mirrors a
+    /// brand-new game). `status` is `WaitingForOpponent` for a zero-move
+    /// game so the ordinary `add_player` path re-arms the first-move abort
+    /// window unassisted; `Ongoing` otherwise. All ephemeral fields
+    /// (`connected`, `rtt_ms`, task handles, offers) start empty —
+    /// `session_score` is never persisted and resets to `(0.0, 0.0)`.
+    pub fn from_persisted(
+        mut game: Game,
+        move_history: Vec<String>,
+        clock_history: Vec<(i64, i64)>,
+    ) -> Result<Self, String> {
+        let mut position_counts = HashMap::new();
+        let start_hash = game
+            .position
+            .zobrist_hash::<Zobrist64>(EnPassantMode::Legal);
+        position_counts.insert(start_hash, 1u8);
+
+        for uci_str in &move_history {
+            let uci_move: UciMove = uci_str
+                .parse()
+                .map_err(|_| format!("unreplayable move: {uci_str:?}"))?;
+            let mv = uci_move
+                .to_move(&game.position)
+                .map_err(|_| format!("illegal move during replay: {uci_str:?}"))?;
+            game.position = game
+                .position
+                .clone()
+                .play(mv)
+                .map_err(|_| format!("illegal move during replay: {uci_str:?}"))?;
+            let hash = game
+                .position
+                .zobrist_hash::<Zobrist64>(EnPassantMode::Legal);
+            *position_counts.entry(hash).or_insert(0) += 1;
+        }
+
+        if let Some(&(white_ms, black_ms)) = clock_history.last() {
+            game.white_ms_left = white_ms;
+            game.black_ms_left = black_ms;
+        }
+
+        let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let status = if move_history.is_empty() {
+            GameStatus::WaitingForOpponent
+        } else {
+            GameStatus::Ongoing
+        };
+        let last_move_at = if move_history.is_empty() {
+            None
+        } else {
+            Some(Instant::now())
+        };
+
+        Ok(GameRoom {
+            game,
+            status,
+            connected: HashMap::new(),
+            rtt_ms: HashMap::new(),
+            tx,
+            last_move_at,
+            timeout_task: None,
+            abort_task: None,
+            heartbeat_task: None,
+            abort_side: None,
+            abort_deadline_ms: None,
+            rematch_offer: None,
+            draw_offer: None,
+            move_history,
+            clock_history,
+            position_counts,
+            end_reason: None,
+            session_score: (0.0, 0.0),
+        })
+    }
+
     pub fn subscribe(&self) -> Receiver<GameServerMessage> {
         self.tx.subscribe()
     }
@@ -1034,5 +1120,125 @@ mod tests {
         assert_eq!(room.current_player(), Some(white_id));
         room.remove_player(white_id);
         assert_eq!(room.current_player(), None);
+    }
+
+    // ── GameRoom::from_persisted (adoption) ──────────────────────────────────
+
+    fn make_persisted_game(white_id: Uuid, black_id: Uuid) -> Game {
+        let config = GameConfig {
+            time_control: TimeControl {
+                initial_time: 180_000,
+                mode: TimeMode::Increment(0),
+            },
+            variant: Variant::Standard,
+            rated: RatingMode::Rated,
+        };
+        Game {
+            id: Uuid::new_v4(),
+            config,
+            position: Chess::default(),
+            white_player: white_id,
+            black_player: black_id,
+            white_ms_left: 180_000,
+            black_ms_left: 180_000,
+        }
+    }
+
+    #[test]
+    fn from_persisted_replays_position_and_move_history() {
+        let white_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let moves = vec!["e2e4".to_string(), "e7e5".to_string(), "g1f3".to_string()];
+        let clocks = vec![(178_000, 180_000), (178_000, 177_500), (176_200, 177_500)];
+        let room = GameRoom::from_persisted(make_persisted_game(white_id, black_id), moves.clone(), clocks)
+            .expect("replay should succeed");
+
+        assert_eq!(room.move_history, moves);
+        // Same position a live room reaches after the same three moves.
+        let (mut live, _, _) = make_room();
+        live.parse_and_apply_move("e2e4").unwrap();
+        live.parse_and_apply_move("e7e5").unwrap();
+        live.parse_and_apply_move("g1f3").unwrap();
+        assert_eq!(room.get_position().board(), live.get_position().board());
+        assert_eq!(room.get_position().turn(), live.get_position().turn());
+    }
+
+    #[test]
+    fn from_persisted_restores_clocks_from_last_ply() {
+        let white_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let moves = vec!["e2e4".to_string(), "e7e5".to_string()];
+        let clocks = vec![(178_000, 180_000), (178_000, 177_500)];
+        let room = GameRoom::from_persisted(make_persisted_game(white_id, black_id), moves, clocks).unwrap();
+        assert_eq!(room.game.white_ms_left, 178_000);
+        assert_eq!(room.game.black_ms_left, 177_500);
+    }
+
+    #[test]
+    fn from_persisted_zero_moves_is_waiting_for_opponent() {
+        let white_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let room = GameRoom::from_persisted(make_persisted_game(white_id, black_id), Vec::new(), Vec::new()).unwrap();
+        assert!(matches!(room.status, GameStatus::WaitingForOpponent));
+        assert!(room.last_move_at.is_none());
+        // Initial time preserved when there's no clock history to restore from.
+        assert_eq!(room.game.white_ms_left, 180_000);
+        assert_eq!(room.game.black_ms_left, 180_000);
+    }
+
+    #[test]
+    fn from_persisted_nonempty_moves_is_ongoing_with_running_clock() {
+        let white_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        let moves = vec!["e2e4".to_string()];
+        let clocks = vec![(178_000, 180_000)];
+        let room = GameRoom::from_persisted(make_persisted_game(white_id, black_id), moves, clocks).unwrap();
+        assert!(matches!(room.status, GameStatus::Ongoing));
+        assert!(room.last_move_at.is_some(), "downtime forgiven, mover's clock starts fresh");
+    }
+
+    #[test]
+    fn from_persisted_unreplayable_move_is_err() {
+        let white_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        // e7e5 is illegal as White's first move.
+        let moves = vec!["e7e5".to_string()];
+        let clocks = vec![(178_000, 180_000)];
+        let result = GameRoom::from_persisted(make_persisted_game(white_id, black_id), moves, clocks);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_persisted_rebuilds_threefold_repetition_counts() {
+        let white_id = Uuid::new_v4();
+        let black_id = Uuid::new_v4();
+        // Persisted history is one knight round-trip back to the start
+        // position (seeded count 1 + this return = 2) — mirrors
+        // `threefold_repetition_detected` above, but the first half is
+        // replayed via adoption rather than live moves. A live-played
+        // second round-trip after adoption must then be the one that hits
+        // threefold (count 3), which only happens if `position_counts` was
+        // correctly rebuilt during replay rather than left seeded at 1.
+        let moves: Vec<String> = ["g1f3", "g8f6", "f3g1", "f6g8"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let clocks: Vec<(i64, i64)> = (0..moves.len()).map(|_| (170_000, 170_000)).collect();
+        let mut room =
+            GameRoom::from_persisted(make_persisted_game(white_id, black_id), moves, clocks).unwrap();
+        room.connected.insert(white_id, 1);
+        room.connected.insert(black_id, 1);
+        room.last_move_at = Some(Instant::now());
+
+        room.handle_move_made("g1f3".to_string(), white_id, 0).unwrap();
+        let outcome = room.handle_move_made("g8f6".to_string(), black_id, 0).unwrap();
+        room.handle_move_made("f3g1".to_string(), white_id, 0).unwrap();
+        let final_outcome = room.handle_move_made("f6g8".to_string(), black_id, 0).unwrap();
+
+        assert!(matches!(outcome, MoveOutcome::Continuing(_)));
+        assert!(
+            matches!(final_outcome, MoveOutcome::Ended(_)),
+            "threefold must be detected using position counts rebuilt during replay"
+        );
     }
 }

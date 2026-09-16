@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE games SET moves = 'e2e4 e7e5', clocks = '299000,300000' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f607aff949d60d3cc0acd697b474bef2901f13771621bf9d0cc6af8adf5a777a"
+}

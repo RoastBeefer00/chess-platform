@@ -9,7 +9,7 @@ pub async fn game_websocket(
     use crate::auth::AuthBackend;
     use crate::db::finalize_now;
     use crate::game_room::{handle_abort_timeout, handle_timeout, MoveError};
-    use crate::state::AppState;
+    use crate::state::{AdoptOutcome, AppState};
     use axum_login::AuthSession;
     use futures::StreamExt;
     use shakmaty::{fen::Fen, EnPassantMode, Position as _};
@@ -54,27 +54,53 @@ pub async fn game_websocket(
             }
         };
 
-        let Some(game_room) = state.get_game_room(&game_id).await else {
-            // No live GameRoom — either a bogus id, or (now that a heartbeat-
-            // aware reaper can abort a game whose owning instance went
-            // quiet, see `AppState::reconcile_stale_active_games`) a game
-            // that genuinely ended without this process ever having hosted
-            // it. Check the DB before giving up, so a reaped game reconnects
-            // to a real GameOver replay instead of an undifferentiated
-            // error indistinguishable from a typo'd URL.
-            let status = state.game_store.get_game_status(game_id).await.ok().flatten();
-            let message = if status.as_deref() == Some("aborted") {
-                Ok(GameServerMessage::GameOver {
-                    winner: None,
-                    reason: GameOverReason::Abort,
-                    white_wins: 0.0,
-                    black_wins: 0.0,
-                })
-            } else {
-                Err(ServerFnError::new("game not found"))
-            };
-            let _ = tx.unbounded_send(message);
-            return;
+        // Whether this join is riding in on a freshly-adopted room (see
+        // `AppState::adopt_game`) — if so, the client may be holding moves
+        // this rebuilt room doesn't have yet (progress persistence is
+        // fire-and-forget), so a `Resync` gets pushed after the ordinary
+        // join sequence below to make the server authoritative immediately.
+        let mut adopted = false;
+        let game_room = match state.get_game_room(&game_id).await {
+            Some(room) => room,
+            None => match state.adopt_game(game_id).await {
+                AdoptOutcome::Adopted(room) => {
+                    adopted = true;
+                    room
+                }
+                AdoptOutcome::OwnedElsewhere => {
+                    // A peer instance won the claim (race with this
+                    // instance's own reaper sweep, or another reconnect).
+                    // Fail this attempt — the client's own backoff/retry
+                    // reconnects, and by then the fly-replay routing
+                    // middleware sees the new owner and gets it right.
+                    let _ = tx.unbounded_send(Err(ServerFnError::new(
+                        "game claimed by another instance, reconnecting",
+                    )));
+                    return;
+                }
+                AdoptOutcome::Unadoptable => {
+                    // No live GameRoom and nothing to adopt — either a bogus
+                    // id, or a game that genuinely ended (or has
+                    // unreplayable data) without this process ever having
+                    // hosted it. Check the DB before giving up, so a
+                    // genuinely-aborted game reconnects to a real GameOver
+                    // replay instead of an undifferentiated error
+                    // indistinguishable from a typo'd URL.
+                    let status = state.game_store.get_game_status(game_id).await.ok().flatten();
+                    let message = if status.as_deref() == Some("aborted") {
+                        Ok(GameServerMessage::GameOver {
+                            winner: None,
+                            reason: GameOverReason::Abort,
+                            white_wins: 0.0,
+                            black_wins: 0.0,
+                        })
+                    } else {
+                        Err(ServerFnError::new("game not found"))
+                    };
+                    let _ = tx.unbounded_send(message);
+                    return;
+                }
+            },
         };
 
         use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -240,6 +266,15 @@ pub async fn game_websocket(
         // the broadcast that fired when the opponent first connected).
         if let Some(presence) = opponent_presence_snapshot {
             let _ = tx.unbounded_send(Ok(presence));
+        }
+
+        // Adopted room: the client may hold moves this rebuilt room never
+        // received (progress persistence is fire-and-forget), so make the
+        // server's rebuilt state authoritative immediately rather than
+        // waiting for the client's next move to be rejected.
+        if adopted {
+            let resync = game_room.lock().await.build_resync();
+            let _ = tx.unbounded_send(Ok(resync));
         }
 
         let mut broadcast = BroadcastStream::new(receiver);

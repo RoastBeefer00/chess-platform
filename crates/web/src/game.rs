@@ -27,13 +27,23 @@ pub async fn get_game_for_analysis(game_id: Uuid) -> Result<AnalysisGameData, Se
 pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::state::AppState;
+    use crate::state::{AdoptOutcome, AppState};
 
     let state = expect_context::<AppState>();
-    let game_room = state
-        .get_game_room(&game_id)
-        .await
-        .ok_or_else(|| ServerFnError::new("game not found"))?;
+    let game_room = match state.get_game_room(&game_id).await {
+        Some(room) => room,
+        // No local room — either a bogus id, or (this being a plain POST
+        // with no `?game_id=`, so the fly-replay routing middleware in
+        // `main.rs` never sees it) a game this instance simply doesn't own.
+        // Adopting here covers the common case: the owning instance died
+        // and this request is the first thing to touch the game since.
+        None => match state.adopt_game(game_id).await {
+            AdoptOutcome::Adopted(room) => room,
+            AdoptOutcome::OwnedElsewhere | AdoptOutcome::Unadoptable => {
+                return Err(ServerFnError::new("game not found"));
+            }
+        },
+    };
 
     let (white_id, black_id, variant, white_ms_left, black_ms_left, clock_running, config) = {
         let gr = game_room.lock().await;

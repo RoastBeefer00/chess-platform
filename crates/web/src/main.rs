@@ -378,6 +378,7 @@ async fn main() {
         ));
     }
 
+    let shutdown_app_state = app_state.clone();
     let app = app.with_state(app_state);
 
     info!("listening on http://{}", &addr);
@@ -426,6 +427,21 @@ async fn main() {
             );
             tokio::time::sleep(SHUTDOWN_GRACE_PERIOD).await;
             tracing::info!("shutdown grace period elapsed, exiting");
+
+            // Release this instance's ownership of every game it still
+            // holds. Without this, a successor instance has to wait out
+            // the up-to-30s `active_games:{id}` TTL before adoption
+            // (`AppState::adopt_game`) even notices the game is ownerless —
+            // during a routine deploy, where the old process is exiting
+            // cleanly, there's no reason to wait: releasing here turns the
+            // handover into a sub-second gap instead.
+            let games = shutdown_app_state.games.lock().await;
+            for (game_id, room) in games.iter() {
+                if matches!(room.lock().await.status, shared::GameStatus::Ongoing) {
+                    shutdown_app_state.redis_client.active_game_remove(*game_id).await;
+                }
+            }
+            drop(games);
         }
     }
 }
