@@ -1,10 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, collections::HashSet, sync::Arc};
 
 use axum::extract::FromRef;
 use fred::prelude::*;
+use fred::types::{Expiration, Message};
 use futures::channel::mpsc::UnboundedSender;
 use leptos::config::LeptosOptions;
 use leptos::prelude::ServerFnError;
+use serde::{Deserialize, Serialize};
 use shared::{
     FriendSummary, FriendsServerMessage, Game, GameConfig, GameStatus, MatchmakingServerMessage,
     RatingMode, Side, TimeControl,
@@ -22,27 +24,44 @@ pub type GameRooms = Arc<Mutex<HashMap<GameId, Arc<Mutex<GameRoom>>>>>;
 pub type MatchInboxSender = UnboundedSender<Result<MatchmakingServerMessage, ServerFnError>>;
 /// Maps user_id → (session_id, sender). The session_id prevents a later tab's
 /// cleanup from evicting an earlier tab's — or vice versa — inbox entry.
+/// This map is local to this process: it's the last-mile registry a pub/sub
+/// dispatcher (see `RedisClient::new`) delivers into after a cross-instance
+/// publish, not the cross-instance source of truth (that's Redis).
 pub type MatchInbox = Arc<Mutex<HashMap<Uuid, (Uuid, MatchInboxSender)>>>;
 /// Maps user_id → (tab_count, bucket_key). ZREM only fires when count hits 0
 /// so closing one of N tabs never dequeues the player while others are active.
+/// Deliberately still local/per-instance — see the module doc for why this
+/// is a known, low-priority residual gap under N instances.
 pub type MatchmakingRefcount = Arc<Mutex<HashMap<Uuid, (u32, String)>>>;
 
-#[derive(Debug)]
+/// A match assignment delivered to `MatchmakingServerMessage::Matched`.
+/// Cross-instance state now lives in Redis (`mm:pending:{user_id}`, TTL —
+/// see `RedisClient::mm_set_pending_match`/`mm_take_pending_match`); this
+/// struct is just the (de)serialization shape, no local map exists anymore.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingMatch {
     pub game_id: GameId,
     pub side: Side,
-    created_at: std::time::Instant,
 }
-pub type PendingMatches = Arc<Mutex<HashMap<Uuid, PendingMatch>>>;
 
 pub type FriendsInboxSender = UnboundedSender<Result<FriendsServerMessage, ServerFnError>>;
 /// Maps user_id → session_id → sender. Unlike `MatchInbox`'s single slot per
 /// user (where a second tab evicts the first), presence must fan out to
 /// every open tab and stay "online" until the *last* one closes — the inner
 /// map's `len()` is the tab refcount, so no separate counter is needed.
+/// Local to this process, same role as `MatchInbox` above: the cross-instance
+/// online/offline truth lives in Redis (`friends:online`), this is just
+/// where a delivered message gets fanned out to this instance's own sockets.
 pub type FriendsInboxes = Arc<Mutex<HashMap<Uuid, HashMap<Uuid, FriendsInboxSender>>>>;
 
-#[derive(Debug, Clone)]
+/// A pending friend challenge. Cross-instance state lives in Redis
+/// (`challenge:{id}`, TTL — see `RedisClient::challenge_*`); this struct is
+/// just the (de)serialization shape. No local map or manual `Instant`-based
+/// expiry anymore — Redis's own key TTL is the single source of truth for
+/// "has this challenge expired," which is also what makes `challenge_take`
+/// atomic and correct regardless of which instance created the challenge or
+/// which instance the responder's socket lands on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingChallenge {
     pub id: Uuid,
     pub from: Uuid,
@@ -50,7 +69,6 @@ pub struct PendingChallenge {
     pub to: Uuid,
     pub time_control: TimeControl,
     pub rating_mode: RatingMode,
-    created_at: std::time::Instant,
 }
 
 impl PendingChallenge {
@@ -61,22 +79,14 @@ impl PendingChallenge {
         time_control: TimeControl,
         rating_mode: RatingMode,
     ) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            from,
-            from_summary,
-            to,
-            time_control,
-            rating_mode,
-            created_at: std::time::Instant::now(),
-        }
+        Self { id: Uuid::new_v4(), from, from_summary, to, time_control, rating_mode }
     }
 }
-/// challenge_id → challenge. In-memory and non-durable on purpose — a 60s
-/// offer has no meaning across a restart, and both parties reconnect anyway.
-pub type PendingChallenges = Arc<Mutex<HashMap<Uuid, PendingChallenge>>>;
-/// Mirrors `PendingMatch`'s 60s window (see `take_pending_match`).
-const CHALLENGE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Mirrors the previous in-process 60s window — now the actual Redis key TTL
+/// on both `challenge:{id}` and `mm:pending:{user_id}`.
+const CHALLENGE_TTL_SECS: i64 = 60;
+const PENDING_MATCH_TTL_SECS: i64 = 60;
 
 #[derive(FromRef, Clone, Debug)]
 pub struct AppState {
@@ -90,10 +100,8 @@ pub struct AppState {
     pub friend_store: FriendStore,
     pub redis_client: RedisClient,
     pub match_inboxes: MatchInbox,
-    pub pending_matches: PendingMatches,
     pub matchmaking_refcount: MatchmakingRefcount,
     pub friends_inboxes: FriendsInboxes,
-    pub pending_challenges: PendingChallenges,
 }
 
 impl AppState {
@@ -101,13 +109,22 @@ impl AppState {
         leptos_options: LeptosOptions,
         pool: PgPool,
         redis_pool: fred::clients::Pool,
+        redis_subscriber: fred::clients::SubscriberClient,
     ) -> Self {
         // GitHub's API rejects requests without a User-Agent header.
         let http_client = reqwest::Client::builder()
             .user_agent(concat!("gambit/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("failed to build reqwest client");
-        let redis_client = RedisClient::new(redis_pool).await;
+        let match_inboxes: MatchInbox = Arc::new(Mutex::new(HashMap::new()));
+        let friends_inboxes: FriendsInboxes = Arc::new(Mutex::new(HashMap::new()));
+        let redis_client = RedisClient::new(
+            redis_pool,
+            redis_subscriber,
+            friends_inboxes.clone(),
+            match_inboxes.clone(),
+        )
+        .await;
         let user_store = UserStore::new(pool.clone());
         let game_store = GameStore::new(pool.clone());
         let puzzle_store = PuzzleStore::new(pool.clone());
@@ -124,11 +141,9 @@ impl AppState {
             rating_store,
             friend_store,
             redis_client,
-            match_inboxes: Arc::new(Mutex::new(HashMap::new())),
-            pending_matches: Arc::new(Mutex::new(HashMap::new())),
+            match_inboxes,
             matchmaking_refcount: Arc::new(Mutex::new(HashMap::new())),
-            friends_inboxes: Arc::new(Mutex::new(HashMap::new())),
-            pending_challenges: Arc::new(Mutex::new(HashMap::new())),
+            friends_inboxes,
         }
     }
 
@@ -140,10 +155,27 @@ impl AppState {
         black_player: Uuid,
         session_score: (f32, f32),
     ) -> Result<GameId, AuthError> {
-        let game = GameRoom::new(Game::new(game_config.clone(), white_player, black_player), session_score);
+        let mut game = GameRoom::new(Game::new(game_config.clone(), white_player, black_player), session_score);
         let game_id = game.game.id;
+        let start_fen = {
+            use shakmaty::{fen::Fen, EnPassantMode};
+            Fen::from_position(&game.get_position(), EnPassantMode::Legal).to_string()
+        };
+
+        // Started before insertion so the very first heartbeat can never
+        // race a lookup finding the room but not yet ticking. Aborted in
+        // `GameRoom::end_game`, same as `timeout_task`/`abort_task`.
+        let heartbeat_redis = self.redis_client.clone();
+        game.heartbeat_task = Some(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS)).await;
+                heartbeat_redis.refresh_active_game_heartbeat(game_id).await;
+            }
+        }));
+
         let mut games = self.games.lock().await;
         games.insert(game_id, Arc::new(Mutex::new(game)));
+        drop(games);
         let initial_time_seconds = (game_config.time_control.initial_time / 1000) as i32;
         let time_increment_seconds = match game_config.time_control.mode {
             shared::TimeMode::Increment(ms) => (ms / 1000) as i32,
@@ -162,6 +194,22 @@ impl AppState {
             )
             .await?;
         tracing::info!(%game_id, "game_created");
+
+        // Cross-instance watch-grid roster index + ownership record — see
+        // `RedisClient::active_game_upsert`. `instance_id()` is this
+        // process's own identity, so any other instance's routing
+        // middleware (see `main.rs`) can tell this game is owned here.
+        self.redis_client
+            .active_game_upsert(
+                game_id,
+                white_player,
+                black_player,
+                &game_config.time_control.category().to_string(),
+                game_config.rated.is_rated(),
+                &start_fen,
+                &instance_id(),
+            )
+            .await;
 
         // Best-effort: tell each player's online friends they just started a
         // game, so a friends-list Challenge button disables without needing
@@ -191,6 +239,51 @@ impl AppState {
         games.get(game_id).cloned()
     }
 
+    /// Removes a finished/aborted game's entry from the cross-instance
+    /// watch-grid index. Safe to call even if the entry never existed (a
+    /// no-op) — every finalize/abort path calls this so a game never
+    /// lingers in the roster past its own end.
+    pub async fn deactivate_game(&self, game_id: GameId) {
+        self.redis_client.active_game_remove(game_id).await;
+    }
+
+    /// The heartbeat-aware reaper. Every DB row still `status='active'` is
+    /// checked against `active_games:{id}` in Redis (see
+    /// `RedisClient::active_game_owner`, `GameRoom::heartbeat_task`): if the
+    /// entry is gone, that game's owning instance has genuinely gone quiet
+    /// (crashed, restarted, autostopped) and the row is aborted; if it's
+    /// still there, some instance — this one or a healthy peer — still owns
+    /// it, so it's left alone. This is the multi-instance-safe replacement
+    /// for the old boot-only blanket abort, which assumed a fresh process's
+    /// empty `GameRooms` map meant every active row must be orphaned — true
+    /// for one instance, actively wrong the moment a second one exists
+    /// (it would abort a healthy peer's live games on every boot). Run both
+    /// at boot and periodically (see `main.rs`), since a peer can go quiet
+    /// at any time, not just when this instance happens to be starting.
+    #[tracing::instrument(skip(self))]
+    pub async fn reconcile_stale_active_games(&self) -> Result<u64, AuthError> {
+        let active_ids = self.game_store.list_active_game_ids().await?;
+        if active_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut stale = Vec::new();
+        for id in active_ids {
+            if self.redis_client.active_game_owner(id).await.is_none() {
+                stale.push(id);
+            }
+        }
+        if stale.is_empty() {
+            return Ok(0);
+        }
+
+        let count = self.game_store.abort_stale_games(&stale).await?;
+        if count > 0 {
+            tracing::warn!(count, ?stale, "reconciled_stale_active_games");
+        }
+        Ok(count)
+    }
+
     #[tracing::instrument(skip(self, tx), fields(user_id = %id, %session_id))]
     pub async fn add_match_inbox(&self, id: Uuid, session_id: Uuid, tx: MatchInboxSender) {
         let _ = self.match_inboxes.lock().await.insert(id, (session_id, tx));
@@ -209,16 +302,15 @@ impl AppState {
         }
     }
 
+    /// Publishes to Redis so whichever instance holds `id`'s live
+    /// matchmaking socket (this one or another) delivers it — see the
+    /// pattern-subscription dispatcher started in `RedisClient::new`. Also
+    /// clears any pending-match fallback, mirroring the old local-map
+    /// behavior (a delivered push means the reconnect fallback is moot).
     #[tracing::instrument(skip(self, message), fields(user_id = %id))]
     pub async fn notify_match(&self, id: Uuid, message: MatchmakingServerMessage) {
-        let tx = self.match_inboxes.lock().await.get(&id).map(|(_, tx)| tx.clone());
-        if let Some(tx) = tx {
-            if tx.unbounded_send(Ok(message)).is_ok() {
-                // Message successfully enqueued — consume pending match so a
-                // requeue after a fast game doesn't re-navigate to this game.
-                self.pending_matches.lock().await.remove(&id);
-            }
-        }
+        self.redis_client.mm_publish(id, &message).await;
+        self.redis_client.mm_take_pending_match(id).await;
     }
 
     /// Register a matchmaking tab. Returns the new count of active tabs for
@@ -234,72 +326,74 @@ impl AppState {
     }
 
     pub async fn set_pending_match(&self, player_id: Uuid, game_id: GameId, side: Side) {
-        self.pending_matches.lock().await.insert(
-            player_id,
-            PendingMatch { game_id, side, created_at: std::time::Instant::now() },
-        );
+        self.redis_client.mm_set_pending_match(player_id, PendingMatch { game_id, side }).await;
     }
 
     pub async fn take_pending_match(&self, player_id: &Uuid) -> Option<(GameId, Side)> {
-        let mut map = self.pending_matches.lock().await;
-        match map.remove(player_id) {
-            Some(pm) if pm.created_at.elapsed() < std::time::Duration::from_secs(60) => {
-                Some((pm.game_id, pm.side))
-            }
-            _ => None,
-        }
+        self.redis_client.mm_take_pending_match(*player_id).await.map(|pm| (pm.game_id, pm.side))
     }
 
     /// Registers a presence tab. Returns `true` when this was the user's
-    /// FIRST open tab — the caller should then broadcast
-    /// `PresenceUpdate { online: true }` to their friends.
+    /// FIRST open tab across ALL instances — the caller should then
+    /// broadcast `PresenceUpdate { online: true }` to their friends.
     #[tracing::instrument(skip(self, tx), fields(user_id = %user_id, %session_id))]
     pub async fn add_friends_inbox(&self, user_id: Uuid, session_id: Uuid, tx: FriendsInboxSender) -> bool {
-        friends_inbox_add(&self.friends_inboxes, user_id, session_id, tx).await
+        // Local bookkeeping first: this is what the pub/sub dispatcher reads
+        // to decide whether THIS instance should deliver an incoming
+        // message locally. The Redis call right after decides the globally
+        // correct first/last-tab transition for the online set.
+        friends_inbox_add(&self.friends_inboxes, user_id, session_id, tx).await;
+        let session = friends_session_key(session_id);
+        self.redis_client.friends_mark_online(user_id, &session).await
     }
 
     /// Deregisters one tab. Returns `true` when this was the LAST tab for
-    /// this user (map entry fully removed) — the caller should then
-    /// broadcast `PresenceUpdate { online: false }`. Removing an unknown or
+    /// this user ACROSS ALL INSTANCES — the caller should then broadcast
+    /// `PresenceUpdate { online: false }`. Removing an unknown or
     /// already-removed `session_id` is a no-op that returns `false`, so a
     /// stale cleanup can never mark a still-connected user offline.
     #[tracing::instrument(skip(self), fields(user_id = %user_id, %session_id))]
     pub async fn remove_friends_inbox(&self, user_id: &Uuid, session_id: Uuid) -> bool {
-        friends_inbox_remove(&self.friends_inboxes, user_id, session_id).await
+        let removed_locally = friends_inbox_remove(&self.friends_inboxes, user_id, session_id).await;
+        if !removed_locally {
+            return false;
+        }
+        let session = friends_session_key(session_id);
+        self.redis_client.friends_mark_offline(*user_id, &session).await
     }
 
-    /// Fans a message out to every open tab `user_id` has. Prunes senders
-    /// whose receiver has already dropped. Returns `true` if at least one
-    /// tab received it.
+    /// Publishes to Redis so every instance holding a live tab for `user_id`
+    /// delivers it locally — see the pattern-subscription dispatcher started
+    /// in `RedisClient::new`.
     #[tracing::instrument(skip(self, message), fields(user_id = %user_id))]
-    pub async fn notify_friend(&self, user_id: Uuid, message: FriendsServerMessage) -> bool {
-        friends_inbox_notify(&self.friends_inboxes, user_id, message).await
+    pub async fn notify_friend(&self, user_id: Uuid, message: FriendsServerMessage) {
+        self.redis_client.friends_publish(user_id, &message).await;
     }
 
     pub async fn is_online(&self, user_id: &Uuid) -> bool {
-        self.friends_inboxes.lock().await.contains_key(user_id)
+        self.redis_client.friends_is_online(*user_id).await
     }
 
-    pub async fn online_among(&self, user_ids: &[Uuid]) -> std::collections::HashSet<Uuid> {
-        let map = self.friends_inboxes.lock().await;
-        user_ids.iter().copied().filter(|id| map.contains_key(id)).collect()
+    pub async fn online_among(&self, user_ids: &[Uuid]) -> HashSet<Uuid> {
+        self.redis_client.friends_online_among(user_ids).await
     }
 
     pub async fn insert_challenge(&self, challenge: PendingChallenge) {
-        self.pending_challenges.lock().await.insert(challenge.id, challenge);
+        self.redis_client.challenge_insert(&challenge).await;
     }
 
     /// Removes and returns the challenge iff it exists and is within the
-    /// TTL. Take-not-peek is what makes a double-accept from two tabs create
-    /// exactly one game — the second caller finds nothing.
+    /// TTL (enforced natively by Redis key expiry). Take-not-peek is what
+    /// makes a double-accept from two tabs create exactly one game — the
+    /// second caller finds nothing, regardless of which instance it lands on.
     pub async fn take_challenge(&self, id: &Uuid) -> Option<PendingChallenge> {
-        challenge_take(&self.pending_challenges, id).await
+        self.redis_client.challenge_take(*id).await
     }
 
     /// Non-expired challenges addressed to `user_id`, for the reconnect
-    /// replay. Sweeps expired entries while holding the lock.
+    /// replay.
     pub async fn challenges_for(&self, user_id: &Uuid) -> Vec<PendingChallenge> {
-        challenges_for_user(&self.pending_challenges, user_id).await
+        self.redis_client.challenges_for_user(*user_id).await
     }
 
     /// Drops every outstanding challenge sent by `from`, returning them so
@@ -307,8 +401,22 @@ impl AppState {
     /// the challenger's last tab closes — otherwise a target could accept
     /// into a game against someone who has left the site.
     pub async fn cancel_challenges_from(&self, from: &Uuid) -> Vec<PendingChallenge> {
-        challenges_cancel_from(&self.pending_challenges, from).await
+        self.redis_client.challenges_cancel_from(*from).await
     }
+}
+
+/// This process's own identity — `FLY_MACHINE_ID` in production (injected
+/// automatically by Fly Machines), a fixed fallback in local dev where
+/// there's only ever one instance anyway.
+pub(crate) fn instance_id() -> String {
+    std::env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "local".to_string())
+}
+
+fn friends_session_key(session_id: Uuid) -> String {
+    // Instance-qualified so two instances issuing the same random session_id
+    // (astronomically unlikely, but free to guard against) can't collide in
+    // the shared Redis sessions set.
+    format!("{}:{session_id}", instance_id())
 }
 
 pub(crate) async fn friends_inbox_add(
@@ -337,6 +445,10 @@ pub(crate) async fn friends_inbox_remove(inboxes: &FriendsInboxes, user_id: &Uui
     false
 }
 
+/// Delivers to every LOCAL tab this instance holds for `user_id`. This is
+/// the last-mile half of friend notification — the pub/sub dispatcher in
+/// `RedisClient::new` calls this after receiving a published message; it's
+/// no longer called directly by `AppState::notify_friend` (see there).
 pub(crate) async fn friends_inbox_notify(
     inboxes: &FriendsInboxes,
     user_id: Uuid,
@@ -359,49 +471,128 @@ pub(crate) async fn friends_inbox_notify(
     sent
 }
 
-pub(crate) async fn challenge_take(challenges: &PendingChallenges, id: &Uuid) -> Option<PendingChallenge> {
-    let mut map = challenges.lock().await;
-    match map.remove(id) {
-        Some(c) if c.created_at.elapsed() < CHALLENGE_TTL => Some(c),
-        _ => None,
+/// Delivers to the LOCAL matchmaking inbox for `user_id`, if this instance
+/// holds one. Mirrors `friends_inbox_notify`'s role for the friends map.
+pub(crate) async fn match_inbox_notify(inboxes: &MatchInbox, user_id: Uuid, message: MatchmakingServerMessage) {
+    let tx = inboxes.lock().await.get(&user_id).map(|(_, tx)| tx.clone());
+    if let Some(tx) = tx {
+        let _ = tx.unbounded_send(Ok(message));
     }
 }
 
-pub(crate) async fn challenges_for_user(challenges: &PendingChallenges, user_id: &Uuid) -> Vec<PendingChallenge> {
-    let mut map = challenges.lock().await;
-    map.retain(|_, c| c.created_at.elapsed() < CHALLENGE_TTL);
-    map.values().filter(|c| c.to == *user_id).cloned().collect()
+pub(crate) async fn refcount_enter(
+    refcount: &MatchmakingRefcount,
+    player_id: Uuid,
+    key: String,
+) -> u32 {
+    let mut map = refcount.lock().await;
+    let entry = map.entry(player_id).or_insert((0, key));
+    entry.0 += 1;
+    entry.0
 }
 
-pub(crate) async fn challenges_cancel_from(challenges: &PendingChallenges, from: &Uuid) -> Vec<PendingChallenge> {
-    let mut map = challenges.lock().await;
-    let ids: Vec<Uuid> = map.values().filter(|c| c.from == *from).map(|c| c.id).collect();
-    ids.into_iter().filter_map(|id| map.remove(&id)).collect()
+pub(crate) async fn refcount_leave(
+    refcount: &MatchmakingRefcount,
+    player_id: &Uuid,
+) -> Option<String> {
+    let mut map = refcount.lock().await;
+    if let Some(entry) = map.get_mut(player_id) {
+        entry.0 = entry.0.saturating_sub(1);
+        if entry.0 == 0 {
+            let key = entry.1.clone();
+            map.remove(player_id);
+            return Some(key);
+        }
+    }
+    None
+}
+
+/// Routes an incoming pub/sub message to the right local inbox map based on
+/// its channel prefix. One subscriber client (see `RedisClient::new`)
+/// pattern-subscribes to both `friends:user:*` and `mm:user:*`, so every
+/// instance's dispatcher sees every published message regardless of which
+/// instance published it — cheap at this app's scale, and far simpler than
+/// per-user dynamic subscribe/unsubscribe management.
+async fn dispatch_pubsub_message(friends_inboxes: &FriendsInboxes, match_inboxes: &MatchInbox, message: Message) {
+    let Some(payload) = message.value.as_str() else { return };
+    if let Some(user_id_str) = message.channel.strip_prefix("friends:user:") {
+        let Ok(user_id) = Uuid::parse_str(user_id_str) else { return };
+        let Ok(parsed) = serde_json::from_str::<FriendsServerMessage>(&payload) else { return };
+        friends_inbox_notify(friends_inboxes, user_id, parsed).await;
+    } else if let Some(user_id_str) = message.channel.strip_prefix("mm:user:") {
+        let Ok(user_id) = Uuid::parse_str(user_id_str) else { return };
+        let Ok(parsed) = serde_json::from_str::<MatchmakingServerMessage>(&payload) else { return };
+        match_inbox_notify(match_inboxes, user_id, parsed).await;
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct RedisClient {
     pool: fred::clients::Pool,
-    hash: String,
+    find_pair_hash: String,
+    presence_hash: String,
 }
 
 const FIND_PAIR_SCRIPT: &str = include_str!("matchmaking/find_pair.lua");
+const PRESENCE_SCRIPT: &str = include_str!("friends/presence.lua");
+
+/// TTL on `active_games:{id}` — the heartbeat for game ownership. Renewed
+/// every `ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS` by `GameRoom::heartbeat_task`
+/// and on every move; a healthy owning instance can never let this lapse.
+/// 3x the renewal interval mirrors the same check:timeout ratio idiom
+/// already used for the client-side game-socket heartbeat
+/// (`HEARTBEAT_CHECK_MS`/`HEARTBEAT_TIMEOUT_MS` in `play_board/ws_session.rs`).
+const ACTIVE_GAME_TTL_SECS: i64 = 30;
+pub const ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS: u64 = 10;
 
 impl RedisClient {
-    pub async fn new(pool: fred::clients::Pool) -> Self {
-        let hash = fred::util::sha1_hash(FIND_PAIR_SCRIPT);
+    pub async fn new(
+        pool: fred::clients::Pool,
+        subscriber: fred::clients::SubscriberClient,
+        friends_inboxes: FriendsInboxes,
+        match_inboxes: MatchInbox,
+    ) -> Self {
+        let find_pair_hash = Self::load_script(&pool, FIND_PAIR_SCRIPT).await;
+        let presence_hash = Self::load_script(&pool, PRESENCE_SCRIPT).await;
+
+        subscriber.connect();
+        subscriber
+            .wait_for_connect()
+            .await
+            .expect("Redis subscriber failed initial connect");
+        // Auto-resubscribe on reconnect — otherwise a dropped subscriber
+        // connection would silently stop delivering cross-instance friend
+        // and matchmaking messages until the next deploy.
+        subscriber.manage_subscriptions();
+        subscriber
+            .psubscribe(vec!["friends:user:*", "mm:user:*"])
+            .await
+            .expect("Redis PSUBSCRIBE failed at startup");
+        subscriber.on_message(move |message: Message| {
+            let friends_inboxes = friends_inboxes.clone();
+            let match_inboxes = match_inboxes.clone();
+            async move {
+                dispatch_pubsub_message(&friends_inboxes, &match_inboxes, message).await;
+                Ok(())
+            }
+        });
+
+        Self { pool, find_pair_hash, presence_hash }
+    }
+
+    async fn load_script(pool: &fred::clients::Pool, script: &str) -> String {
+        let hash = fred::util::sha1_hash(script);
         let exists: Vec<bool> = pool
             .script_exists(&hash)
             .await
             .expect("SCRIPT EXISTS on Redis failed at startup");
         if !exists.first().copied().unwrap_or(false) {
             let _: () = pool
-                .script_load(FIND_PAIR_SCRIPT)
+                .script_load(script)
                 .await
                 .expect("SCRIPT LOAD on Redis failed at startup");
         }
-
-        Self { pool, hash }
+        hash
     }
 
     #[tracing::instrument(skip(self), fields(%player_id))]
@@ -415,7 +606,7 @@ impl RedisClient {
         let opp: Option<String> = self
             .pool
             .evalsha(
-                &self.hash,
+                &self.find_pair_hash,
                 vec![bucket],
                 vec![
                     player_id.to_string(),
@@ -456,33 +647,323 @@ impl RedisClient {
     pub async fn remove_from_bucket(&self, bucket: &str, player_id: Uuid) -> FredResult<()> {
         self.pool.zrem(bucket, player_id.to_string()).await
     }
-}
 
-pub(crate) async fn refcount_enter(
-    refcount: &MatchmakingRefcount,
-    player_id: Uuid,
-    key: String,
-) -> u32 {
-    let mut map = refcount.lock().await;
-    let entry = map.entry(player_id).or_insert((0, key));
-    entry.0 += 1;
-    entry.0
-}
+    // --- Friends presence ---
 
-pub(crate) async fn refcount_leave(
-    refcount: &MatchmakingRefcount,
-    player_id: &Uuid,
-) -> Option<String> {
-    let mut map = refcount.lock().await;
-    if let Some(entry) = map.get_mut(player_id) {
-        entry.0 = entry.0.saturating_sub(1);
-        if entry.0 == 0 {
-            let key = entry.1.clone();
-            map.remove(player_id);
-            return Some(key);
+    async fn friends_presence_transition(&self, action: &str, user_id: Uuid, session: &str) -> bool {
+        let sessions_key = format!("friends:sessions:{user_id}");
+        let result: i64 = self
+            .pool
+            .evalsha(
+                &self.presence_hash,
+                vec!["friends:online", sessions_key.as_str()],
+                vec![action.to_string(), session.to_string(), user_id.to_string()],
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(?e, %user_id, "friends presence transition failed");
+                0
+            });
+        result == 1
+    }
+
+    /// Returns `true` iff this was `user_id`'s first tab across all instances.
+    pub async fn friends_mark_online(&self, user_id: Uuid, session: &str) -> bool {
+        self.friends_presence_transition("add", user_id, session).await
+    }
+
+    /// Returns `true` iff this was `user_id`'s last tab across all instances.
+    pub async fn friends_mark_offline(&self, user_id: Uuid, session: &str) -> bool {
+        self.friends_presence_transition("remove", user_id, session).await
+    }
+
+    pub async fn friends_is_online(&self, user_id: Uuid) -> bool {
+        self.pool.sismember("friends:online", user_id.to_string()).await.unwrap_or(false)
+    }
+
+    /// Fetches the whole online set once and intersects locally rather than
+    /// N round trips — fine at this app's scale (a user's friend list and
+    /// the online set are both small).
+    pub async fn friends_online_among(&self, user_ids: &[Uuid]) -> HashSet<Uuid> {
+        if user_ids.is_empty() {
+            return HashSet::new();
+        }
+        let members: Vec<String> = self.pool.smembers("friends:online").await.unwrap_or_default();
+        let online: HashSet<Uuid> = members.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect();
+        user_ids.iter().copied().filter(|id| online.contains(id)).collect()
+    }
+
+    /// Publishes to `friends:user:{user_id}` — delivered to every instance's
+    /// dispatcher (see `RedisClient::new`), which fans out to that
+    /// instance's own local tabs for this user, if any. Best-effort: a
+    /// failure here is logged, never surfaced to the caller, matching the
+    /// old local-map behavior where every call site already ignored the
+    /// return value.
+    pub async fn friends_publish(&self, user_id: Uuid, message: &FriendsServerMessage) {
+        let payload: String = match serde_json::to_string(message) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(?e, "failed to serialize FriendsServerMessage");
+                return;
+            }
+        };
+        let result: FredResult<i64> =
+            self.pool.next().publish(format!("friends:user:{user_id}"), payload).await;
+        if let Err(e) = result {
+            tracing::warn!(?e, %user_id, "friends_publish failed");
         }
     }
-    None
+
+    // --- Matchmaking push ---
+
+    pub async fn mm_publish(&self, user_id: Uuid, message: &MatchmakingServerMessage) {
+        let payload: String = match serde_json::to_string(message) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(?e, "failed to serialize MatchmakingServerMessage");
+                return;
+            }
+        };
+        let result: FredResult<i64> =
+            self.pool.next().publish(format!("mm:user:{user_id}"), payload).await;
+        if let Err(e) = result {
+            tracing::warn!(?e, %user_id, "mm_publish failed");
+        }
+    }
+
+    pub async fn mm_set_pending_match(&self, user_id: Uuid, pending: PendingMatch) {
+        let Ok(payload) = serde_json::to_string(&pending) else { return };
+        if let Err(e) = self
+            .pool
+            .set::<(), _, _>(
+                format!("mm:pending:{user_id}"),
+                payload,
+                Some(Expiration::EX(PENDING_MATCH_TTL_SECS)),
+                None,
+                false,
+            )
+            .await
+        {
+            tracing::warn!(?e, %user_id, "mm_set_pending_match failed");
+        }
+    }
+
+    /// Atomic get-and-delete via Redis `GETDEL` — the TTL set in
+    /// `mm_set_pending_match` is the entire expiry mechanism, no manual
+    /// `Instant` bookkeeping needed.
+    pub async fn mm_take_pending_match(&self, user_id: Uuid) -> Option<PendingMatch> {
+        let raw: Option<String> = self.pool.getdel(format!("mm:pending:{user_id}")).await.ok().flatten();
+        raw.and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    // --- Challenges ---
+
+    pub async fn challenge_insert(&self, challenge: &PendingChallenge) {
+        let Ok(payload) = serde_json::to_string(challenge) else { return };
+        let key = format!("challenge:{}", challenge.id);
+        if let Err(e) = self
+            .pool
+            .set::<(), _, _>(&key, payload, Some(Expiration::EX(CHALLENGE_TTL_SECS)), None, false)
+            .await
+        {
+            tracing::warn!(?e, challenge_id = %challenge.id, "challenge_insert failed");
+            return;
+        }
+        // Index sets for `challenges_for_user`/`challenges_cancel_from`.
+        // Members here can point at an already-expired/taken challenge —
+        // both readers double-check the challenge key itself still exists,
+        // so a stale index entry just gets silently filtered, never
+        // resurrects an answered challenge.
+        let to_key = format!("challenges:to:{}", challenge.to);
+        let from_key = format!("challenges:from:{}", challenge.from);
+        let id = challenge.id.to_string();
+        let _: Result<(), _> = self.pool.sadd(&to_key, id.as_str()).await;
+        let _: Result<(), _> = self.pool.expire::<(), _>(&to_key, CHALLENGE_TTL_SECS, None).await;
+        let _: Result<(), _> = self.pool.sadd(&from_key, id.as_str()).await;
+        let _: Result<(), _> = self.pool.expire::<(), _>(&from_key, CHALLENGE_TTL_SECS, None).await;
+    }
+
+    /// Atomic get-and-delete — makes a double-accept from two tabs/instances
+    /// yield the challenge to exactly one caller.
+    pub async fn challenge_take(&self, id: Uuid) -> Option<PendingChallenge> {
+        let raw: Option<String> = self.pool.getdel(format!("challenge:{id}")).await.ok().flatten();
+        raw.and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    pub async fn challenges_for_user(&self, user_id: Uuid) -> Vec<PendingChallenge> {
+        let ids: Vec<String> = self
+            .pool
+            .smembers(format!("challenges:to:{user_id}"))
+            .await
+            .unwrap_or_default();
+        let mut result = Vec::new();
+        for id in ids {
+            let raw: Option<String> = self.pool.get(format!("challenge:{id}")).await.ok().flatten();
+            if let Some(c) = raw.and_then(|s| serde_json::from_str::<PendingChallenge>(&s).ok()) {
+                result.push(c);
+            }
+        }
+        result
+    }
+
+    pub async fn challenges_cancel_from(&self, from: Uuid) -> Vec<PendingChallenge> {
+        let ids: Vec<String> = self
+            .pool
+            .smembers(format!("challenges:from:{from}"))
+            .await
+            .unwrap_or_default();
+        let mut result = Vec::new();
+        for id in ids {
+            let raw: Option<String> = self.pool.getdel(format!("challenge:{id}")).await.ok().flatten();
+            if let Some(c) = raw.and_then(|s| serde_json::from_str::<PendingChallenge>(&s).ok()) {
+                result.push(c);
+            }
+        }
+        let _: Result<(), _> = self.pool.del(format!("challenges:from:{from}")).await;
+        result
+    }
+
+    // --- Cross-instance watch-grid roster index ---
+    //
+    // `active_games:{game_id}` is a small hash any instance can read to
+    // render a game it doesn't locally own in the watch grid, AND the
+    // ownership/heartbeat record a routing middleware and (later) a reaper
+    // rely on. Written on creation and on every move (see the move path in
+    // `websocket.rs`), removed on finalize/abort/timeout/resign/draw. Its
+    // TTL (`ACTIVE_GAME_TTL_SECS`) is the heartbeat: refreshed on every move
+    // and by a periodic per-room task (`GameRoom::heartbeat_task`) so a
+    // slow-clock game with long gaps between moves doesn't look stale. A
+    // reaper checking this hash's mere existence (not a manual timestamp
+    // comparison) is what lets it tell "orphaned" (owning instance gone,
+    // heartbeat lapsed, key expired) from "owned by a healthy peer" (key
+    // still there).
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn active_game_upsert(
+        &self,
+        game_id: Uuid,
+        white_id: Uuid,
+        black_id: Uuid,
+        category: &str,
+        rated: bool,
+        fen: &str,
+        owner_instance: &str,
+    ) {
+        let key = format!("active_games:{game_id}");
+        let fields: Vec<(&str, String)> = vec![
+            ("white_id", white_id.to_string()),
+            ("black_id", black_id.to_string()),
+            ("category", category.to_string()),
+            ("rated", if rated { "1" } else { "0" }.to_string()),
+            ("fen", fen.to_string()),
+            ("owner_instance", owner_instance.to_string()),
+        ];
+        if let Err(e) = self.pool.hset::<(), _, _>(&key, fields).await {
+            tracing::warn!(?e, %game_id, "active_game_upsert failed");
+            return;
+        }
+        if let Err(e) = self.pool.expire::<(), _>(&key, ACTIVE_GAME_TTL_SECS, None).await {
+            tracing::warn!(?e, %game_id, "active_game_upsert: setting TTL failed");
+        }
+    }
+
+    /// Cheaper partial update for the per-move case — only `fen` changes.
+    /// Also refreshes the TTL, so active play is itself a heartbeat signal
+    /// independent of the periodic `heartbeat_task` tick.
+    pub async fn active_game_update_fen(&self, game_id: Uuid, fen: &str) {
+        let key = format!("active_games:{game_id}");
+        if let Err(e) = self.pool.hset::<(), _, _>(&key, vec![("fen", fen.to_string())]).await {
+            tracing::warn!(?e, %game_id, "active_game_update_fen failed");
+            return;
+        }
+        if let Err(e) = self.pool.expire::<(), _>(&key, ACTIVE_GAME_TTL_SECS, None).await {
+            tracing::warn!(?e, %game_id, "active_game_update_fen: refreshing TTL failed");
+        }
+    }
+
+    /// The periodic heartbeat tick — see `GameRoom::heartbeat_task`. A no-op
+    /// on a key that's already gone (game already ended and was removed),
+    /// consistent with every other method here treating a missing entry as
+    /// "nothing to do" rather than an error.
+    pub async fn refresh_active_game_heartbeat(&self, game_id: Uuid) {
+        let _: Result<(), _> = self
+            .pool
+            .expire::<(), _>(format!("active_games:{game_id}"), ACTIVE_GAME_TTL_SECS, None)
+            .await;
+    }
+
+    /// The instance id that owns `game_id`, if the entry exists (and hasn't
+    /// expired). `None` means either the game never existed here or its
+    /// heartbeat has lapsed — both cases a caller should treat as "not
+    /// reliably routable to a specific instance right now."
+    pub async fn active_game_owner(&self, game_id: Uuid) -> Option<String> {
+        self.pool.hget(format!("active_games:{game_id}"), "owner_instance").await.ok().flatten()
+    }
+
+    pub async fn active_game_remove(&self, game_id: Uuid) {
+        let _: Result<(), _> = self.pool.del(format!("active_games:{game_id}")).await;
+    }
+
+    /// All currently-indexed active games except the given ids (already
+    /// known locally to the caller, e.g. this instance's own `GameRooms`).
+    /// Uses `SCAN` rather than `KEYS` to avoid blocking Redis on a large
+    /// keyspace — acceptable at this app's game-count scale either way, but
+    /// SCAN costs nothing extra and is the safer default.
+    pub async fn active_games_excluding(&self, exclude: &HashSet<Uuid>) -> Vec<ActiveGameEntry> {
+        let mut cursor = "0".to_string();
+        let mut ids = Vec::new();
+        loop {
+            let (next_cursor, keys): (String, Vec<String>) = match self
+                .pool
+                .scan_page(cursor, "active_games:*", Some(100), None)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(?e, "active_games scan failed");
+                    break;
+                }
+            };
+            ids.extend(keys);
+            if next_cursor == "0" {
+                break;
+            }
+            cursor = next_cursor;
+        }
+
+        let mut result = Vec::new();
+        for key in ids {
+            let Some(game_id_str) = key.strip_prefix("active_games:") else { continue };
+            let Ok(game_id) = Uuid::parse_str(game_id_str) else { continue };
+            if exclude.contains(&game_id) {
+                continue;
+            }
+            let fields: HashMap<String, String> = self.pool.hgetall(&key).await.unwrap_or_default();
+            let (Some(white_id), Some(black_id), Some(category), Some(rated), Some(fen)) = (
+                fields.get("white_id").and_then(|s| Uuid::parse_str(s).ok()),
+                fields.get("black_id").and_then(|s| Uuid::parse_str(s).ok()),
+                fields.get("category").cloned(),
+                fields.get("rated").map(|s| s == "1"),
+                fields.get("fen").cloned(),
+            ) else {
+                continue;
+            };
+            result.push(ActiveGameEntry { game_id, white_id, black_id, category, rated, fen });
+        }
+        result
+    }
+}
+
+/// One cross-instance-visible active game, as read back from Redis for the
+/// watch-grid roster.
+#[derive(Debug, Clone)]
+pub struct ActiveGameEntry {
+    pub game_id: Uuid,
+    pub white_id: Uuid,
+    pub black_id: Uuid,
+    pub category: String,
+    pub rated: bool,
+    pub fen: String,
 }
 
 #[cfg(test)]
@@ -490,13 +971,21 @@ mod tests {
     use super::*;
     use fred::prelude::*;
 
-    async fn make_redis_client() -> RedisClient {
+    async fn make_redis_client_with_inboxes() -> (RedisClient, FriendsInboxes, MatchInbox) {
         let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
         let config = Config::from_url(&redis_url).expect("invalid REDIS_URL");
-        let pool = Pool::new(config, None, None, None, 2).expect("build pool");
+        let pool = Pool::new(config.clone(), None, None, None, 2).expect("build pool");
         pool.connect();
         pool.wait_for_connect().await.expect("Redis connect");
-        RedisClient::new(pool).await
+        let subscriber = fred::clients::SubscriberClient::new(config, None, None, None);
+        let friends_inboxes: FriendsInboxes = Arc::new(Mutex::new(HashMap::new()));
+        let match_inboxes: MatchInbox = Arc::new(Mutex::new(HashMap::new()));
+        let client = RedisClient::new(pool, subscriber, friends_inboxes.clone(), match_inboxes.clone()).await;
+        (client, friends_inboxes, match_inboxes)
+    }
+
+    async fn make_redis_client() -> RedisClient {
+        make_redis_client_with_inboxes().await.0
     }
 
     /// Unique bucket per test so parallel tests don't interfere.
@@ -711,10 +1200,6 @@ mod tests {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
-    fn make_challenges() -> PendingChallenges {
-        Arc::new(Mutex::new(HashMap::new()))
-    }
-
     fn dummy_sender() -> (FriendsInboxSender, futures::channel::mpsc::UnboundedReceiver<Result<FriendsServerMessage, ServerFnError>>) {
         futures::channel::mpsc::unbounded()
     }
@@ -822,79 +1307,191 @@ mod tests {
             to,
             time_control: TimeControl { initial_time: 300_000, mode: shared::TimeMode::Increment(0) },
             rating_mode: RatingMode::Rated,
-            created_at: std::time::Instant::now(),
         }
     }
 
     #[tokio::test]
-    async fn take_challenge_returns_it_once_then_none() {
-        let challenges = make_challenges();
+    async fn challenge_take_returns_it_once_then_none() {
+        let client = make_redis_client().await;
         let c = make_test_challenge(Uuid::new_v4(), Uuid::new_v4());
         let id = c.id;
-        challenges.lock().await.insert(id, c);
+        client.challenge_insert(&c).await;
 
-        let taken = challenge_take(&challenges, &id).await;
+        let taken = client.challenge_take(id).await;
         assert!(taken.is_some());
-        let taken_again = challenge_take(&challenges, &id).await;
+        let taken_again = client.challenge_take(id).await;
         assert!(taken_again.is_none(), "double-take must not yield the challenge twice");
     }
 
     #[tokio::test]
-    async fn take_challenge_expired_returns_none() {
-        let challenges = make_challenges();
-        let mut c = make_test_challenge(Uuid::new_v4(), Uuid::new_v4());
-        c.created_at = std::time::Instant::now() - (CHALLENGE_TTL + std::time::Duration::from_secs(1));
-        let id = c.id;
-        challenges.lock().await.insert(id, c);
-
-        assert!(challenge_take(&challenges, &id).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn challenges_for_user_filters_by_addressee_and_sweeps_expired() {
-        let challenges = make_challenges();
+    async fn challenges_for_user_filters_by_addressee() {
+        let client = make_redis_client().await;
         let target = Uuid::new_v4();
         let live = make_test_challenge(Uuid::new_v4(), target);
         let live_id = live.id;
-        let mut expired = make_test_challenge(Uuid::new_v4(), target);
-        expired.created_at = std::time::Instant::now() - (CHALLENGE_TTL + std::time::Duration::from_secs(1));
-        let expired_id = expired.id;
         let not_for_me = make_test_challenge(Uuid::new_v4(), Uuid::new_v4());
+        client.challenge_insert(&live).await;
+        client.challenge_insert(&not_for_me).await;
 
-        {
-            let mut map = challenges.lock().await;
-            map.insert(live_id, live);
-            map.insert(expired_id, expired);
-            map.insert(not_for_me.id, not_for_me);
-        }
-
-        let result = challenges_for_user(&challenges, &target).await;
+        let result = client.challenges_for_user(target).await;
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, live_id);
-        assert!(!challenges.lock().await.contains_key(&expired_id), "expired entry must be swept");
     }
 
     #[tokio::test]
     async fn cancel_challenges_from_removes_only_that_challenger() {
-        let challenges = make_challenges();
+        let client = make_redis_client().await;
         let challenger = Uuid::new_v4();
         let mine1 = make_test_challenge(challenger, Uuid::new_v4());
         let mine2 = make_test_challenge(challenger, Uuid::new_v4());
         let others = make_test_challenge(Uuid::new_v4(), Uuid::new_v4());
         let others_id = others.id;
+        client.challenge_insert(&mine1).await;
+        client.challenge_insert(&mine2).await;
+        client.challenge_insert(&others).await;
 
-        {
-            let mut map = challenges.lock().await;
-            map.insert(mine1.id, mine1);
-            map.insert(mine2.id, mine2);
-            map.insert(others_id, others);
-        }
-
-        let cancelled = challenges_cancel_from(&challenges, &challenger).await;
+        let cancelled = client.challenges_cancel_from(challenger).await;
         assert_eq!(cancelled.len(), 2);
 
-        let map = challenges.lock().await;
-        assert_eq!(map.len(), 1);
-        assert!(map.contains_key(&others_id));
+        // The other challenger's own challenge must be untouched.
+        assert!(client.challenge_take(others_id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn friends_presence_first_and_last_tab_transitions() {
+        let client = make_redis_client().await;
+        let user = Uuid::new_v4();
+        let session_a = format!("test:{}", Uuid::new_v4());
+        let session_b = format!("test:{}", Uuid::new_v4());
+
+        assert!(client.friends_mark_online(user, &session_a).await, "first tab");
+        assert!(client.friends_is_online(user).await, "sanity: user is online");
+        assert!(!client.friends_mark_online(user, &session_b).await, "second tab is not first");
+
+        assert!(!client.friends_mark_offline(user, &session_a).await, "closing one of two tabs is not last");
+        assert!(client.friends_is_online(user).await, "still online with one tab left");
+
+        assert!(client.friends_mark_offline(user, &session_b).await, "closing the last tab");
+        assert!(!client.friends_is_online(user).await, "offline once all tabs close");
+    }
+
+    #[tokio::test]
+    async fn friends_presence_unknown_session_is_noop() {
+        let client = make_redis_client().await;
+        let user = Uuid::new_v4();
+        let real_session = format!("test:{}", Uuid::new_v4());
+        let stale_session = format!("test:{}", Uuid::new_v4());
+
+        client.friends_mark_online(user, &real_session).await;
+        let was_last = client.friends_mark_offline(user, &stale_session).await;
+        assert!(!was_last, "a session that was never added must not report itself as last");
+        assert!(client.friends_is_online(user).await, "real tab is still open");
+
+        // cleanup
+        client.friends_mark_offline(user, &real_session).await;
+    }
+
+    #[tokio::test]
+    async fn mm_pending_match_round_trips_and_is_removed_on_take() {
+        let client = make_redis_client().await;
+        let user = Uuid::new_v4();
+        let pending = PendingMatch { game_id: Uuid::new_v4(), side: Side::White };
+        client.mm_set_pending_match(user, pending.clone()).await;
+
+        let taken = client.mm_take_pending_match(user).await;
+        assert_eq!(taken.map(|p| p.game_id), Some(pending.game_id));
+
+        let taken_again = client.mm_take_pending_match(user).await;
+        assert!(taken_again.is_none(), "double-take must not yield it twice");
+    }
+
+    #[tokio::test]
+    async fn active_game_upsert_and_remove_round_trip() {
+        let client = make_redis_client().await;
+        let game_id = Uuid::new_v4();
+        let white = Uuid::new_v4();
+        let black = Uuid::new_v4();
+        client.active_game_upsert(game_id, white, black, "blitz", true, "startpos", "test-instance").await;
+
+        let found = client.active_games_excluding(&HashSet::new()).await;
+        let entry = found.iter().find(|e| e.game_id == game_id).expect("game should be indexed");
+        assert_eq!(entry.white_id, white);
+        assert_eq!(entry.black_id, black);
+        assert_eq!(entry.fen, "startpos");
+        assert_eq!(client.active_game_owner(game_id).await.as_deref(), Some("test-instance"));
+
+        client.active_game_update_fen(game_id, "moved").await;
+        let found = client.active_games_excluding(&HashSet::new()).await;
+        let entry = found.iter().find(|e| e.game_id == game_id).unwrap();
+        assert_eq!(entry.fen, "moved");
+
+        client.active_game_remove(game_id).await;
+        let found = client.active_games_excluding(&HashSet::new()).await;
+        assert!(found.iter().all(|e| e.game_id != game_id), "removed game must not be indexed");
+        assert!(client.active_game_owner(game_id).await.is_none(), "owner lookup must miss once removed");
+    }
+
+    #[tokio::test]
+    async fn active_game_upsert_sets_a_ttl_and_heartbeat_refreshes_it() {
+        let client = make_redis_client().await;
+        let game_id = Uuid::new_v4();
+        client
+            .active_game_upsert(game_id, Uuid::new_v4(), Uuid::new_v4(), "blitz", true, "startpos", "inst-a")
+            .await;
+
+        let key = format!("active_games:{game_id}");
+        let ttl: i64 = client.pool.ttl(&key).await.unwrap();
+        assert!(ttl > 0, "upsert must set a TTL, got {ttl}");
+
+        // Manually shrink the TTL, then confirm the heartbeat call restores it —
+        // this is the exact mechanism a healthy owning instance relies on to
+        // keep a slow-clock game (long gaps between moves) from looking stale.
+        let _: () = client.pool.expire(&key, 2, None).await.unwrap();
+        client.refresh_active_game_heartbeat(game_id).await;
+        let ttl_after: i64 = client.pool.ttl(&key).await.unwrap();
+        assert!(ttl_after > 2, "heartbeat must refresh the TTL, got {ttl_after}");
+
+        client.active_game_remove(game_id).await;
+    }
+
+    /// End-to-end: publishing through `RedisClient` actually reaches a
+    /// locally-registered inbox via the pattern-subscription dispatcher —
+    /// not just that the Redis calls succeed in isolation. This is the
+    /// highest-risk new code path in this phase (real pub/sub, not just
+    /// key/value/set operations), so it gets its own direct test rather
+    /// than only being exercised indirectly through higher-level call sites.
+    #[tokio::test]
+    async fn friends_publish_reaches_local_inbox_via_dispatcher() {
+        let (client, friends_inboxes, _match_inboxes) = make_redis_client_with_inboxes().await;
+        let user = Uuid::new_v4();
+        let (tx, mut rx) = dummy_sender();
+        friends_inbox_add(&friends_inboxes, user, Uuid::new_v4(), tx).await;
+
+        client.friends_publish(user, &FriendsServerMessage::FriendListChanged).await;
+
+        use futures::StreamExt;
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx.next())
+            .await
+            .expect("dispatcher did not deliver the published message in time");
+        assert!(matches!(received, Some(Ok(FriendsServerMessage::FriendListChanged))));
+    }
+
+    #[tokio::test]
+    async fn mm_publish_reaches_local_inbox_via_dispatcher() {
+        let (client, _friends_inboxes, match_inboxes) = make_redis_client_with_inboxes().await;
+        let user = Uuid::new_v4();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Result<MatchmakingServerMessage, ServerFnError>>();
+        match_inboxes.lock().await.insert(user, (Uuid::new_v4(), tx));
+
+        let game_id = Uuid::new_v4();
+        client
+            .mm_publish(user, &MatchmakingServerMessage::Matched { game: game_id, side: Side::White })
+            .await;
+
+        use futures::StreamExt;
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx.next())
+            .await
+            .expect("dispatcher did not deliver the published message in time");
+        assert!(matches!(received, Some(Ok(MatchmakingServerMessage::Matched { game, side: Side::White })) if game == game_id));
     }
 }

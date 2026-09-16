@@ -315,31 +315,86 @@ impl GameStore {
         Ok(())
     }
 
-    /// Marks every still-`active` game as `aborted` at server boot. A fresh
-    /// process starts with an empty in-memory `GameRoom` map, so any row
-    /// still `active` at this point can only be one orphaned by a prior
-    /// restart/redeploy (the room died with the process, but nothing ever
-    /// updated the DB row) — never a legitimately in-progress game. Leaves
-    /// `moves`/`clocks`/`final_fen` untouched since real history already
-    /// exists on these rows; only flips status/result/termination/ended_at,
-    /// same fields `abort_game` sets.
+    /// All game ids currently `active`, for the heartbeat-aware reaper (see
+    /// `AppState::reconcile_stale_active_games`) to check each one's
+    /// `active_games:{id}` Redis heartbeat against.
     #[tracing::instrument(skip(self))]
-    pub async fn reconcile_orphaned_active_games(&self) -> Result<u64, AuthError> {
+    pub async fn list_active_game_ids(&self) -> Result<Vec<Uuid>, AuthError> {
+        let rows = sqlx::query_scalar!("SELECT id FROM games WHERE status = 'active'")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
+    /// Marks exactly the given ids `aborted` — used by the reaper once it's
+    /// confirmed each one's owning instance has actually gone quiet (Redis
+    /// heartbeat lapsed), not just "some row is active". Same field set as
+    /// `abort_game`: leaves `moves`/`clocks`/`final_fen` untouched, since
+    /// real history already exists on these rows via incremental
+    /// persistence (`persist_progress`) — only flips
+    /// status/result/termination/ended_at. `WHERE status = 'active'` guards
+    /// against a TOCTOU race where the game legitimately finished between
+    /// the reaper's heartbeat check and this write.
+    #[tracing::instrument(skip(self, ids), fields(n = ids.len()))]
+    pub async fn abort_stale_games(&self, ids: &[Uuid]) -> Result<u64, AuthError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
         let result = sqlx::query!(
             r#"UPDATE games
                SET status = 'aborted',
                    result = NULL,
                    termination = 'abandonment',
                    ended_at = now()
-               WHERE status = 'active'"#
+               WHERE id = ANY($1) AND status = 'active'"#,
+            ids,
         )
         .execute(&self.pool)
         .await?;
-        let count = result.rows_affected();
-        if count > 0 {
-            tracing::warn!(count, "reconciled_orphaned_active_games");
-        }
-        Ok(count)
+        Ok(result.rows_affected())
+    }
+
+    /// A game's bare `status` column, for a reconnect attempt that finds no
+    /// live `GameRoom` (e.g. the reaper aborted it after its owning
+    /// instance went quiet) to distinguish "this game ended" from "this id
+    /// never existed" — see the `game_websocket` join handler.
+    #[tracing::instrument(skip(self), fields(%game_id))]
+    pub async fn get_game_status(&self, game_id: Uuid) -> Result<Option<String>, AuthError> {
+        Ok(sqlx::query_scalar!("SELECT status FROM games WHERE id = $1", game_id)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
+    /// Persists move/clock history for a still-in-progress game. Called
+    /// after every move (fire-and-forget, see `spawn_progress_persist`) so a
+    /// game killed mid-flight — server restart, Fly autostop — still has its
+    /// full history on disk instead of losing everything, since otherwise
+    /// `moves`/`clocks` stay `NULL` until `finalize_game`/`abort_game` runs
+    /// at game end.
+    ///
+    /// `WHERE status = 'active'` is deliberate: once `finalize_game`/
+    /// `abort_game` flips status away from `'active'`, a late in-flight
+    /// progress write becomes a no-op (0 rows) instead of racing/clobbering
+    /// the authoritative final write — no ordering or locking needed between
+    /// this and the end-of-game path.
+    #[tracing::instrument(skip(self, moves, clocks), fields(game_id = %game_id))]
+    pub async fn persist_progress(
+        &self,
+        game_id: Uuid,
+        moves: &[String],
+        clocks: &[(i64, i64)],
+    ) -> Result<(), AuthError> {
+        let moves_joined = moves.join(" ");
+        let clocks_joined = clocks_to_string(clocks);
+        sqlx::query!(
+            r#"UPDATE games SET moves = $2, clocks = $3 WHERE id = $1 AND status = 'active'"#,
+            game_id,
+            moves_joined,
+            clocks_joined,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Loads a game's move/clock history for the analysis board. `None` if
@@ -555,9 +610,26 @@ impl GameStore {
     }
 }
 
-pub fn spawn_finalize(game_store: GameStore, plan: Option<GameFinalization>) {
+/// Fire-and-forget per-move persistence — see `GameStore::persist_progress`.
+/// Never awaited by the move path; a slow or failed write here must not add
+/// latency to a move reaching the opponent, which stays instant via the
+/// in-memory broadcast channel regardless of how this turns out.
+pub fn spawn_progress_persist(game_store: GameStore, game_id: Uuid, moves: Vec<String>, clocks: Vec<(i64, i64)>) {
+    tokio::spawn(async move {
+        if let Err(e) = game_store.persist_progress(game_id, &moves, &clocks).await {
+            tracing::warn!(?e, %game_id, "progress persist failed");
+        }
+    });
+}
+
+pub fn spawn_finalize(
+    game_store: GameStore,
+    redis_client: crate::state::RedisClient,
+    plan: Option<GameFinalization>,
+) {
     if let Some(plan) = plan {
         let gs = game_store.clone();
+        let game_id = plan.game_id;
         tokio::spawn(async move {
             let result = if matches!(plan.reason, GameOverReason::Abort) {
                 gs.abort_game(plan).await
@@ -567,6 +639,9 @@ pub fn spawn_finalize(game_store: GameStore, plan: Option<GameFinalization>) {
             if let Err(e) = result {
                 tracing::warn!(?e, "game finalization failed");
             }
+            // Cross-instance watch-grid roster cleanup — see `AppState::create_game`
+            // and `RedisClient::active_game_upsert` for where this entry starts.
+            redis_client.active_game_remove(game_id).await;
         });
     }
 }
@@ -978,6 +1053,116 @@ mod tests {
         let user_id = insert_user(&pool).await;
 
         assert!(store.find_active_game(user_id).await.unwrap().is_none());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn list_active_game_ids_returns_only_active(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let active_id = Uuid::new_v4();
+        insert_game_row(&pool, active_id, white_id, black_id, true).await;
+
+        let finished_id = Uuid::new_v4();
+        insert_game_row(&pool, finished_id, white_id, black_id, true).await;
+        let plan = make_plan(
+            finished_id,
+            white_id,
+            black_id,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Checkmate,
+        );
+        store.finalize_game(plan).await.unwrap();
+
+        let ids = store.list_active_game_ids().await.unwrap();
+        assert_eq!(ids, vec![active_id]);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn abort_stale_games_only_touches_given_ids_still_active(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let stale_id = Uuid::new_v4();
+        insert_game_row(&pool, stale_id, white_id, black_id, true).await;
+        let untouched_id = Uuid::new_v4();
+        insert_game_row(&pool, untouched_id, white_id, black_id, true).await;
+
+        let count = store.abort_stale_games(&[stale_id]).await.unwrap();
+        assert_eq!(count, 1);
+
+        let stale_status = sqlx::query_scalar!("SELECT status FROM games WHERE id = $1", stale_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stale_status, "aborted");
+
+        let untouched_status =
+            sqlx::query_scalar!("SELECT status FROM games WHERE id = $1", untouched_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(untouched_status, "active", "only the given id should be touched");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn abort_stale_games_empty_input_is_noop(pool: PgPool) {
+        let store = GameStore::new(pool);
+        assert_eq!(store.abort_stale_games(&[]).await.unwrap(), 0);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn persist_progress_writes_moves_and_clocks_for_active_game(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+
+        let moves = vec!["e2e4".to_string(), "e7e5".to_string()];
+        let clocks = vec![(299_000, 300_000), (299_000, 298_500)];
+        store.persist_progress(game_id, &moves, &clocks).await.unwrap();
+
+        let row = sqlx::query!("SELECT moves, clocks, status FROM games WHERE id = $1", game_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.status, "active");
+        assert_eq!(row.moves.as_deref(), Some("e2e4 e7e5"));
+        assert_eq!(row.clocks.as_deref(), Some("299000,300000 299000,298500"));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn persist_progress_is_noop_once_game_is_finalized(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+
+        let plan = make_plan(
+            game_id,
+            white_id,
+            black_id,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Checkmate,
+        );
+        store.finalize_game(plan).await.unwrap();
+
+        // A progress write racing behind finalize must not clobber the
+        // authoritative finished row.
+        let stale_moves = vec!["a2a3".to_string()];
+        let stale_clocks = vec![(1, 1)];
+        store.persist_progress(game_id, &stale_moves, &stale_clocks).await.unwrap();
+
+        let row = sqlx::query!("SELECT moves, clocks, status FROM games WHERE id = $1", game_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.status, "finished");
+        assert_eq!(row.moves.as_deref(), Some("e2e4 e7e5"));
     }
 
     #[sqlx::test(migrations = "../../migrations")]

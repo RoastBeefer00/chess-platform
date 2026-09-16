@@ -9,6 +9,7 @@ async fn main() {
     use axum::response::Response;
     use axum::{routing::get, Router};
     use axum_login::AuthManagerLayerBuilder;
+    use fred::clients::SubscriberClient;
     use fred::prelude::*;
     use fred::types::config::{ConnectionConfig, PerformanceConfig};
     use leptos::prelude::*;
@@ -72,10 +73,10 @@ async fn main() {
     };
     let redis_policy = ReconnectPolicy::new_exponential(0, 100, 30_000, 2);
     let redis = Pool::new(
-        redis_config,
+        redis_config.clone(),
         Some(PerformanceConfig::default()),
-        Some(redis_conn_cfg),
-        Some(redis_policy),
+        Some(redis_conn_cfg.clone()),
+        Some(redis_policy.clone()),
         6,
     )
     .expect("failed to build Redis pool");
@@ -84,6 +85,16 @@ async fn main() {
         .wait_for_connect()
         .await
         .expect("Redis pool failed initial connect");
+    // Dedicated subscriber connection for cross-instance friend/matchmaking
+    // pub/sub delivery (see `RedisClient::new`) — a pool round-robins
+    // regular commands across connections, which is wrong for a long-lived
+    // SUBSCRIBE; this needs its own connection that stays subscribed.
+    let redis_subscriber = SubscriberClient::new(
+        redis_config,
+        Some(PerformanceConfig::default()),
+        Some(redis_conn_cfg),
+        Some(redis_policy),
+    );
     let session_store = RedisStore::new(redis.clone());
     let env = std::env::var("ENV").expect("ENV must be set to 'development' or 'production'");
     let is_prod = env == "production";
@@ -94,15 +105,29 @@ async fn main() {
         .with_same_site(SameSite::Lax) // required so the session cookie is sent on the OAuth callback redirect
         .with_expiry(Expiry::OnInactivity(TimeDuration::days(14)));
 
-    let app_state = AppState::new(leptos_options.clone(), pool, redis).await;
+    let app_state = AppState::new(leptos_options.clone(), pool, redis, redis_subscriber).await;
 
-    // A fresh boot always starts with an empty in-memory `GameRooms` map, so
-    // any DB row still `status='active'` at this point was orphaned by a
-    // prior restart/redeploy, not a real in-progress game. Reconcile before
-    // accepting traffic so stale rows never resurface as false "you have an
-    // active game" banners.
-    if let Err(err) = app_state.game_store.reconcile_orphaned_active_games().await {
-        tracing::error!(?err, "failed to reconcile orphaned active games at startup");
+    // Heartbeat-aware reaper (see `AppState::reconcile_stale_active_games`) —
+    // run once before accepting traffic, so stale rows never resurface as
+    // false "you have an active game" banners after this instance's own
+    // restart, then periodically, since a *peer* instance can go quiet at
+    // any time, not just when this one happens to be booting.
+    if let Err(err) = app_state.reconcile_stale_active_games().await {
+        tracing::error!(?err, "failed to reconcile stale active games at startup");
+    }
+    {
+        const RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
+        let app_state = app_state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(RECONCILE_INTERVAL);
+            tick.tick().await; // skip the immediate first tick — just ran above
+            loop {
+                tick.tick().await;
+                if let Err(err) = app_state.reconcile_stale_active_games().await {
+                    tracing::error!(?err, "failed to reconcile stale active games");
+                }
+            }
+        });
     }
 
     // Refresh Google's OIDC metadata (JWKS signing keys) every 6 hours so that
@@ -227,6 +252,45 @@ async fn main() {
         }
     });
 
+    // Middleware: route a game-websocket connect request to whichever
+    // instance actually owns that game's in-memory `GameRoom`, once more
+    // than one instance can be running (see the N-instance statelessness
+    // plan). `ws_session.rs`'s client appends `game_id` to the connect
+    // URL specifically so this can run BEFORE the WebSocket upgrade
+    // completes — `fly-replay` only works pre-upgrade; per Fly's own docs,
+    // "an application returning fly-replay headers should not negotiate a
+    // web socket upgrade itself." A miss (no `game_id`, malformed, no
+    // ownership record, or the record names this instance) just falls
+    // through to the normal handler — a truly-unknown/expired game still
+    // gets today's "game not found" from inside it.
+    let game_route_redis = app_state.redis_client.clone();
+    let this_instance = std::env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "local".to_string());
+    let game_route = from_fn(move |req: Request, next: Next| {
+        let redis = game_route_redis.clone();
+        let this_instance = this_instance.clone();
+        async move {
+            if req.uri().path().starts_with("/api/game_websocket") {
+                let game_id = req
+                    .uri()
+                    .query()
+                    .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("game_id=")))
+                    .and_then(|v| uuid::Uuid::parse_str(v).ok());
+                if let Some(game_id) = game_id {
+                    if let Some(owner) = redis.active_game_owner(game_id).await {
+                        if owner != this_instance {
+                            return Response::builder()
+                                .status(StatusCode::OK)
+                                .header("fly-replay", format!("instance={owner}"))
+                                .body(axum::body::Body::empty())
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+            next.run(req).await
+        }
+    });
+
     let oauth_routes = Router::new()
         .route("/auth/github", get(github_login))
         .route("/auth/github/callback", get(github_callback))
@@ -303,6 +367,7 @@ async fn main() {
         .layer(no_cache_pkg)
         .layer(long_cache_engine)
         .layer(api_rate_limit)
+        .layer(game_route)
         .layer(TraceLayer::new_for_http())
         .layer(auth_layer);
 

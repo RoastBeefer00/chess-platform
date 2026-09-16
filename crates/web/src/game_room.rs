@@ -25,6 +25,7 @@ use shared::{
 use uuid::Uuid;
 
 use crate::db::{GameFinalization, GameStore};
+use crate::state::RedisClient;
 
 const BROADCAST_CAPACITY: usize = 32;
 
@@ -76,6 +77,12 @@ pub struct GameRoom {
     pub last_move_at: Option<Instant>,
     pub timeout_task: Option<JoinHandle<()>>,
     pub abort_task: Option<JoinHandle<()>>,
+    /// Periodically refreshes this game's `active_games:{id}` Redis TTL so a
+    /// heartbeat-aware reaper can tell "orphaned" (owning instance gone)
+    /// from "still owned by a healthy peer instance". Aborted in `end_game`
+    /// like the other two tasks — must stop before the entry is removed, or
+    /// a late tick's `EXPIRE` would resurrect a deleted key.
+    pub heartbeat_task: Option<JoinHandle<()>>,
     pub abort_side: Option<Side>,
     pub abort_deadline_ms: Option<i64>,
     pub rematch_offer: Option<Uuid>,
@@ -113,6 +120,7 @@ impl GameRoom {
             last_move_at: None,
             timeout_task: None,
             abort_task: None,
+            heartbeat_task: None,
             abort_side: None,
             abort_deadline_ms: None,
             rematch_offer: None,
@@ -284,6 +292,9 @@ impl GameRoom {
             h.abort();
         }
         if let Some(h) = self.abort_task.take() {
+            h.abort();
+        }
+        if let Some(h) = self.heartbeat_task.take() {
             h.abort();
         }
         self.abort_side = None;
@@ -526,10 +537,11 @@ impl GameRoom {
     }
 }
 
-#[instrument(skip(room, game_store), fields(?color, ms_until))]
+#[instrument(skip(room, game_store, redis_client), fields(?color, ms_until))]
 pub async fn handle_timeout(
     room: Arc<Mutex<GameRoom>>,
     game_store: GameStore,
+    redis_client: RedisClient,
     color: Color,
     ms_until: i64,
 ) {
@@ -581,16 +593,19 @@ pub async fn handle_timeout(
     };
 
     if let Some(plan) = plan {
+        let game_id = plan.game_id;
         if let Err(e) = game_store.finalize_game(plan).await {
             tracing::warn!(?e, "finalize_game failed (timeout path)");
         }
+        redis_client.active_game_remove(game_id).await;
     }
 }
 
-#[instrument(skip(room, game_store), fields(?expected_side))]
+#[instrument(skip(room, game_store, redis_client), fields(?expected_side))]
 pub async fn handle_abort_timeout(
     room: Arc<Mutex<GameRoom>>,
     game_store: GameStore,
+    redis_client: RedisClient,
     expected_side: Color,
 ) {
     tokio::time::sleep(Duration::from_secs(15)).await;
@@ -618,9 +633,11 @@ pub async fn handle_abort_timeout(
     };
 
     if let Some(plan) = plan {
+        let game_id = plan.game_id;
         if let Err(e) = game_store.abort_game(plan).await {
             tracing::warn!(?e, "abort_game failed");
         }
+        redis_client.active_game_remove(game_id).await;
     }
 }
 
