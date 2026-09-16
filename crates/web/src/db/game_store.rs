@@ -315,37 +315,54 @@ impl GameStore {
         Ok(())
     }
 
-    /// Marks every still-`active` game as `aborted` at server boot. A fresh
-    /// process starts with an empty in-memory `GameRoom` map, so any row
-    /// still `active` at this point can only be one orphaned by a prior
-    /// restart/redeploy (the room died with the process, but nothing ever
-    /// updated the DB row) — never a legitimately in-progress game. Leaves
-    /// `moves`/`clocks`/`final_fen` untouched since real history already
-    /// exists on these rows; only flips status/result/termination/ended_at,
-    /// same fields `abort_game` sets.
-    ///
-    /// NOTE: this blanket "every active row is orphaned" assumption is only
-    /// valid for a single instance. The N-instance statelessness work
-    /// replaces this with a heartbeat-aware version — see
-    /// `reconcile_stale_active_games` — that only touches rows whose owning
-    /// instance's heartbeat has actually lapsed.
+    /// All game ids currently `active`, for the heartbeat-aware reaper (see
+    /// `AppState::reconcile_stale_active_games`) to check each one's
+    /// `active_games:{id}` Redis heartbeat against.
     #[tracing::instrument(skip(self))]
-    pub async fn reconcile_orphaned_active_games(&self) -> Result<u64, AuthError> {
+    pub async fn list_active_game_ids(&self) -> Result<Vec<Uuid>, AuthError> {
+        let rows = sqlx::query_scalar!("SELECT id FROM games WHERE status = 'active'")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
+    /// Marks exactly the given ids `aborted` — used by the reaper once it's
+    /// confirmed each one's owning instance has actually gone quiet (Redis
+    /// heartbeat lapsed), not just "some row is active". Same field set as
+    /// `abort_game`: leaves `moves`/`clocks`/`final_fen` untouched, since
+    /// real history already exists on these rows via incremental
+    /// persistence (`persist_progress`) — only flips
+    /// status/result/termination/ended_at. `WHERE status = 'active'` guards
+    /// against a TOCTOU race where the game legitimately finished between
+    /// the reaper's heartbeat check and this write.
+    #[tracing::instrument(skip(self, ids), fields(n = ids.len()))]
+    pub async fn abort_stale_games(&self, ids: &[Uuid]) -> Result<u64, AuthError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
         let result = sqlx::query!(
             r#"UPDATE games
                SET status = 'aborted',
                    result = NULL,
                    termination = 'abandonment',
                    ended_at = now()
-               WHERE status = 'active'"#
+               WHERE id = ANY($1) AND status = 'active'"#,
+            ids,
         )
         .execute(&self.pool)
         .await?;
-        let count = result.rows_affected();
-        if count > 0 {
-            tracing::warn!(count, "reconciled_orphaned_active_games");
-        }
-        Ok(count)
+        Ok(result.rows_affected())
+    }
+
+    /// A game's bare `status` column, for a reconnect attempt that finds no
+    /// live `GameRoom` (e.g. the reaper aborted it after its owning
+    /// instance went quiet) to distinguish "this game ended" from "this id
+    /// never existed" — see the `game_websocket` join handler.
+    #[tracing::instrument(skip(self), fields(%game_id))]
+    pub async fn get_game_status(&self, game_id: Uuid) -> Result<Option<String>, AuthError> {
+        Ok(sqlx::query_scalar!("SELECT status FROM games WHERE id = $1", game_id)
+            .fetch_optional(&self.pool)
+            .await?)
     }
 
     /// Persists move/clock history for a still-in-progress game. Called
@@ -1036,6 +1053,63 @@ mod tests {
         let user_id = insert_user(&pool).await;
 
         assert!(store.find_active_game(user_id).await.unwrap().is_none());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn list_active_game_ids_returns_only_active(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let active_id = Uuid::new_v4();
+        insert_game_row(&pool, active_id, white_id, black_id, true).await;
+
+        let finished_id = Uuid::new_v4();
+        insert_game_row(&pool, finished_id, white_id, black_id, true).await;
+        let plan = make_plan(
+            finished_id,
+            white_id,
+            black_id,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Checkmate,
+        );
+        store.finalize_game(plan).await.unwrap();
+
+        let ids = store.list_active_game_ids().await.unwrap();
+        assert_eq!(ids, vec![active_id]);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn abort_stale_games_only_touches_given_ids_still_active(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let stale_id = Uuid::new_v4();
+        insert_game_row(&pool, stale_id, white_id, black_id, true).await;
+        let untouched_id = Uuid::new_v4();
+        insert_game_row(&pool, untouched_id, white_id, black_id, true).await;
+
+        let count = store.abort_stale_games(&[stale_id]).await.unwrap();
+        assert_eq!(count, 1);
+
+        let stale_status = sqlx::query_scalar!("SELECT status FROM games WHERE id = $1", stale_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stale_status, "aborted");
+
+        let untouched_status =
+            sqlx::query_scalar!("SELECT status FROM games WHERE id = $1", untouched_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(untouched_status, "active", "only the given id should be touched");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn abort_stale_games_empty_input_is_noop(pool: PgPool) {
+        let store = GameStore::new(pool);
+        assert_eq!(store.abort_stale_games(&[]).await.unwrap(), 0);
     }
 
     #[sqlx::test(migrations = "../../migrations")]

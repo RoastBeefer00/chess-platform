@@ -107,13 +107,27 @@ async fn main() {
 
     let app_state = AppState::new(leptos_options.clone(), pool, redis, redis_subscriber).await;
 
-    // A fresh boot always starts with an empty in-memory `GameRooms` map, so
-    // any DB row still `status='active'` at this point was orphaned by a
-    // prior restart/redeploy, not a real in-progress game. Reconcile before
-    // accepting traffic so stale rows never resurface as false "you have an
-    // active game" banners.
-    if let Err(err) = app_state.game_store.reconcile_orphaned_active_games().await {
-        tracing::error!(?err, "failed to reconcile orphaned active games at startup");
+    // Heartbeat-aware reaper (see `AppState::reconcile_stale_active_games`) —
+    // run once before accepting traffic, so stale rows never resurface as
+    // false "you have an active game" banners after this instance's own
+    // restart, then periodically, since a *peer* instance can go quiet at
+    // any time, not just when this one happens to be booting.
+    if let Err(err) = app_state.reconcile_stale_active_games().await {
+        tracing::error!(?err, "failed to reconcile stale active games at startup");
+    }
+    {
+        const RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
+        let app_state = app_state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(RECONCILE_INTERVAL);
+            tick.tick().await; // skip the immediate first tick — just ran above
+            loop {
+                tick.tick().await;
+                if let Err(err) = app_state.reconcile_stale_active_games().await {
+                    tracing::error!(?err, "failed to reconcile stale active games");
+                }
+            }
+        });
     }
 
     // Refresh Google's OIDC metadata (JWKS signing keys) every 6 hours so that

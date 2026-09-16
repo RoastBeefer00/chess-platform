@@ -55,7 +55,25 @@ pub async fn game_websocket(
         };
 
         let Some(game_room) = state.get_game_room(&game_id).await else {
-            let _ = tx.unbounded_send(Err(ServerFnError::new("game not found")));
+            // No live GameRoom — either a bogus id, or (now that a heartbeat-
+            // aware reaper can abort a game whose owning instance went
+            // quiet, see `AppState::reconcile_stale_active_games`) a game
+            // that genuinely ended without this process ever having hosted
+            // it. Check the DB before giving up, so a reaped game reconnects
+            // to a real GameOver replay instead of an undifferentiated
+            // error indistinguishable from a typo'd URL.
+            let status = state.game_store.get_game_status(game_id).await.ok().flatten();
+            let message = if status.as_deref() == Some("aborted") {
+                Ok(GameServerMessage::GameOver {
+                    winner: None,
+                    reason: GameOverReason::Abort,
+                    white_wins: 0.0,
+                    black_wins: 0.0,
+                })
+            } else {
+                Err(ServerFnError::new("game not found"))
+            };
+            let _ = tx.unbounded_send(message);
             return;
         };
 
