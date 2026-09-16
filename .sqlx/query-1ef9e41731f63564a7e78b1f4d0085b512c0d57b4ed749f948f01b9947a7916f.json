@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT white_user_id, black_user_id, rated,\n                      time_initial_seconds, time_increment_seconds, moves, clocks\n               FROM games\n               WHERE id = $1 AND status = 'active'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "white_user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "black_user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "rated",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "time_initial_seconds",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "time_increment_seconds",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "moves",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "clocks",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "1ef9e41731f63564a7e78b1f4d0085b512c0d57b4ed749f948f01b9947a7916f"
+}

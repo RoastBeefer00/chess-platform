@@ -10,4 +10,6 @@ pub enum AuthError {
     OidcConfig(#[from] openidconnect::ConfigurationError),
     #[error("Username already taken: {0}")]
     UsernameTaken(String),
+    #[error("internal error: {0}")]
+    Internal(String),
 }

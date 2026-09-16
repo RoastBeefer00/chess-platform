@@ -49,6 +49,44 @@ fn clocks_from_string(clocks: Option<&str>, move_count: usize) -> Vec<Option<(i6
         .collect()
 }
 
+/// Strict counterpart to `clocks_from_string`, for game adoption — a
+/// malformed or short clock string must fail the whole load rather than
+/// silently produce wrong clocks (unlike analysis, where a `None` entry on
+/// an old pre-clock-tracking row is an acceptable, cosmetic gap).
+fn clocks_from_string_strict(clocks: Option<&str>, move_count: usize) -> Result<Vec<(i64, i64)>, String> {
+    let pairs: Vec<(i64, i64)> = clocks
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(|pair| {
+            let (w, b) = pair.split_once(',').ok_or_else(|| format!("malformed clock pair: {pair:?}"))?;
+            Ok((
+                w.parse::<i64>().map_err(|_| format!("bad white ms: {w:?}"))?,
+                b.parse::<i64>().map_err(|_| format!("bad black ms: {b:?}"))?,
+            ))
+        })
+        .collect::<Result<_, String>>()?;
+    if pairs.len() != move_count {
+        return Err(format!(
+            "clock count {} doesn't match move count {move_count}",
+            pairs.len()
+        ));
+    }
+    Ok(pairs)
+}
+
+/// Everything needed to rebuild a `GameRoom` for a still-`active` game — see
+/// `AppState::adopt_game`.
+#[derive(Debug)]
+pub struct ActiveGameRow {
+    pub white_user_id: Uuid,
+    pub black_user_id: Uuid,
+    pub rated: bool,
+    pub time_initial_seconds: i32,
+    pub time_increment_seconds: i32,
+    pub moves: Vec<String>,
+    pub clocks: Vec<(i64, i64)>,
+}
+
 /// Snapshot of everything `GameStore::finalize_game` needs to persist a
 /// completed game. Built by `GameRoom::end_game` and shipped across the
 /// async boundary to the finalize task.
@@ -427,6 +465,46 @@ impl GameStore {
                 clocks,
                 initial_time_ms: i64::from(r.time_initial_seconds) * 1000,
             }
+        }))
+    }
+
+    /// Loads a still-`active` game's move/clock history and time control,
+    /// for the adoption path (`AppState::adopt_game`) to rebuild a
+    /// `GameRoom` on an instance that didn't create it. `None` if the row
+    /// doesn't exist or isn't `active` (already finished/aborted, or a
+    /// bogus id). `Err` only on a genuinely malformed `clocks` column
+    /// (count mismatch or unparseable pair) — the caller treats that as
+    /// unadoptable, same as a replay failure.
+    #[tracing::instrument(skip(self), fields(game_id = %game_id))]
+    pub async fn load_active_game(&self, game_id: Uuid) -> Result<Option<ActiveGameRow>, AuthError> {
+        let row = sqlx::query!(
+            r#"SELECT white_user_id, black_user_id, rated,
+                      time_initial_seconds, time_increment_seconds, moves, clocks
+               FROM games
+               WHERE id = $1 AND status = 'active'"#,
+            game_id
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(r) = row else { return Ok(None) };
+        let moves: Vec<String> = r
+            .moves
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        let clocks = clocks_from_string_strict(r.clocks.as_deref(), moves.len())
+            .map_err(|e| AuthError::Internal(format!("game {game_id}: {e}")))?;
+
+        Ok(Some(ActiveGameRow {
+            white_user_id: r.white_user_id,
+            black_user_id: r.black_user_id,
+            rated: r.rated,
+            time_initial_seconds: r.time_initial_seconds,
+            time_increment_seconds: r.time_increment_seconds,
+            moves,
+            clocks,
         }))
     }
 
@@ -1216,5 +1294,85 @@ mod tests {
         store.finalize_game(plan).await.unwrap();
 
         assert!(store.active_games_for(&[white_id, black_id]).await.unwrap().is_empty());
+    }
+
+    // ── load_active_game (adoption) ──────────────────────────────────────────
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn load_active_game_returns_active_row(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+
+        let moves = vec!["e2e4".to_string(), "e7e5".to_string()];
+        let clocks = vec![(299_000, 300_000), (299_000, 298_500)];
+        store.persist_progress(game_id, &moves, &clocks).await.unwrap();
+
+        let row = store.load_active_game(game_id).await.unwrap().expect("row exists and is active");
+        assert_eq!(row.white_user_id, white_id);
+        assert_eq!(row.black_user_id, black_id);
+        assert!(row.rated);
+        assert_eq!(row.moves, moves);
+        assert_eq!(row.clocks, clocks);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn load_active_game_none_for_finished(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+        let plan = make_plan(
+            game_id,
+            white_id,
+            black_id,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Checkmate,
+        );
+        store.finalize_game(plan).await.unwrap();
+
+        assert!(store.load_active_game(game_id).await.unwrap().is_none());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn load_active_game_none_for_bogus_id(pool: PgPool) {
+        let store = GameStore::new(pool);
+        assert!(store.load_active_game(Uuid::new_v4()).await.unwrap().is_none());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn load_active_game_errs_on_clock_count_mismatch(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+
+        // Two moves but only one clock pair — malformed, must not silently
+        // adopt with wrong/misaligned clocks.
+        sqlx::query!(
+            "UPDATE games SET moves = 'e2e4 e7e5', clocks = '299000,300000' WHERE id = $1",
+            game_id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(store.load_active_game(game_id).await.is_err());
+    }
+
+    #[test]
+    fn clocks_from_string_strict_rejects_malformed_pair() {
+        assert!(clocks_from_string_strict(Some("not-a-pair"), 1).is_err());
+    }
+
+    #[test]
+    fn clocks_from_string_strict_accepts_matching_count() {
+        let parsed = clocks_from_string_strict(Some("1000,2000 900,1900"), 2).unwrap();
+        assert_eq!(parsed, vec![(1000, 2000), (900, 1900)]);
     }
 }

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO games (\n                id, status, white_user_id, black_user_id, mode,\n                time_initial_seconds, time_increment_seconds, rated, moves, clocks\n            ) VALUES ($1, 'active', $2, $3, 'blitz', 180, 0, true, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f1c9916555e039a0bcf955cabdb9c7ded1e8d98ebef59650dc95b71ebee6e793"
+}

@@ -9,7 +9,7 @@ use leptos::prelude::ServerFnError;
 use serde::{Deserialize, Serialize};
 use shared::{
     FriendSummary, FriendsServerMessage, Game, GameConfig, GameStatus, MatchmakingServerMessage,
-    RatingMode, Side, TimeControl,
+    RatingMode, Side, TimeControl, TimeMode, Variant,
 };
 use sqlx::PgPool;
 use tokio::sync::Mutex;
@@ -239,6 +239,117 @@ impl AppState {
         games.get(game_id).cloned()
     }
 
+    /// Rebuilds a game from persisted state on an instance that didn't
+    /// create it — the "adoption" path for a game whose owning instance
+    /// died (crash, autostop, redeploy). Called both from the heartbeat-aware
+    /// reaper (`reconcile_stale_active_games`, adopt-before-abort) and from
+    /// the websocket join handler when a reconnect finds no local room.
+    #[tracing::instrument(skip(self), fields(%game_id))]
+    pub async fn adopt_game(&self, game_id: GameId) -> AdoptOutcome {
+        use shakmaty::Position as _;
+
+        let row = match self.game_store.load_active_game(game_id).await {
+            Ok(Some(row)) => row,
+            Ok(None) => return AdoptOutcome::Unadoptable,
+            Err(e) => {
+                tracing::warn!(?e, %game_id, "adopt_game: failed to load row");
+                return AdoptOutcome::Unadoptable;
+            }
+        };
+
+        let initial_time = i64::from(row.time_initial_seconds) * 1000;
+        let config = GameConfig {
+            time_control: TimeControl {
+                initial_time,
+                mode: TimeMode::Increment(i64::from(row.time_increment_seconds) * 1000),
+            },
+            variant: Variant::Standard,
+            rated: if row.rated { RatingMode::Rated } else { RatingMode::Casual },
+        };
+        let game = Game {
+            id: game_id,
+            config,
+            position: shakmaty::Chess::default(),
+            white_player: row.white_user_id,
+            black_player: row.black_user_id,
+            white_ms_left: initial_time,
+            black_ms_left: initial_time,
+        };
+
+        let room = match GameRoom::from_persisted(game, row.moves, row.clocks) {
+            Ok(room) => room,
+            Err(e) => {
+                tracing::warn!(%game_id, error = %e, "adopt_game: replay failed, unadoptable");
+                return AdoptOutcome::Unadoptable;
+            }
+        };
+
+        // Check-then-insert must happen under the same guard as the Redis
+        // claim below — otherwise two reconnects racing on this instance
+        // (or a reaper sweep racing a reconnect) could both pass the
+        // `games.get` check before either claims ownership.
+        let mut games = self.games.lock().await;
+        if let Some(existing) = games.get(&game_id) {
+            return AdoptOutcome::Adopted(existing.clone());
+        }
+
+        let category = room.game.config.time_control.category().to_string();
+        let fen = {
+            use shakmaty::{fen::Fen, EnPassantMode};
+            Fen::from_position(&room.get_position(), EnPassantMode::Legal).to_string()
+        };
+        let won = self
+            .redis_client
+            .claim_active_game(
+                game_id,
+                row.white_user_id,
+                row.black_user_id,
+                &category,
+                row.rated,
+                &fen,
+                &instance_id(),
+            )
+            .await;
+        if !won {
+            return AdoptOutcome::OwnedElsewhere;
+        }
+
+        let turn = room.game.position.turn();
+        let ms_left = match turn {
+            shakmaty::Color::White => room.game.white_ms_left,
+            shakmaty::Color::Black => room.game.black_ms_left,
+        };
+
+        let heartbeat_redis = self.redis_client.clone();
+        let mut room = room;
+        room.heartbeat_task = Some(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS)).await;
+                heartbeat_redis.refresh_active_game_heartbeat(game_id).await;
+            }
+        }));
+
+        let room_arc = Arc::new(Mutex::new(room));
+        games.insert(game_id, room_arc.clone());
+        drop(games);
+        tracing::info!(%game_id, "game_adopted");
+
+        // Re-arm the flag-fall timer. Safe even for a zero-move (still
+        // `WaitingForOpponent`) room — `handle_timeout` bails immediately
+        // if the game isn't `Ongoing`, and the next real move replaces this
+        // task anyway (see the move path in `websocket.rs`).
+        let timeout_handle = tokio::spawn(crate::game_room::handle_timeout(
+            room_arc.clone(),
+            self.game_store.clone(),
+            self.redis_client.clone(),
+            turn,
+            ms_left,
+        ));
+        room_arc.lock().await.timeout_task = Some(timeout_handle);
+
+        AdoptOutcome::Adopted(room_arc)
+    }
+
     /// Removes a finished/aborted game's entry from the cross-instance
     /// watch-grid index. Safe to call even if the entry never existed (a
     /// no-op) — every finalize/abort path calls this so a game never
@@ -250,16 +361,18 @@ impl AppState {
     /// The heartbeat-aware reaper. Every DB row still `status='active'` is
     /// checked against `active_games:{id}` in Redis (see
     /// `RedisClient::active_game_owner`, `GameRoom::heartbeat_task`): if the
-    /// entry is gone, that game's owning instance has genuinely gone quiet
-    /// (crashed, restarted, autostopped) and the row is aborted; if it's
-    /// still there, some instance — this one or a healthy peer — still owns
-    /// it, so it's left alone. This is the multi-instance-safe replacement
-    /// for the old boot-only blanket abort, which assumed a fresh process's
-    /// empty `GameRooms` map meant every active row must be orphaned — true
-    /// for one instance, actively wrong the moment a second one exists
-    /// (it would abort a healthy peer's live games on every boot). Run both
-    /// at boot and periodically (see `main.rs`), since a peer can go quiet
-    /// at any time, not just when this instance happens to be starting.
+    /// entry is still there, some instance — this one or a healthy peer —
+    /// still owns it, so it's left alone. If it's gone, that game's owning
+    /// instance has genuinely gone quiet (crashed, restarted, autostopped) —
+    /// but rather than assuming that means the game is lost, this now tries
+    /// to **adopt** it first (see `adopt_game`): moves/clocks already
+    /// persist incrementally, so a game killed mid-flight has everything
+    /// needed to pick back up. Only a game that genuinely can't be adopted
+    /// (unreplayable move data, or a peer wins the claim first) still gets
+    /// aborted here — this is the safety net, not the common case anymore.
+    /// Run both at boot and periodically (see `main.rs`), since a peer can
+    /// go quiet at any time, not just when this instance happens to be
+    /// starting.
     #[tracing::instrument(skip(self))]
     pub async fn reconcile_stale_active_games(&self) -> Result<u64, AuthError> {
         let active_ids = self.game_store.list_active_game_ids().await?;
@@ -277,9 +390,42 @@ impl AppState {
             return Ok(0);
         }
 
-        let count = self.game_store.abort_stale_games(&stale).await?;
+        let mut unadoptable = Vec::new();
+        for id in stale {
+            // A zero-move orphan has no history worth preserving and would
+            // otherwise sit `WaitingForOpponent` with a live heartbeat
+            // forever — let it abort as it always has. A reconnect can
+            // still adopt it directly (see `websocket.rs`), where a player
+            // being present makes the room worth keeping.
+            let moves_empty = self
+                .game_store
+                .load_active_game(id)
+                .await
+                .ok()
+                .flatten()
+                .map(|row| row.moves.is_empty())
+                .unwrap_or(true);
+            if moves_empty {
+                unadoptable.push(id);
+                continue;
+            }
+            match self.adopt_game(id).await {
+                AdoptOutcome::Adopted(_) => {
+                    tracing::info!(game_id = %id, "reconciled_stale_active_game: adopted");
+                }
+                AdoptOutcome::OwnedElsewhere => {
+                    tracing::info!(game_id = %id, "reconciled_stale_active_game: claimed by a peer");
+                }
+                AdoptOutcome::Unadoptable => unadoptable.push(id),
+            }
+        }
+        if unadoptable.is_empty() {
+            return Ok(0);
+        }
+
+        let count = self.game_store.abort_stale_games(&unadoptable).await?;
         if count > 0 {
-            tracing::warn!(count, ?stale, "reconciled_stale_active_games");
+            tracing::warn!(count, ids = ?unadoptable, "reconciled_stale_active_games: aborted unadoptable");
         }
         Ok(count)
     }
@@ -531,10 +677,12 @@ pub struct RedisClient {
     pool: fred::clients::Pool,
     find_pair_hash: String,
     presence_hash: String,
+    claim_game_hash: String,
 }
 
 const FIND_PAIR_SCRIPT: &str = include_str!("matchmaking/find_pair.lua");
 const PRESENCE_SCRIPT: &str = include_str!("friends/presence.lua");
+const CLAIM_GAME_SCRIPT: &str = include_str!("claim_game.lua");
 
 /// TTL on `active_games:{id}` — the heartbeat for game ownership. Renewed
 /// every `ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS` by `GameRoom::heartbeat_task`
@@ -554,6 +702,7 @@ impl RedisClient {
     ) -> Self {
         let find_pair_hash = Self::load_script(&pool, FIND_PAIR_SCRIPT).await;
         let presence_hash = Self::load_script(&pool, PRESENCE_SCRIPT).await;
+        let claim_game_hash = Self::load_script(&pool, CLAIM_GAME_SCRIPT).await;
 
         subscriber.connect();
         subscriber
@@ -577,7 +726,7 @@ impl RedisClient {
             }
         });
 
-        Self { pool, find_pair_hash, presence_hash }
+        Self { pool, find_pair_hash, presence_hash, claim_game_hash }
     }
 
     async fn load_script(pool: &fred::clients::Pool, script: &str) -> String {
@@ -867,6 +1016,50 @@ impl RedisClient {
         }
     }
 
+    /// Atomic compare-and-set claim on an *ownerless* `active_games:{id}`
+    /// entry — the adoption counterpart to `active_game_upsert` (which is a
+    /// plain unconditional `HSET`, correct only for a genuinely new game).
+    /// Two instances racing to adopt the same orphan must not both "win," or
+    /// the two players end up on split-brain rooms on different instances —
+    /// see `claim_game.lua`. Returns `true` if this call created the record
+    /// (claim won), `false` if it already existed (a peer beat us to it, or
+    /// the game was never actually ownerless).
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(skip(self), fields(%game_id))]
+    pub async fn claim_active_game(
+        &self,
+        game_id: Uuid,
+        white_id: Uuid,
+        black_id: Uuid,
+        category: &str,
+        rated: bool,
+        fen: &str,
+        owner_instance: &str,
+    ) -> bool {
+        let key = format!("active_games:{game_id}");
+        let won: i64 = self
+            .pool
+            .evalsha(
+                &self.claim_game_hash,
+                vec![key],
+                vec![
+                    white_id.to_string(),
+                    black_id.to_string(),
+                    category.to_string(),
+                    if rated { "1" } else { "0" }.to_string(),
+                    fen.to_string(),
+                    owner_instance.to_string(),
+                    ACTIVE_GAME_TTL_SECS.to_string(),
+                ],
+            )
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(?e, %game_id, "claim_active_game failed");
+                0
+            });
+        won == 1
+    }
+
     /// Cheaper partial update for the per-move case — only `fen` changes.
     /// Also refreshes the TTL, so active play is itself a heartbeat signal
     /// independent of the periodic `heartbeat_task` tick.
@@ -952,6 +1145,22 @@ impl RedisClient {
         }
         result
     }
+}
+
+/// Result of `AppState::adopt_game`.
+pub enum AdoptOutcome {
+    /// Rebuilt and registered locally (or already was, by a racing task on
+    /// this same instance) — the caller can treat this exactly like
+    /// `get_game_room` returning `Some`.
+    Adopted(Arc<Mutex<GameRoom>>),
+    /// A peer instance claimed it first. Not an error — the caller should
+    /// fail this attempt so the client reconnects and gets routed to the
+    /// real owner.
+    OwnedElsewhere,
+    /// No row, or its move history doesn't replay (corrupt data, or a
+    /// variant/start position adoption can't reconstruct). The caller
+    /// should fall back to today's abort/"not found" handling.
+    Unadoptable,
 }
 
 /// One cross-instance-visible active game, as read back from Redis for the
@@ -1450,6 +1659,151 @@ mod tests {
         client.refresh_active_game_heartbeat(game_id).await;
         let ttl_after: i64 = client.pool.ttl(&key).await.unwrap();
         assert!(ttl_after > 2, "heartbeat must refresh the TTL, got {ttl_after}");
+
+        client.active_game_remove(game_id).await;
+    }
+
+    async fn insert_user(pool: &PgPool) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query!(
+            "INSERT INTO users (id, email) VALUES ($1, $2)",
+            id,
+            format!("{id}@test.invalid")
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    async fn insert_active_game(
+        pool: &PgPool,
+        game_id: Uuid,
+        white_id: Uuid,
+        black_id: Uuid,
+        moves: &str,
+        clocks: &str,
+    ) {
+        sqlx::query!(
+            r#"INSERT INTO games (
+                id, status, white_user_id, black_user_id, mode,
+                time_initial_seconds, time_increment_seconds, rated, moves, clocks
+            ) VALUES ($1, 'active', $2, $3, 'blitz', 180, 0, true, $4, $5)"#,
+            game_id,
+            white_id,
+            black_id,
+            moves,
+            clocks,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn make_app_state(pool: PgPool) -> AppState {
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let config = Config::from_url(&redis_url).expect("invalid REDIS_URL");
+        let redis_pool = Pool::new(config.clone(), None, None, None, 2).expect("build pool");
+        redis_pool.connect();
+        redis_pool.wait_for_connect().await.expect("Redis connect");
+        let subscriber = fred::clients::SubscriberClient::new(config, None, None, None);
+        let leptos_options = LeptosOptions::builder().output_name("test").build();
+        AppState::new(leptos_options, pool, redis_pool, subscriber).await
+    }
+
+    /// The heartbeat-aware reaper, now adopt-before-abort: an ownerless game
+    /// with real move history gets rebuilt and stays `active` (now owned by
+    /// this instance); an ownerless game whose history doesn't replay is
+    /// unadoptable and still gets aborted, exactly as before this feature.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn reconcile_adopts_adoptable_and_aborts_unadoptable(pool: PgPool) {
+        let app_state = make_app_state(pool.clone()).await;
+
+        let white_a = insert_user(&pool).await;
+        let black_a = insert_user(&pool).await;
+        let adoptable_id = Uuid::new_v4();
+        insert_active_game(
+            &pool,
+            adoptable_id,
+            white_a,
+            black_a,
+            "e2e4 e7e5",
+            "178000,180000 178000,177500",
+        )
+        .await;
+
+        let white_b = insert_user(&pool).await;
+        let black_b = insert_user(&pool).await;
+        let unadoptable_id = Uuid::new_v4();
+        // e7e5 is illegal as White's first move → replay fails → unadoptable.
+        insert_active_game(&pool, unadoptable_id, white_b, black_b, "e7e5", "178000,180000").await;
+
+        // Neither game has a Redis ownership record — both look ownerless.
+        let aborted_count = app_state.reconcile_stale_active_games().await.unwrap();
+        assert_eq!(aborted_count, 1, "exactly the unadoptable game should be aborted");
+
+        let adopted_status: String =
+            sqlx::query_scalar!("SELECT status FROM games WHERE id = $1", adoptable_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(adopted_status, "active", "adopted game stays active, now owned by this instance");
+        assert!(
+            app_state.get_game_room(&adoptable_id).await.is_some(),
+            "adopted room must be registered locally"
+        );
+        assert_eq!(
+            app_state.redis_client.active_game_owner(adoptable_id).await.as_deref(),
+            Some(instance_id()).as_deref(),
+            "this instance must have claimed ownership"
+        );
+
+        let unadoptable_status: String =
+            sqlx::query_scalar!("SELECT status FROM games WHERE id = $1", unadoptable_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(unadoptable_status, "aborted");
+
+        app_state.redis_client.active_game_remove(adoptable_id).await;
+    }
+
+    /// The adoption compare-and-set: two instances racing to claim the same
+    /// ownerless game must not both "win," or the two players end up on
+    /// split-brain rooms on different instances — see `claim_game.lua`.
+    #[tokio::test]
+    async fn claim_active_game_is_exclusive() {
+        let client = make_redis_client().await;
+        let game_id = Uuid::new_v4();
+        let white = Uuid::new_v4();
+        let black = Uuid::new_v4();
+
+        let first = client
+            .claim_active_game(game_id, white, black, "blitz", true, "fen-a", "inst-a")
+            .await;
+        let second = client
+            .claim_active_game(game_id, white, black, "blitz", true, "fen-b", "inst-b")
+            .await;
+        assert!(first, "first claim on an ownerless key must win");
+        assert!(!second, "second claim must lose once the first has claimed it");
+        assert_eq!(client.active_game_owner(game_id).await.as_deref(), Some("inst-a"));
+
+        client.active_game_remove(game_id).await;
+    }
+
+    #[tokio::test]
+    async fn claim_active_game_fails_once_a_real_owner_exists() {
+        let client = make_redis_client().await;
+        let game_id = Uuid::new_v4();
+        client
+            .active_game_upsert(game_id, Uuid::new_v4(), Uuid::new_v4(), "blitz", true, "startpos", "inst-a")
+            .await;
+
+        let claimed = client
+            .claim_active_game(game_id, Uuid::new_v4(), Uuid::new_v4(), "blitz", true, "fen", "inst-b")
+            .await;
+        assert!(!claimed, "must not claim a game with a live owner");
+        assert_eq!(client.active_game_owner(game_id).await.as_deref(), Some("inst-a"));
 
         client.active_game_remove(game_id).await;
     }
