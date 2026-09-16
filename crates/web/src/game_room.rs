@@ -25,6 +25,7 @@ use shared::{
 use uuid::Uuid;
 
 use crate::db::{GameFinalization, GameStore};
+use crate::state::RedisClient;
 
 const BROADCAST_CAPACITY: usize = 32;
 
@@ -526,10 +527,11 @@ impl GameRoom {
     }
 }
 
-#[instrument(skip(room, game_store), fields(?color, ms_until))]
+#[instrument(skip(room, game_store, redis_client), fields(?color, ms_until))]
 pub async fn handle_timeout(
     room: Arc<Mutex<GameRoom>>,
     game_store: GameStore,
+    redis_client: RedisClient,
     color: Color,
     ms_until: i64,
 ) {
@@ -581,16 +583,19 @@ pub async fn handle_timeout(
     };
 
     if let Some(plan) = plan {
+        let game_id = plan.game_id;
         if let Err(e) = game_store.finalize_game(plan).await {
             tracing::warn!(?e, "finalize_game failed (timeout path)");
         }
+        redis_client.active_game_remove(game_id).await;
     }
 }
 
-#[instrument(skip(room, game_store), fields(?expected_side))]
+#[instrument(skip(room, game_store, redis_client), fields(?expected_side))]
 pub async fn handle_abort_timeout(
     room: Arc<Mutex<GameRoom>>,
     game_store: GameStore,
+    redis_client: RedisClient,
     expected_side: Color,
 ) {
     tokio::time::sleep(Duration::from_secs(15)).await;
@@ -618,9 +623,11 @@ pub async fn handle_abort_timeout(
     };
 
     if let Some(plan) = plan {
+        let game_id = plan.game_id;
         if let Err(e) = game_store.abort_game(plan).await {
             tracing::warn!(?e, "abort_game failed");
         }
+        redis_client.active_game_remove(game_id).await;
     }
 }
 
