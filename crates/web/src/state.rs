@@ -247,6 +247,43 @@ impl AppState {
         self.redis_client.active_game_remove(game_id).await;
     }
 
+    /// The heartbeat-aware reaper. Every DB row still `status='active'` is
+    /// checked against `active_games:{id}` in Redis (see
+    /// `RedisClient::active_game_owner`, `GameRoom::heartbeat_task`): if the
+    /// entry is gone, that game's owning instance has genuinely gone quiet
+    /// (crashed, restarted, autostopped) and the row is aborted; if it's
+    /// still there, some instance — this one or a healthy peer — still owns
+    /// it, so it's left alone. This is the multi-instance-safe replacement
+    /// for the old boot-only blanket abort, which assumed a fresh process's
+    /// empty `GameRooms` map meant every active row must be orphaned — true
+    /// for one instance, actively wrong the moment a second one exists
+    /// (it would abort a healthy peer's live games on every boot). Run both
+    /// at boot and periodically (see `main.rs`), since a peer can go quiet
+    /// at any time, not just when this instance happens to be starting.
+    #[tracing::instrument(skip(self))]
+    pub async fn reconcile_stale_active_games(&self) -> Result<u64, AuthError> {
+        let active_ids = self.game_store.list_active_game_ids().await?;
+        if active_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut stale = Vec::new();
+        for id in active_ids {
+            if self.redis_client.active_game_owner(id).await.is_none() {
+                stale.push(id);
+            }
+        }
+        if stale.is_empty() {
+            return Ok(0);
+        }
+
+        let count = self.game_store.abort_stale_games(&stale).await?;
+        if count > 0 {
+            tracing::warn!(count, ?stale, "reconciled_stale_active_games");
+        }
+        Ok(count)
+    }
+
     #[tracing::instrument(skip(self, tx), fields(user_id = %id, %session_id))]
     pub async fn add_match_inbox(&self, id: Uuid, session_id: Uuid, tx: MatchInboxSender) {
         let _ = self.match_inboxes.lock().await.insert(id, (session_id, tx));
