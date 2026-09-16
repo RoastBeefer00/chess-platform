@@ -55,7 +55,8 @@ pub(super) async fn run_session(
     s: SessionState,
     h: SessionHandles,
 ) {
-    use crate::websocket::game_websocket;
+    use crate::websocket::GameWebsocket;
+    use server_fn::{Protocol, ServerFn};
     use shared::messages::GameOverReason;
     use shakmaty::KnownOutcome;
 
@@ -73,7 +74,19 @@ pub(super) async fn run_session(
             return;
         }
 
-        match game_websocket(rx.map(Ok).into()).await {
+        // Connect with `game_id` appended as a query param, calling the
+        // protocol trait directly rather than the plain `game_websocket`
+        // free function — this is what lets `main.rs`'s routing middleware
+        // read `game_id` from the URL *before* the upgrade completes and
+        // issue a `fly-replay` redirect to whichever instance actually owns
+        // this game's `GameRoom`, when the load balancer routed us
+        // elsewhere. See `RedisClient::active_game_owner`.
+        async fn run_client_with_path<T: ServerFn>(path: &str, data: T) -> Result<T::Output, T::Error> {
+            T::Protocol::run_client(path, data).await
+        }
+        let custom_path = format!("{}?game_id={game_id}", GameWebsocket::PATH);
+        let data = GameWebsocket { input: rx.map(Ok).into() };
+        match run_client_with_path(&custom_path, data).await {
             Ok(mut messages) => {
                 s.self_ws_connected.set(true);
                 s.self_rtt_ms.set(None);

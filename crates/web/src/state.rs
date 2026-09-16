@@ -155,12 +155,24 @@ impl AppState {
         black_player: Uuid,
         session_score: (f32, f32),
     ) -> Result<GameId, AuthError> {
-        let game = GameRoom::new(Game::new(game_config.clone(), white_player, black_player), session_score);
+        let mut game = GameRoom::new(Game::new(game_config.clone(), white_player, black_player), session_score);
         let game_id = game.game.id;
         let start_fen = {
             use shakmaty::{fen::Fen, EnPassantMode};
             Fen::from_position(&game.get_position(), EnPassantMode::Legal).to_string()
         };
+
+        // Started before insertion so the very first heartbeat can never
+        // race a lookup finding the room but not yet ticking. Aborted in
+        // `GameRoom::end_game`, same as `timeout_task`/`abort_task`.
+        let heartbeat_redis = self.redis_client.clone();
+        game.heartbeat_task = Some(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS)).await;
+                heartbeat_redis.refresh_active_game_heartbeat(game_id).await;
+            }
+        }));
+
         let mut games = self.games.lock().await;
         games.insert(game_id, Arc::new(Mutex::new(game)));
         drop(games);
@@ -183,9 +195,10 @@ impl AppState {
             .await?;
         tracing::info!(%game_id, "game_created");
 
-        // Cross-instance watch-grid roster index — see `RedisClient::active_game_upsert`.
-        // Ownership/heartbeat fields land in a later phase; for now this just
-        // makes the game visible to a watch-grid connection on ANY instance.
+        // Cross-instance watch-grid roster index + ownership record — see
+        // `RedisClient::active_game_upsert`. `instance_id()` is this
+        // process's own identity, so any other instance's routing
+        // middleware (see `main.rs`) can tell this game is owned here.
         self.redis_client
             .active_game_upsert(
                 game_id,
@@ -194,6 +207,7 @@ impl AppState {
                 &game_config.time_control.category().to_string(),
                 game_config.rated.is_rated(),
                 &start_fen,
+                &instance_id(),
             )
             .await;
 
@@ -354,12 +368,18 @@ impl AppState {
     }
 }
 
+/// This process's own identity — `FLY_MACHINE_ID` in production (injected
+/// automatically by Fly Machines), a fixed fallback in local dev where
+/// there's only ever one instance anyway.
+pub(crate) fn instance_id() -> String {
+    std::env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "local".to_string())
+}
+
 fn friends_session_key(session_id: Uuid) -> String {
     // Instance-qualified so two instances issuing the same random session_id
     // (astronomically unlikely, but free to guard against) can't collide in
     // the shared Redis sessions set.
-    let instance = std::env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "local".to_string());
-    format!("{instance}:{session_id}")
+    format!("{}:{session_id}", instance_id())
 }
 
 pub(crate) async fn friends_inbox_add(
@@ -478,6 +498,15 @@ pub struct RedisClient {
 
 const FIND_PAIR_SCRIPT: &str = include_str!("matchmaking/find_pair.lua");
 const PRESENCE_SCRIPT: &str = include_str!("friends/presence.lua");
+
+/// TTL on `active_games:{id}` — the heartbeat for game ownership. Renewed
+/// every `ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS` by `GameRoom::heartbeat_task`
+/// and on every move; a healthy owning instance can never let this lapse.
+/// 3x the renewal interval mirrors the same check:timeout ratio idiom
+/// already used for the client-side game-socket heartbeat
+/// (`HEARTBEAT_CHECK_MS`/`HEARTBEAT_TIMEOUT_MS` in `play_board/ws_session.rs`).
+const ACTIVE_GAME_TTL_SECS: i64 = 30;
+pub const ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS: u64 = 10;
 
 impl RedisClient {
     pub async fn new(
@@ -760,13 +789,17 @@ impl RedisClient {
     // --- Cross-instance watch-grid roster index ---
     //
     // `active_games:{game_id}` is a small hash any instance can read to
-    // render a game it doesn't locally own in the watch grid. Written on
-    // creation and on every move (see the move path in `websocket.rs`),
-    // removed on finalize/abort. Ownership/heartbeat fields (so a heartbeat
-    // reaper can tell a genuinely orphaned game from one still owned by a
-    // healthy peer instance) land in a later phase — this entry has no TTL
-    // yet, so it depends on the explicit remove call at game end, not on
-    // expiry.
+    // render a game it doesn't locally own in the watch grid, AND the
+    // ownership/heartbeat record a routing middleware and (later) a reaper
+    // rely on. Written on creation and on every move (see the move path in
+    // `websocket.rs`), removed on finalize/abort/timeout/resign/draw. Its
+    // TTL (`ACTIVE_GAME_TTL_SECS`) is the heartbeat: refreshed on every move
+    // and by a periodic per-room task (`GameRoom::heartbeat_task`) so a
+    // slow-clock game with long gaps between moves doesn't look stale. A
+    // reaper checking this hash's mere existence (not a manual timestamp
+    // comparison) is what lets it tell "orphaned" (owning instance gone,
+    // heartbeat lapsed, key expired) from "owned by a healthy peer" (key
+    // still there).
 
     #[allow(clippy::too_many_arguments)]
     pub async fn active_game_upsert(
@@ -777,6 +810,7 @@ impl RedisClient {
         category: &str,
         rated: bool,
         fen: &str,
+        owner_instance: &str,
     ) {
         let key = format!("active_games:{game_id}");
         let fields: Vec<(&str, String)> = vec![
@@ -785,18 +819,48 @@ impl RedisClient {
             ("category", category.to_string()),
             ("rated", if rated { "1" } else { "0" }.to_string()),
             ("fen", fen.to_string()),
+            ("owner_instance", owner_instance.to_string()),
         ];
         if let Err(e) = self.pool.hset::<(), _, _>(&key, fields).await {
             tracing::warn!(?e, %game_id, "active_game_upsert failed");
+            return;
+        }
+        if let Err(e) = self.pool.expire::<(), _>(&key, ACTIVE_GAME_TTL_SECS, None).await {
+            tracing::warn!(?e, %game_id, "active_game_upsert: setting TTL failed");
         }
     }
 
     /// Cheaper partial update for the per-move case — only `fen` changes.
+    /// Also refreshes the TTL, so active play is itself a heartbeat signal
+    /// independent of the periodic `heartbeat_task` tick.
     pub async fn active_game_update_fen(&self, game_id: Uuid, fen: &str) {
         let key = format!("active_games:{game_id}");
         if let Err(e) = self.pool.hset::<(), _, _>(&key, vec![("fen", fen.to_string())]).await {
             tracing::warn!(?e, %game_id, "active_game_update_fen failed");
+            return;
         }
+        if let Err(e) = self.pool.expire::<(), _>(&key, ACTIVE_GAME_TTL_SECS, None).await {
+            tracing::warn!(?e, %game_id, "active_game_update_fen: refreshing TTL failed");
+        }
+    }
+
+    /// The periodic heartbeat tick — see `GameRoom::heartbeat_task`. A no-op
+    /// on a key that's already gone (game already ended and was removed),
+    /// consistent with every other method here treating a missing entry as
+    /// "nothing to do" rather than an error.
+    pub async fn refresh_active_game_heartbeat(&self, game_id: Uuid) {
+        let _: Result<(), _> = self
+            .pool
+            .expire::<(), _>(format!("active_games:{game_id}"), ACTIVE_GAME_TTL_SECS, None)
+            .await;
+    }
+
+    /// The instance id that owns `game_id`, if the entry exists (and hasn't
+    /// expired). `None` means either the game never existed here or its
+    /// heartbeat has lapsed — both cases a caller should treat as "not
+    /// reliably routable to a specific instance right now."
+    pub async fn active_game_owner(&self, game_id: Uuid) -> Option<String> {
+        self.pool.hget(format!("active_games:{game_id}"), "owner_instance").await.ok().flatten()
     }
 
     pub async fn active_game_remove(&self, game_id: Uuid) {
@@ -1310,13 +1374,14 @@ mod tests {
         let game_id = Uuid::new_v4();
         let white = Uuid::new_v4();
         let black = Uuid::new_v4();
-        client.active_game_upsert(game_id, white, black, "blitz", true, "startpos").await;
+        client.active_game_upsert(game_id, white, black, "blitz", true, "startpos", "test-instance").await;
 
         let found = client.active_games_excluding(&HashSet::new()).await;
         let entry = found.iter().find(|e| e.game_id == game_id).expect("game should be indexed");
         assert_eq!(entry.white_id, white);
         assert_eq!(entry.black_id, black);
         assert_eq!(entry.fen, "startpos");
+        assert_eq!(client.active_game_owner(game_id).await.as_deref(), Some("test-instance"));
 
         client.active_game_update_fen(game_id, "moved").await;
         let found = client.active_games_excluding(&HashSet::new()).await;
@@ -1326,6 +1391,30 @@ mod tests {
         client.active_game_remove(game_id).await;
         let found = client.active_games_excluding(&HashSet::new()).await;
         assert!(found.iter().all(|e| e.game_id != game_id), "removed game must not be indexed");
+        assert!(client.active_game_owner(game_id).await.is_none(), "owner lookup must miss once removed");
+    }
+
+    #[tokio::test]
+    async fn active_game_upsert_sets_a_ttl_and_heartbeat_refreshes_it() {
+        let client = make_redis_client().await;
+        let game_id = Uuid::new_v4();
+        client
+            .active_game_upsert(game_id, Uuid::new_v4(), Uuid::new_v4(), "blitz", true, "startpos", "inst-a")
+            .await;
+
+        let key = format!("active_games:{game_id}");
+        let ttl: i64 = client.pool.ttl(&key).await.unwrap();
+        assert!(ttl > 0, "upsert must set a TTL, got {ttl}");
+
+        // Manually shrink the TTL, then confirm the heartbeat call restores it —
+        // this is the exact mechanism a healthy owning instance relies on to
+        // keep a slow-clock game (long gaps between moves) from looking stale.
+        let _: () = client.pool.expire(&key, 2, None).await.unwrap();
+        client.refresh_active_game_heartbeat(game_id).await;
+        let ttl_after: i64 = client.pool.ttl(&key).await.unwrap();
+        assert!(ttl_after > 2, "heartbeat must refresh the TTL, got {ttl_after}");
+
+        client.active_game_remove(game_id).await;
     }
 
     /// End-to-end: publishing through `RedisClient` actually reaches a

@@ -77,6 +77,12 @@ pub struct GameRoom {
     pub last_move_at: Option<Instant>,
     pub timeout_task: Option<JoinHandle<()>>,
     pub abort_task: Option<JoinHandle<()>>,
+    /// Periodically refreshes this game's `active_games:{id}` Redis TTL so a
+    /// heartbeat-aware reaper can tell "orphaned" (owning instance gone)
+    /// from "still owned by a healthy peer instance". Aborted in `end_game`
+    /// like the other two tasks — must stop before the entry is removed, or
+    /// a late tick's `EXPIRE` would resurrect a deleted key.
+    pub heartbeat_task: Option<JoinHandle<()>>,
     pub abort_side: Option<Side>,
     pub abort_deadline_ms: Option<i64>,
     pub rematch_offer: Option<Uuid>,
@@ -114,6 +120,7 @@ impl GameRoom {
             last_move_at: None,
             timeout_task: None,
             abort_task: None,
+            heartbeat_task: None,
             abort_side: None,
             abort_deadline_ms: None,
             rematch_offer: None,
@@ -285,6 +292,9 @@ impl GameRoom {
             h.abort();
         }
         if let Some(h) = self.abort_task.take() {
+            h.abort();
+        }
+        if let Some(h) = self.heartbeat_task.take() {
             h.abort();
         }
         self.abort_side = None;
