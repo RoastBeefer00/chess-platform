@@ -304,6 +304,12 @@ pub async fn game_websocket(
                         use crate::game_room::MoveOutcome;
                         match gr.handle_move_made(uci, user.id, think_ms) {
                             Ok(MoveOutcome::Continuing(plan)) => {
+                                crate::db::spawn_progress_persist(
+                                    state.game_store.clone(),
+                                    game_id,
+                                    gr.move_history.clone(),
+                                    gr.clock_history.clone(),
+                                );
                                 if let Some(h) = gr.timeout_task.take() {
                                     h.abort();
                                 }
