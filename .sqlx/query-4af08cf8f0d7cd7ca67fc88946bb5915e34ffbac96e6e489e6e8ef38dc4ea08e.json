@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT g.moves, g.clocks, g.time_initial_seconds,\n                      wu.username AS white_username, wu.avatar_url AS white_avatar_url,\n                      g.white_rating_after,\n                      bu.username AS black_username, bu.avatar_url AS black_avatar_url,\n                      g.black_rating_after\n               FROM games g\n               JOIN users wu ON wu.id = g.white_user_id\n               JOIN users bu ON bu.id = g.black_user_id\n               WHERE g.id = $1 AND g.status IN ('finished', 'aborted')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "moves",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "clocks",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "time_initial_seconds",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "white_username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "white_avatar_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "white_rating_after",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "black_username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "black_avatar_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "black_rating_after",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "4af08cf8f0d7cd7ca67fc88946bb5915e34ffbac96e6e489e6e8ef38dc4ea08e"
+}

@@ -67,6 +67,27 @@ impl PuzzleStore {
 
         Ok(PuzzleSummary { id, fen, moves, rating, themes })
     }
+
+    /// A specific puzzle by its (lichess-derived) id — the primary key, so
+    /// this is a trivial indexed lookup. Used to resolve a shared puzzle
+    /// link (`/puzzles?id=...`). `None` for an unknown id.
+    #[tracing::instrument(skip(self))]
+    pub async fn by_id(&self, id: &str) -> sqlx::Result<Option<PuzzleSummary>> {
+        let row = sqlx::query!(
+            "SELECT id, fen, moves, rating, themes FROM puzzles WHERE id = $1",
+            id,
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| PuzzleSummary {
+            id: r.id,
+            fen: r.fen,
+            moves: r.moves,
+            rating: r.rating,
+            themes: r.themes,
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -126,5 +147,21 @@ mod tests {
             let puzzle = store.random(&[], 2000, 4000).await.unwrap();
             assert_eq!(puzzle.id, "testB");
         }
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn by_id_returns_matching_puzzle(pool: PgPool) {
+        let store = PuzzleStore::new(pool.clone());
+        insert_puzzle(&pool, "00sHx", "e2e4 e7e5 g1f3 b8c6").await;
+
+        let puzzle = store.by_id("00sHx").await.unwrap().expect("puzzle should exist");
+        assert_eq!(puzzle.moves, "e2e4 e7e5 g1f3 b8c6");
+        assert_eq!(puzzle.rating, 1500);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn by_id_none_for_unknown_id(pool: PgPool) {
+        let store = PuzzleStore::new(pool);
+        assert!(store.by_id("does-not-exist").await.unwrap().is_none());
     }
 }

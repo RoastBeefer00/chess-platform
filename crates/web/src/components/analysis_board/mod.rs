@@ -9,6 +9,7 @@ pub use tree::{DisplayNode, LineItem, MoveLine, MoveTree, NodeId, Segment};
 
 use leptos::prelude::*;
 use shakmaty::{Chess, Color, EnPassantMode};
+use shared::RecentGamePlayer;
 use uuid::Uuid;
 
 use engine::{format_white_score, pv_first_move, pv_to_san, to_white_pov, white_fraction};
@@ -103,14 +104,30 @@ pub fn AnalysisBoard(
     // e.g. the game hasn't finished/aborted yet (no moves are written to
     // Postgres at all until then) or the id doesn't exist.
     let load_error = RwSignal::new(None::<String>);
+    // Set whenever a loaded game's player data is available — read by the
+    // top/bottom rows to show who played, and by the Share button to tag a
+    // link with `&game=` (see `AnalysisControls`). Cleared by `reset`/a
+    // manual FEN-or-PGN load there: once the board no longer shows that
+    // game's position, its player info (and its eligibility for the share
+    // tag) goes with it.
+    let game_players = RwSignal::new(None::<(Uuid, RecentGamePlayer, RecentGamePlayer)>);
     Effect::new(move || {
         match game_data.get().flatten() {
             Some(Ok(data)) => {
                 load_error.set(None);
-                if let Ok(loaded) = MoveTree::from_uci_moves(&data.moves, &data.clocks, data.initial_time_ms) {
-                    let end = loaded.last_mainline_from(loaded.root());
-                    tree.set(loaded);
-                    cursor.set(end);
+                if let Some(id) = game_id.get_untracked() {
+                    game_players.set(Some((id, data.white.clone(), data.black.clone())));
+                }
+                // A `puzzle` (or, via Share, any other shared-position) prop
+                // is itself authoritative for exactly which position/cursor
+                // to show — `game` alongside it is present only to look up
+                // player info above, not to also overwrite the tree.
+                if puzzle.get_untracked().is_none() {
+                    if let Ok(loaded) = MoveTree::from_uci_moves(&data.moves, &data.clocks, data.initial_time_ms) {
+                        let end = loaded.last_mainline_from(loaded.root());
+                        tree.set(loaded);
+                        cursor.set(end);
+                    }
                 }
             }
             Some(Err(e)) => load_error.set(Some(e)),
@@ -358,6 +375,15 @@ pub fn AnalysisBoard(
                 </div>
                 // Top row
                 <div class="flex flex-row items-center pl-2 py-2 gap-2 overflow-hidden">
+                    <div class="min-w-0 overflow-hidden">
+                        {move || game_players.get().map(|(_, white, black)| {
+                            let p = match top_color.get() {
+                                Color::White => white,
+                                Color::Black => black,
+                            };
+                            view! { <AnalysisPlayerChip player={p} /> }
+                        })}
+                    </div>
                     {move || view! { <CapturedPieces position={position} color={top_color.get()} /> }}
                     {move || (top_advantage.get() > 0).then(|| view! {
                         <span class="text-xs font-semibold text-zinc-400 flex-shrink-0">
@@ -399,6 +425,15 @@ pub fn AnalysisBoard(
                 </div>
                 // Bottom row
                 <div class="flex flex-row items-center pl-2 py-2 gap-2 overflow-hidden">
+                    <div class="min-w-0 overflow-hidden">
+                        {move || game_players.get().map(|(_, white, black)| {
+                            let p = match bottom_color.get() {
+                                Color::White => white,
+                                Color::Black => black,
+                            };
+                            view! { <AnalysisPlayerChip player={p} /> }
+                        })}
+                    </div>
                     {move || view! { <CapturedPieces position={position} color={bottom_color.get()} /> }}
                     {move || (bottom_advantage.get() > 0).then(|| view! {
                         <span class="text-xs font-semibold text-zinc-400 flex-shrink-0">
@@ -430,7 +465,7 @@ pub fn AnalysisBoard(
                     <MoveNavButtons tree=tree cursor=cursor />
                     <AnalysisMovesPanel tree=tree cursor=cursor compact=true />
                     <OpeningName opening=opening />
-                    <AnalysisControls tree=tree cursor=cursor flipped=flipped last_move=last_move position=position engine_on=engine_on />
+                    <AnalysisControls tree=tree cursor=cursor flipped=flipped last_move=last_move position=position engine_on=engine_on game_players=game_players />
                 </div>
                 // Desktop side column: move list + controls. `md:h-` here
                 // matches the board's own rendered height at desktop widths
@@ -448,9 +483,31 @@ pub fn AnalysisBoard(
                     <div class="flex-1 min-h-0 flex flex-col rounded-md bg-zinc-900/60 border border-zinc-800 p-2">
                         <AnalysisMovesPanel tree=tree cursor=cursor />
                     </div>
-                    <AnalysisControls tree=tree cursor=cursor flipped=flipped last_move=last_move position=position engine_on=engine_on />
+                    <AnalysisControls tree=tree cursor=cursor flipped=flipped last_move=last_move position=position engine_on=engine_on game_players=game_players />
                 </div>
             </div>
+        </div>
+    }
+}
+
+/// A loaded site game's player identity + rating, shown in the top/bottom
+/// rows only once `game_players` (see `AnalysisBoard`) resolves. Not
+/// `BoardUser` — that requires a non-optional `PlayerInfo.rating: i32`,
+/// whereas a finished game's rating is `None` for casual/aborted games
+/// (`abort_game` never touches the rating columns). Mirrors
+/// `recent_games.rs`'s private `PlayerHalf`/`player_name`/`rating_text`.
+#[component]
+fn AnalysisPlayerChip(player: RecentGamePlayer) -> impl IntoView {
+    let rating_text = player.rating.map(|r| r.to_string()).unwrap_or_else(|| "\u{2014}".to_string());
+    view! {
+        <div class="flex flex-row items-center gap-2 py-2 min-w-0">
+            {player.avatar_url.map(|url| view! {
+                <img src={url} class="w-6 h-6 rounded-full flex-shrink-0" />
+            })}
+            <span class="text-sm font-medium truncate min-w-0">
+                {player.username.unwrap_or_else(|| "Anonymous".to_string())}
+            </span>
+            <span class="text-zinc-400 text-sm flex-shrink-0">{rating_text}</span>
         </div>
     }
 }
@@ -631,10 +688,12 @@ fn AnalysisControls(
     last_move: RwSignal<Option<(shakmaty::Square, shakmaty::Square)>>,
     #[prop(into)] position: Signal<shakmaty::Chess>,
     engine_on: RwSignal<bool>,
+    game_players: RwSignal<Option<(Uuid, RecentGamePlayer, RecentGamePlayer)>>,
 ) -> impl IntoView {
     let load_open = RwSignal::new(false);
     let load_text = RwSignal::new(String::new());
     let load_error = RwSignal::new(None::<String>);
+    let share_copied = RwSignal::new(false);
 
     let flip = move |_| flipped.update(|f| *f = !*f);
     let reset = move |_| {
@@ -642,6 +701,7 @@ fn AnalysisControls(
         cursor.set(0);
         last_move.set(None);
         load_error.set(None);
+        game_players.set(None);
     };
 
     let copy_fen = move |_: leptos::ev::MouseEvent| {
@@ -662,6 +722,45 @@ fn AnalysisControls(
         }
         #[cfg(not(feature = "hydrate"))]
         let _ = pgn;
+    };
+
+    // Encodes the exact position/line currently being viewed — root FEN +
+    // the moves from root to the cursor — using the same `fen`/`moves`/`ply`
+    // query params `AnalysisPage` already parses for a loaded puzzle
+    // (`analysis.rs`). Works identically regardless of how the board got
+    // here (a loaded game, a puzzle, a pasted FEN/PGN, or from scratch).
+    // `game=` is added on top, purely as a "look up these two players" tag
+    // — see the long comment on `game_players` in `AnalysisBoard` for why
+    // that's decoupled from position reconstruction.
+    let share = move |_: leptos::ev::MouseEvent| {
+        let root_fen = tree.with_untracked(|t| {
+            shakmaty::fen::Fen::from_position(t.position(t.root()), EnPassantMode::Legal).to_string()
+        });
+        let cur = cursor.get_untracked();
+        let moves: Vec<String> =
+            tree.with_untracked(|t| t.path_from_root(cur).into_iter().skip(1).map(|n| t.uci(n).to_string()).collect());
+        let mut path = format!(
+            "/analysis?fen={}&moves={}&ply={}",
+            root_fen.replace(' ', "_"),
+            moves.join("_"),
+            moves.len(),
+        );
+        if let Some((game_id, _, _)) = game_players.get_untracked() {
+            path.push_str(&format!("&game={game_id}"));
+        }
+        #[cfg(feature = "hydrate")]
+        if let Some(win) = web_sys::window() {
+            let origin = win.location().origin().unwrap_or_default();
+            let _ = win.navigator().clipboard().write_text(&format!("{origin}{path}"));
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = path;
+        share_copied.set(true);
+        #[cfg(feature = "hydrate")]
+        leptos::task::spawn_local(async move {
+            gloo_timers::future::TimeoutFuture::new(1500).await;
+            share_copied.set(false);
+        });
     };
 
     let do_load = move |_| {
@@ -686,6 +785,7 @@ fn AnalysisControls(
             load_error.set(None);
             load_open.set(false);
             load_text.set(String::new());
+            game_players.set(None);
             return;
         }
 
@@ -695,6 +795,7 @@ fn AnalysisControls(
                 tree.set(new_tree);
                 cursor.set(end);
                 last_move.set(None);
+                game_players.set(None);
                 load_error.set(None);
                 load_open.set(false);
                 load_text.set(String::new());
@@ -719,6 +820,9 @@ fn AnalysisControls(
                 <button class=btn_class on:click=reset>"Reset"</button>
                 <button class=btn_class on:click=copy_fen>"Copy FEN"</button>
                 <button class=btn_class on:click=copy_pgn>"Copy PGN"</button>
+                <button class=btn_class on:click=share>
+                    {move || if share_copied.get() { "Copied!" } else { "Share" }}
+                </button>
                 <button class=btn_class on:click=move |_| load_open.update(|o| *o = !*o)>
                     {move || if load_open.get() { "Cancel" } else { "Load" }}
                 </button>

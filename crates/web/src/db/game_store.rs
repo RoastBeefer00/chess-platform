@@ -444,9 +444,15 @@ impl GameStore {
         game_id: Uuid,
     ) -> Result<Option<AnalysisGameData>, AuthError> {
         let row = sqlx::query!(
-            r#"SELECT moves, clocks, time_initial_seconds
-               FROM games
-               WHERE id = $1 AND status IN ('finished', 'aborted')"#,
+            r#"SELECT g.moves, g.clocks, g.time_initial_seconds,
+                      wu.username AS white_username, wu.avatar_url AS white_avatar_url,
+                      g.white_rating_after,
+                      bu.username AS black_username, bu.avatar_url AS black_avatar_url,
+                      g.black_rating_after
+               FROM games g
+               JOIN users wu ON wu.id = g.white_user_id
+               JOIN users bu ON bu.id = g.black_user_id
+               WHERE g.id = $1 AND g.status IN ('finished', 'aborted')"#,
             game_id
         )
         .fetch_optional(&self.pool)
@@ -464,6 +470,16 @@ impl GameStore {
                 moves,
                 clocks,
                 initial_time_ms: i64::from(r.time_initial_seconds) * 1000,
+                white: RecentGamePlayer {
+                    username: r.white_username,
+                    avatar_url: r.white_avatar_url,
+                    rating: r.white_rating_after,
+                },
+                black: RecentGamePlayer {
+                    username: r.black_username,
+                    avatar_url: r.black_avatar_url,
+                    rating: r.black_rating_after,
+                },
             }
         }))
     }
@@ -978,6 +994,12 @@ mod tests {
         assert_eq!(data.moves, vec!["e2e4".to_string(), "e7e5".to_string()]);
         assert_eq!(data.clocks, vec![Some((299_000, 300_000)), Some((299_000, 298_500))]);
         assert_eq!(data.initial_time_ms, 300_000);
+        // `insert_user` sets no username, so this also confirms the `users`
+        // join found the right rows rather than silently dropping them.
+        assert_eq!(data.white.username, None);
+        assert_eq!(data.black.username, None);
+        assert!(data.white.rating.is_some(), "rated game should have a post-game rating");
+        assert!(data.black.rating.is_some(), "rated game should have a post-game rating");
     }
 
     #[sqlx::test(migrations = "../../migrations")]

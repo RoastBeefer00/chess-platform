@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
 use leptos::prelude::*;
-use leptos_router::{lazy_route, LazyRoute};
+use leptos_router::{hooks::use_query_map, lazy_route, LazyRoute};
 use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Color, Position as _, Square};
 
 use crate::components::{BoardPerspective, ChessBoard};
-use crate::puzzle::get_random_puzzle;
+use crate::puzzle::{get_puzzle, get_random_puzzle};
 use crate::sound::{self, sfx};
 
 /// The full set of lichess puzzle theme tags present in the vendored
@@ -117,6 +117,8 @@ fn PuzzleStatusPanel(
     #[prop(into)] on_hint: Callback<()>,
     #[prop(into)] on_back: Callback<()>,
     #[prop(into)] analysis_href: Signal<String>,
+    #[prop(into)] on_share: Callback<()>,
+    share_copied: RwSignal<bool>,
 ) -> impl IntoView {
     view! {
         <div class="rounded-md bg-zinc-900/60 border border-zinc-800 p-3 flex flex-col items-center md:items-start gap-2 text-sm text-zinc-400">
@@ -162,6 +164,12 @@ fn PuzzleStatusPanel(
             >
                 "Analyze"
             </a>
+            <button
+                on:click=move |_| on_share.run(())
+                class="w-full px-3 py-1.5 rounded-md border border-zinc-700 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
+            >
+                {move || if share_copied.get() { "Copied!" } else { "Share" }}
+            </button>
             <Show when=move || status.get() == SolveStatus::Solved>
                 <div class="flex flex-col items-center md:items-start gap-2 pt-1 w-full">
                     <div class="flex flex-wrap justify-center md:justify-start gap-3">
@@ -324,6 +332,12 @@ impl LazyRoute for PuzzlesPage {
     }
 
     fn view(_data: Self) -> AnyView {
+        // One-shot, untracked — matches this page's own discipline (below)
+        // of never letting a URL/filter read alone trigger a fetch. A
+        // shared puzzle link (`/puzzles?id=...`) is only ever relevant to
+        // the very first load, so there's nothing to react to afterward.
+        let shared_puzzle_id = use_query_map().get_untracked().get("id");
+
         let load_trigger = RwSignal::new(0_u32);
         let themes_filter = RwSignal::new(HashSet::<String>::new());
         let min_rating = RwSignal::new(0_i32);
@@ -333,8 +347,12 @@ impl LazyRoute for PuzzlesPage {
         // the plan this page followed). `viewing_landing` is the freely-
         // togglable one: true shows the filter screen, false shows (already
         // mounted) solving view via CSS `hidden` rather than a `<Show>`.
-        let has_started_once = RwSignal::new(false);
-        let viewing_landing = RwSignal::new(true);
+        // A shared link starts both already past the landing screen —
+        // dropping the recipient straight into solving the shared puzzle —
+        // which only changes these two signals' *initial* values, leaving
+        // the one-way gate and the mount-once `<ChessBoard>` below untouched.
+        let has_started_once = RwSignal::new(shared_puzzle_id.is_some());
+        let viewing_landing = RwSignal::new(shared_puzzle_id.is_none());
 
         // Source deliberately excludes the live filter signals — ticking
         // theme checkboxes on the landing screen must never fire a network
@@ -343,13 +361,20 @@ impl LazyRoute for PuzzlesPage {
         // actually runs (on "Start Solving" or "Next puzzle").
         let puzzle_resource = Resource::new(
             move || (has_started_once.get(), load_trigger.get()),
-            move |(started, _)| {
+            move |(started, trigger)| {
                 let themes: String = themes_filter.get_untracked().into_iter().collect::<Vec<_>>().join(" ");
                 let min = min_rating.get_untracked();
                 let max = max_rating.get_untracked();
+                // Only the very first fetch can serve the shared id — every
+                // later one (a real "Next puzzle" click) is a fresh random
+                // draw exactly as before.
+                let shared_id = (trigger == 0).then(|| shared_puzzle_id.clone()).flatten();
                 async move {
                     if !started {
                         return None;
+                    }
+                    if let Some(id) = shared_id {
+                        return Some(get_puzzle(id).await);
                     }
                     Some(get_random_puzzle(themes, min, max).await)
                 }
@@ -357,6 +382,7 @@ impl LazyRoute for PuzzlesPage {
         );
 
         let solution = RwSignal::new(Vec::<String>::new());
+        let puzzle_id = RwSignal::new(None::<String>);
         let start_fen = RwSignal::new(String::new());
         let rating = RwSignal::new(0_i32);
         let themes = RwSignal::new(String::new());
@@ -400,6 +426,7 @@ impl LazyRoute for PuzzlesPage {
             };
 
             solution.set(sol);
+            puzzle_id.set(Some(puzzle.id.clone()));
             start_fen.set(puzzle.fen.clone());
             rating.set(puzzle.rating);
             themes.set(puzzle.themes.clone());
@@ -451,6 +478,25 @@ impl LazyRoute for PuzzlesPage {
                 solution.get().join("_"),
                 1 + 2 * ply.get(),
             )
+        });
+
+        let share_copied = RwSignal::new(false);
+        let on_share = Callback::new(move |_: ()| {
+            let Some(id) = puzzle_id.get_untracked() else { return };
+            let path = format!("/puzzles?id={id}");
+            #[cfg(feature = "hydrate")]
+            if let Some(win) = web_sys::window() {
+                let origin = win.location().origin().unwrap_or_default();
+                let _ = win.navigator().clipboard().write_text(&format!("{origin}{path}"));
+            }
+            #[cfg(not(feature = "hydrate"))]
+            let _ = path;
+            share_copied.set(true);
+            #[cfg(feature = "hydrate")]
+            leptos::task::spawn_local(async move {
+                gloo_timers::future::TimeoutFuture::new(1500).await;
+                share_copied.set(false);
+            });
         });
 
         let on_move = Callback::new(move |m: shakmaty::Move| {
@@ -618,6 +664,7 @@ impl LazyRoute for PuzzlesPage {
                                             hint_stage=hint_stage board_locked=board_locked
                                             on_next=next_puzzle on_hint=on_hint on_back=back_to_filters
                                             analysis_href=analysis_href
+                                            on_share=on_share share_copied=share_copied
                                         />
                                     </div>
                                 </div>
@@ -632,6 +679,7 @@ impl LazyRoute for PuzzlesPage {
                                         hint_stage=hint_stage board_locked=board_locked
                                         on_next=next_puzzle on_hint=on_hint on_back=back_to_filters
                                         analysis_href=analysis_href
+                                        on_share=on_share share_copied=share_copied
                                     />
                                 </div>
                             </div>
