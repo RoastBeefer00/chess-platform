@@ -34,10 +34,11 @@ pub async fn watch_websocket(
     input: BoxedStream<WatchClientMessage, ServerFnError>,
 ) -> Result<BoxedStream<WatchServerMessage, ServerFnError>, ServerFnError> {
     use futures::StreamExt as _;
-    use shakmaty::{fen::Fen, EnPassantMode};
+    use shakmaty::{fen::Fen, Color, EnPassantMode, Position as _};
     use shared::{Category, GameStatus, PlayerInfo, WatchGameSummary};
     use std::collections::HashSet;
     use std::sync::Arc;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
     use tokio::sync::Mutex;
     use tokio_stream::{wrappers::BroadcastStream, StreamMap};
     use uuid::Uuid;
@@ -47,12 +48,55 @@ pub async fn watch_websocket(
     use crate::state::AppState;
     use axum_login::AuthSession;
 
-    // `room: None` marks a remote candidate (owned by another instance) — see
-    // the roster-building loop below for what each field means at that
-    // point in the pipeline.
-    type WatchCandidate = (Uuid, Option<Arc<Mutex<GameRoom>>>, Category, bool, Uuid, Uuid, Option<String>);
-    type ResolvedWatchCandidate =
-        (Uuid, Option<Arc<Mutex<GameRoom>>>, Category, bool, PlayerInfo, PlayerInfo, Option<String>);
+    fn now_ms() -> i64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    }
+
+    /// Live remaining time for both sides, extrapolated the same way the
+    /// game websocket's own join handler does: the stored `*_ms_left` is
+    /// only true as of `last_move_at`, so the side to move needs whatever's
+    /// elapsed since then subtracted out.
+    fn live_clock_ms(gr: &GameRoom) -> (i64, i64) {
+        let mut white_ms = gr.game.white_ms_left;
+        let mut black_ms = gr.game.black_ms_left;
+        if let Some(last) = gr.last_move_at {
+            let elapsed = Instant::now().duration_since(last).as_millis() as i64;
+            match gr.game.position.turn() {
+                Color::White => white_ms = (white_ms - elapsed).max(0),
+                Color::Black => black_ms = (black_ms - elapsed).max(0),
+            }
+        }
+        (white_ms, black_ms)
+    }
+
+    /// `room: None` marks a remote candidate (owned by another instance) —
+    /// `remote_fen` is only ever `Some` in that case, sourced from Redis
+    /// since there's no local room to lock for a fresh one; the clock
+    /// fields stay `None` for a remote candidate, since clocks aren't (yet)
+    /// mirrored cross-instance.
+    struct WatchCandidate {
+        game_id: Uuid,
+        room: Option<Arc<Mutex<GameRoom>>>,
+        category: Category,
+        rated: bool,
+        white_id: Uuid,
+        black_id: Uuid,
+        remote_fen: Option<String>,
+        white_ms_left: Option<i64>,
+        black_ms_left: Option<i64>,
+    }
+
+    struct ResolvedWatchCandidate {
+        game_id: Uuid,
+        room: Option<Arc<Mutex<GameRoom>>>,
+        category: Category,
+        rated: bool,
+        white: PlayerInfo,
+        black: PlayerInfo,
+        remote_fen: Option<String>,
+        white_ms_left: Option<i64>,
+        black_ms_left: Option<i64>,
+    }
 
     let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
     // Real users and guests alike are ordinary `users` rows, so this gate
@@ -113,60 +157,70 @@ pub async fn watch_websocket(
                             continue;
                         }
                         local_ids.insert(*id);
-                        candidates.push((
-                            *id,
-                            Some(room.clone()),
-                            gr.game.config.time_control.category(),
-                            gr.game.config.rated.is_rated(),
-                            gr.game.white_player,
-                            gr.game.black_player,
-                            None,
-                        ));
+                        let (white_ms_left, black_ms_left) = live_clock_ms(&gr);
+                        candidates.push(WatchCandidate {
+                            game_id: *id,
+                            room: Some(room.clone()),
+                            category: gr.game.config.time_control.category(),
+                            rated: gr.game.config.rated.is_rated(),
+                            white_id: gr.game.white_player,
+                            black_id: gr.game.black_player,
+                            remote_fen: None,
+                            white_ms_left: Some(white_ms_left),
+                            black_ms_left: Some(black_ms_left),
+                        });
                     }
 
                     for entry in state.redis_client.active_games_excluding(&local_ids).await {
                         let Some(category) = parse_category(&entry.category) else { continue };
-                        candidates.push((
-                            entry.game_id,
-                            None,
+                        candidates.push(WatchCandidate {
+                            game_id: entry.game_id,
+                            room: None,
                             category,
-                            entry.rated,
-                            entry.white_id,
-                            entry.black_id,
-                            Some(entry.fen),
-                        ));
+                            rated: entry.rated,
+                            white_id: entry.white_id,
+                            black_id: entry.black_id,
+                            remote_fen: Some(entry.fen),
+                            white_ms_left: None,
+                            black_ms_left: None,
+                        });
                     }
                     let total_active = candidates.len();
 
                     let resolved: Vec<ResolvedWatchCandidate> =
-                        futures::future::join_all(candidates.into_iter().map(
-                            |(id, room, category, rated, white_id, black_id, fen)| {
-                                let state = state.clone();
-                                async move {
-                                    let (white, black) = tokio::try_join!(
-                                        state.user_store.get_player_info(&white_id, category),
-                                        state.user_store.get_player_info(&black_id, category),
-                                    )?;
-                                    Ok::<_, crate::auth::AuthError>((id, room, category, rated, white, black, fen))
-                                }
-                            },
-                        ))
+                        futures::future::join_all(candidates.into_iter().map(|c| {
+                            let state = state.clone();
+                            async move {
+                                let (white, black) = tokio::try_join!(
+                                    state.user_store.get_player_info(&c.white_id, c.category),
+                                    state.user_store.get_player_info(&c.black_id, c.category),
+                                )?;
+                                Ok::<_, crate::auth::AuthError>(ResolvedWatchCandidate {
+                                    game_id: c.game_id,
+                                    room: c.room,
+                                    category: c.category,
+                                    rated: c.rated,
+                                    white,
+                                    black,
+                                    remote_fen: c.remote_fen,
+                                    white_ms_left: c.white_ms_left,
+                                    black_ms_left: c.black_ms_left,
+                                })
+                            }
+                        }))
                         .await
                         .into_iter()
                         .filter_map(|r| r.ok())
                         .collect();
 
                     let mut ranked = resolved;
-                    ranked.sort_by_key(|(_, _, _, _, white, black, _)| {
-                        std::cmp::Reverse(white.rating + black.rating)
-                    });
+                    ranked.sort_by_key(|c| std::cmp::Reverse(c.white.rating + c.black.rating));
                     ranked.truncate(WATCH_GRID_LIMIT);
 
                     // Diff subscriptions: drop games no longer in the roster,
                     // add newly-visible ones. Only ever touches LOCAL rooms —
                     // `moves`/`rooms` never gain an entry for a remote game.
-                    let new_ids: HashSet<Uuid> =
-                        ranked.iter().map(|(id, ..)| *id).collect();
+                    let new_ids: HashSet<Uuid> = ranked.iter().map(|c| c.game_id).collect();
                     rooms.retain(|id, _| new_ids.contains(id));
                     let stale: Vec<Uuid> = moves
                         .keys()
@@ -177,25 +231,29 @@ pub async fn watch_websocket(
                         moves.remove(&id);
                     }
 
+                    let sent_at_ms = now_ms();
                     let mut summaries = Vec::with_capacity(ranked.len());
-                    for (id, room, category, rated, white, black, remote_fen) in ranked {
-                        let fen = match &room {
+                    for c in ranked {
+                        let fen = match &c.room {
                             Some(room) => {
-                                if let std::collections::hash_map::Entry::Vacant(e) = rooms.entry(id) {
+                                if let std::collections::hash_map::Entry::Vacant(e) = rooms.entry(c.game_id) {
                                     e.insert(room.clone());
-                                    moves.insert(id, BroadcastStream::new(room.lock().await.subscribe()));
+                                    moves.insert(c.game_id, BroadcastStream::new(room.lock().await.subscribe()));
                                 }
                                 game_fen(room).await
                             }
-                            None => remote_fen.unwrap_or_default(),
+                            None => c.remote_fen.unwrap_or_default(),
                         };
                         summaries.push(WatchGameSummary {
-                            game_id: id,
-                            white,
-                            black,
-                            category,
-                            rated,
+                            game_id: c.game_id,
+                            white: c.white,
+                            black: c.black,
+                            category: c.category,
+                            rated: c.rated,
                             fen,
+                            white_ms_left: c.white_ms_left,
+                            black_ms_left: c.black_ms_left,
+                            sent_at_ms,
                         });
                     }
 
@@ -221,9 +279,25 @@ pub async fn watch_websocket(
                         continue;
                     }
                     let Some(room) = rooms.get(&game_id) else { continue };
-                    let fen = game_fen(room).await;
+                    // A move just landed — clocks are fresh as of right now
+                    // (no extrapolation needed, unlike the periodic tick).
+                    let (fen, white_ms_left, black_ms_left) = {
+                        let gr = room.lock().await;
+                        (
+                            Fen::from_position(&gr.get_position(), EnPassantMode::Legal).to_string(),
+                            gr.game.white_ms_left,
+                            gr.game.black_ms_left,
+                        )
+                    };
+                    let sent_at_ms = now_ms();
                     if tx
-                        .unbounded_send(Ok(WatchServerMessage::Position { game_id, fen }))
+                        .unbounded_send(Ok(WatchServerMessage::Position {
+                            game_id,
+                            fen,
+                            white_ms_left,
+                            black_ms_left,
+                            sent_at_ms,
+                        }))
                         .is_err()
                     {
                         break;
