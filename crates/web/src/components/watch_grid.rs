@@ -72,6 +72,13 @@ pub fn WatchGrid() -> impl IntoView {
     let games = RwSignal::new(Vec::<WatchGameSummary>::new());
     let total_active = RwSignal::new(0usize);
     let positions = RwSignal::new(HashMap::<Uuid, shakmaty::Chess>::new());
+    // Distinct from `games` being empty — that's also true before the first
+    // `Roster` message ever arrives, which would otherwise flash "No games
+    // in progress" on every load regardless of whether that's actually true
+    // yet. Set once, on the first Roster (even an empty one still counts as
+    // "loaded"); never reset — a reconnect refreshes `games` in place
+    // without a visible loading flicker each time.
+    let has_loaded = RwSignal::new(false);
 
     #[cfg(feature = "hydrate")]
     {
@@ -117,6 +124,7 @@ pub fn WatchGrid() -> impl IntoView {
                                     });
                                     games.set(new_games);
                                     total_active.set(t);
+                                    has_loaded.set(true);
                                 }
                                 WatchServerMessage::Position { game_id, fen } => {
                                     if let Some(chess) = parse_fen(&fen) {
@@ -161,26 +169,36 @@ pub fn WatchGrid() -> impl IntoView {
                 </Show>
             </div>
             <Show
-                when=move || !games.get().is_empty()
+                when=move || has_loaded.get()
                 fallback=|| view! {
-                    <p class="text-zinc-500 text-sm italic px-1">"No games in progress right now"</p>
+                    <div class="flex flex-col items-center justify-center gap-3 py-16 text-zinc-500">
+                        <div class="w-8 h-8 rounded-full border-2 border-zinc-700 border-t-zinc-400 animate-spin"></div>
+                        <p class="text-sm">"Loading active games..."</p>
+                    </div>
                 }
             >
-                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                    <For
-                        each=move || games.get()
-                        key=|g| g.game_id
-                        let(game)
-                    >
-                        {
-                            let id = game.game_id;
-                            let position = Signal::derive(move || {
-                                positions.get().get(&id).cloned().unwrap_or_default()
-                            });
-                            view! { <WatchTile game={game} position={position} /> }
-                        }
-                    </For>
-                </div>
+                <Show
+                    when=move || !games.get().is_empty()
+                    fallback=|| view! {
+                        <p class="text-zinc-500 text-sm italic px-1">"No games in progress right now"</p>
+                    }
+                >
+                    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                        <For
+                            each=move || games.get()
+                            key=|g| g.game_id
+                            let(game)
+                        >
+                            {
+                                let id = game.game_id;
+                                let position = Signal::derive(move || {
+                                    positions.get().get(&id).cloned().unwrap_or_default()
+                                });
+                                view! { <WatchTile game={game} position={position} /> }
+                            }
+                        </For>
+                    </div>
+                </Show>
             </Show>
         </div>
     }

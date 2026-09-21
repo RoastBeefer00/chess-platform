@@ -166,10 +166,22 @@ impl AppState {
         // race a lookup finding the room but not yet ticking. Aborted in
         // `GameRoom::end_game`, same as `timeout_task`/`abort_task`.
         let heartbeat_redis = self.redis_client.clone();
+        let heartbeat_category = game_config.time_control.category().to_string();
+        let heartbeat_rated = game_config.rated.is_rated();
+        let heartbeat_fen = start_fen.clone();
         game.heartbeat_task = Some(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS)).await;
-                heartbeat_redis.refresh_active_game_heartbeat(game_id).await;
+                heartbeat_redis
+                    .heartbeat_active_game(
+                        game_id,
+                        white_player,
+                        black_player,
+                        &heartbeat_category,
+                        heartbeat_rated,
+                        &heartbeat_fen,
+                    )
+                    .await;
             }
         }));
 
@@ -321,11 +333,25 @@ impl AppState {
         };
 
         let heartbeat_redis = self.redis_client.clone();
+        let heartbeat_white_id = row.white_user_id;
+        let heartbeat_black_id = row.black_user_id;
+        let heartbeat_category = category.clone();
+        let heartbeat_rated = row.rated;
+        let heartbeat_fen = fen.clone();
         let mut room = room;
         room.heartbeat_task = Some(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS)).await;
-                heartbeat_redis.refresh_active_game_heartbeat(game_id).await;
+                heartbeat_redis
+                    .heartbeat_active_game(
+                        game_id,
+                        heartbeat_white_id,
+                        heartbeat_black_id,
+                        &heartbeat_category,
+                        heartbeat_rated,
+                        &heartbeat_fen,
+                    )
+                    .await;
             }
         }));
 
@@ -678,11 +704,13 @@ pub struct RedisClient {
     find_pair_hash: String,
     presence_hash: String,
     claim_game_hash: String,
+    heartbeat_game_hash: String,
 }
 
 const FIND_PAIR_SCRIPT: &str = include_str!("matchmaking/find_pair.lua");
 const PRESENCE_SCRIPT: &str = include_str!("friends/presence.lua");
 const CLAIM_GAME_SCRIPT: &str = include_str!("claim_game.lua");
+const HEARTBEAT_GAME_SCRIPT: &str = include_str!("heartbeat_game.lua");
 
 /// TTL on `active_games:{id}` — the heartbeat for game ownership. Renewed
 /// every `ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS` by `GameRoom::heartbeat_task`
@@ -703,6 +731,7 @@ impl RedisClient {
         let find_pair_hash = Self::load_script(&pool, FIND_PAIR_SCRIPT).await;
         let presence_hash = Self::load_script(&pool, PRESENCE_SCRIPT).await;
         let claim_game_hash = Self::load_script(&pool, CLAIM_GAME_SCRIPT).await;
+        let heartbeat_game_hash = Self::load_script(&pool, HEARTBEAT_GAME_SCRIPT).await;
 
         subscriber.connect();
         subscriber
@@ -726,7 +755,7 @@ impl RedisClient {
             }
         });
 
-        Self { pool, find_pair_hash, presence_hash, claim_game_hash }
+        Self { pool, find_pair_hash, presence_hash, claim_game_hash, heartbeat_game_hash }
     }
 
     async fn load_script(pool: &fred::clients::Pool, script: &str) -> String {
@@ -1074,15 +1103,51 @@ impl RedisClient {
         }
     }
 
-    /// The periodic heartbeat tick — see `GameRoom::heartbeat_task`. A no-op
-    /// on a key that's already gone (game already ended and was removed),
-    /// consistent with every other method here treating a missing entry as
-    /// "nothing to do" rather than an error.
-    pub async fn refresh_active_game_heartbeat(&self, game_id: Uuid) {
-        let _: Result<(), _> = self
+    /// The periodic heartbeat tick — see `GameRoom::heartbeat_task`.
+    /// Self-healing: if the key still exists, this is a plain TTL refresh;
+    /// if it's gone (evicted, expired, or lost to any transient Redis-side
+    /// hiccup — confirmed to happen at least once in production on
+    /// 2026-09-18, sitting an otherwise-healthy live game in an infinite
+    /// "reaper re-adopts, finds nothing to actually fix" loop for 20+
+    /// minutes), it's recreated from this room's own known fields rather
+    /// than staying lost until the process itself restarts. `white_id`/
+    /// `black_id`/`category`/`rated` never change for a room's lifetime;
+    /// `fen` is only used in the recreate path, so a heartbeat firing
+    /// between moves can carry a slightly-stale position — self-correcting
+    /// again the moment `active_game_update_fen` runs on the room's next
+    /// move.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn heartbeat_active_game(
+        &self,
+        game_id: Uuid,
+        white_id: Uuid,
+        black_id: Uuid,
+        category: &str,
+        rated: bool,
+        fen: &str,
+    ) {
+        let key = format!("active_games:{game_id}");
+        let result: Result<i64, _> = self
             .pool
-            .expire::<(), _>(format!("active_games:{game_id}"), ACTIVE_GAME_TTL_SECS, None)
+            .evalsha(
+                &self.heartbeat_game_hash,
+                vec![key],
+                vec![
+                    white_id.to_string(),
+                    black_id.to_string(),
+                    category.to_string(),
+                    if rated { "1" } else { "0" }.to_string(),
+                    fen.to_string(),
+                    instance_id(),
+                    ACTIVE_GAME_TTL_SECS.to_string(),
+                ],
+            )
             .await;
+        match result {
+            Ok(2) => tracing::warn!(%game_id, "heartbeat_active_game: recreated a lost ownership record"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(?e, %game_id, "heartbeat_active_game failed"),
+        }
     }
 
     /// The instance id that owns `game_id`, if the entry exists (and hasn't
@@ -1643,9 +1708,9 @@ mod tests {
     async fn active_game_upsert_sets_a_ttl_and_heartbeat_refreshes_it() {
         let client = make_redis_client().await;
         let game_id = Uuid::new_v4();
-        client
-            .active_game_upsert(game_id, Uuid::new_v4(), Uuid::new_v4(), "blitz", true, "startpos", "inst-a")
-            .await;
+        let white = Uuid::new_v4();
+        let black = Uuid::new_v4();
+        client.active_game_upsert(game_id, white, black, "blitz", true, "startpos", "inst-a").await;
 
         let key = format!("active_games:{game_id}");
         let ttl: i64 = client.pool.ttl(&key).await.unwrap();
@@ -1655,9 +1720,40 @@ mod tests {
         // this is the exact mechanism a healthy owning instance relies on to
         // keep a slow-clock game (long gaps between moves) from looking stale.
         let _: () = client.pool.expire(&key, 2, None).await.unwrap();
-        client.refresh_active_game_heartbeat(game_id).await;
+        client.heartbeat_active_game(game_id, white, black, "blitz", true, "startpos").await;
         let ttl_after: i64 = client.pool.ttl(&key).await.unwrap();
         assert!(ttl_after > 2, "heartbeat must refresh the TTL, got {ttl_after}");
+        // A plain refresh (key still present) must not touch its fields.
+        let owner: Option<String> = client.pool.hget(&key, "owner_instance").await.unwrap();
+        assert_eq!(owner.as_deref(), Some("inst-a"));
+
+        client.active_game_remove(game_id).await;
+    }
+
+    /// The regression test for the 2026-09-18 production incident: a live
+    /// game's `active_games:{id}` key disappearing (for any reason — this
+    /// test just deletes it directly, standing in for an eviction or any
+    /// other transient loss) must not orphan the game forever. The next
+    /// heartbeat tick has to recreate it, not silently no-op like a plain
+    /// `EXPIRE` on a missing key would.
+    #[tokio::test]
+    async fn heartbeat_recreates_a_lost_key() {
+        let client = make_redis_client().await;
+        let game_id = Uuid::new_v4();
+        let white = Uuid::new_v4();
+        let black = Uuid::new_v4();
+        let key = format!("active_games:{game_id}");
+
+        // Simulates the key vanishing out from under a still-alive room —
+        // no upsert/claim call precedes this, exactly as if the game was
+        // never re-registered after losing its record.
+        client.heartbeat_active_game(game_id, white, black, "rapid", false, "some-fen").await;
+
+        let ttl: i64 = client.pool.ttl(&key).await.unwrap();
+        assert!(ttl > 0, "heartbeat must recreate a missing key, got ttl={ttl}");
+        assert_eq!(client.active_game_owner(game_id).await.as_deref(), Some(instance_id()).as_deref());
+        let fen: Option<String> = client.pool.hget(&key, "fen").await.unwrap();
+        assert_eq!(fen.as_deref(), Some("some-fen"));
 
         client.active_game_remove(game_id).await;
     }
