@@ -111,10 +111,18 @@ async fn main() {
     // run once before accepting traffic, so stale rows never resurface as
     // false "you have an active game" banners after this instance's own
     // restart, then periodically, since a *peer* instance can go quiet at
-    // any time, not just when this one happens to be booting.
+    // any time, not just when this one happens to be booting. Paired with
+    // its mirror image, `reconcile_local_rooms_against_db` — that one
+    // catches a DB row nobody's holding; this one catches a room this
+    // instance IS holding that the DB no longer agrees is still active
+    // (a manual data fix, or a peer's reaper acting on a row this instance
+    // still thinks it owns) — see its own doc comment for the incident
+    // that prompted it. A boot-time run of the latter is always a no-op
+    // (a fresh process's room map starts empty) but costs nothing to call.
     if let Err(err) = app_state.reconcile_stale_active_games().await {
         tracing::error!(?err, "failed to reconcile stale active games at startup");
     }
+    app_state.reconcile_local_rooms_against_db().await;
     {
         const RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
         let app_state = app_state.clone();
@@ -126,6 +134,7 @@ async fn main() {
                 if let Err(err) = app_state.reconcile_stale_active_games().await {
                     tracing::error!(?err, "failed to reconcile stale active games");
                 }
+                app_state.reconcile_local_rooms_against_db().await;
             }
         });
     }

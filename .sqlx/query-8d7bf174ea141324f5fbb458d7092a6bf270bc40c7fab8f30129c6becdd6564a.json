@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE games SET status = 'finished', result = 'white', termination = 'resignation', ended_at = now() WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8d7bf174ea141324f5fbb458d7092a6bf270bc40c7fab8f30129c6becdd6564a"
+}

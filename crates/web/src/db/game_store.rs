@@ -403,6 +403,48 @@ impl GameStore {
             .await?)
     }
 
+    /// A finished/aborted game's recorded outcome, decoded back into
+    /// `(winner, reason)` — the inverse of `finalize_game`'s `result`/
+    /// `termination` string encoding. `None` if the row doesn't exist or
+    /// isn't finished/aborted. Used to resync a live room's in-memory state
+    /// against a DB row that's already recorded a real outcome the room
+    /// itself never decided (see `AppState::reconcile_local_rooms_against_db`
+    /// — a manual data fix, or a peer's reaper acting on a row this
+    /// instance still thinks it owns).
+    #[tracing::instrument(skip(self), fields(%game_id))]
+    pub async fn get_finished_outcome(
+        &self,
+        game_id: Uuid,
+    ) -> Result<Option<(Option<Side>, GameOverReason)>, AuthError> {
+        let row = sqlx::query!(
+            "SELECT result, termination FROM games WHERE id = $1 AND status IN ('finished', 'aborted')",
+            game_id
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else { return Ok(None) };
+        let Some(termination) = row.termination else { return Ok(None) };
+        let reason = match termination.as_str() {
+            "checkmate" => GameOverReason::Checkmate,
+            "resignation" => GameOverReason::Resignation,
+            "timeout" => GameOverReason::Timeout,
+            "abandonment" => GameOverReason::Abort,
+            "stalemate" => GameOverReason::Stalemate,
+            "insufficient_material" => GameOverReason::InsufficientMaterial,
+            "repetition" => GameOverReason::Repetition,
+            "fifty_move" => GameOverReason::FiftyMove,
+            "draw_agreement" => GameOverReason::DrawAgreement,
+            _ => return Ok(None),
+        };
+        let winner = match row.result.as_deref() {
+            Some("white") => Some(Side::White),
+            Some("black") => Some(Side::Black),
+            _ => None,
+        };
+        Ok(Some((winner, reason)))
+    }
+
     /// Persists move/clock history for a still-in-progress game. Called
     /// after every move (fire-and-forget, see `spawn_progress_persist`) so a
     /// game killed mid-flight — server restart, Fly autostop — still has its
@@ -1011,6 +1053,54 @@ mod tests {
         insert_game_row(&pool, game_id, white_id, black_id, true).await; // still 'active'
 
         assert!(store.get_game_for_analysis(game_id).await.unwrap().is_none());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn get_finished_outcome_decodes_a_decisive_finish(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+        let plan = make_plan(
+            game_id,
+            white_id,
+            black_id,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::Black },
+            GameOverReason::Resignation,
+        );
+        store.finalize_game(plan).await.unwrap();
+
+        let (winner, reason) = store.get_finished_outcome(game_id).await.unwrap().expect("row should decode");
+        assert_eq!(winner, Some(Side::Black));
+        assert_eq!(reason, GameOverReason::Resignation);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn get_finished_outcome_decodes_an_abort_as_no_winner(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+        let plan = make_plan(game_id, white_id, black_id, true, KnownOutcome::Draw, GameOverReason::Abort);
+        store.abort_game(plan).await.unwrap();
+
+        let (winner, reason) = store.get_finished_outcome(game_id).await.unwrap().expect("row should decode");
+        assert_eq!(winner, None);
+        assert_eq!(reason, GameOverReason::Abort);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn get_finished_outcome_none_for_still_active_game(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await; // still 'active'
+
+        assert!(store.get_finished_outcome(game_id).await.unwrap().is_none());
     }
 
     #[sqlx::test(migrations = "../../migrations")]

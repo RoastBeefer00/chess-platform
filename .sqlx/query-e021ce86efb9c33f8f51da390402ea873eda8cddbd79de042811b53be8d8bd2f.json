@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT result, termination FROM games WHERE id = $1 AND status IN ('finished', 'aborted')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "result",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "termination",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "e021ce86efb9c33f8f51da390402ea873eda8cddbd79de042811b53be8d8bd2f"
+}
