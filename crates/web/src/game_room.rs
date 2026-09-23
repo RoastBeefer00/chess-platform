@@ -94,11 +94,20 @@ pub struct GameRoom {
     pub clock_history: Vec<(i64, i64)>,
     /// Zobrist hash → occurrence count for the current game, used to detect
     /// threefold repetition. Seeded with the starting position at construction.
-    position_counts: HashMap<Zobrist64, u8>,
+    /// `u16` rather than `u8`: the threefold cutoff means a count can't
+    /// realistically approach 255, but "realistically" isn't a reason to leave
+    /// an overflow panic in a server-side counter fed by client input.
+    position_counts: HashMap<Zobrist64, u16>,
     /// Set when `end_game` runs; allows the websocket join handler to replay
     /// the `GameOver` event to a client that reconnects after the game
     /// finished (otherwise they'd see a frozen board with no modal).
     pub end_reason: Option<GameOverReason>,
+    /// When `end_game` ran. Drives room eviction (see
+    /// `AppState::evict_finished_rooms`): a finished room has to outlive the
+    /// game itself for a bit — reconnects replay `GameOver`, and the rematch
+    /// flow reads `session_score` off it — but not forever, which is what it
+    /// used to do.
+    pub finished_at: Option<Instant>,
     /// Cumulative score across all games in this rematch series (white, black). Draws give 0.5.
     pub session_score: (f32, f32),
 }
@@ -110,7 +119,7 @@ impl GameRoom {
             .position
             .zobrist_hash::<Zobrist64>(EnPassantMode::Legal);
         let mut position_counts = HashMap::new();
-        position_counts.insert(start_hash, 1u8);
+        position_counts.insert(start_hash, 1u16);
         GameRoom {
             game,
             status: GameStatus::WaitingForOpponent,
@@ -129,6 +138,7 @@ impl GameRoom {
             clock_history: Vec::new(),
             position_counts,
             end_reason: None,
+            finished_at: None,
             session_score,
         }
     }
@@ -160,7 +170,7 @@ impl GameRoom {
         let start_hash = game
             .position
             .zobrist_hash::<Zobrist64>(EnPassantMode::Legal);
-        position_counts.insert(start_hash, 1u8);
+        position_counts.insert(start_hash, 1u16);
 
         for uci_str in &move_history {
             let uci_move: UciMove = uci_str
@@ -215,6 +225,7 @@ impl GameRoom {
             clock_history,
             position_counts,
             end_reason: None,
+            finished_at: None,
             session_score: (0.0, 0.0),
         })
     }
@@ -333,6 +344,7 @@ impl GameRoom {
         }
         self.status = GameStatus::Finished(Outcome::Known(outcome));
         self.end_reason = Some(reason.clone());
+        self.finished_at = Some(Instant::now());
 
         match outcome {
             KnownOutcome::Decisive {
@@ -374,15 +386,7 @@ impl GameRoom {
             black_wins,
         });
 
-        if let Some(h) = self.timeout_task.take() {
-            h.abort();
-        }
-        if let Some(h) = self.abort_task.take() {
-            h.abort();
-        }
-        if let Some(h) = self.heartbeat_task.take() {
-            h.abort();
-        }
+        self.abort_tasks();
         self.abort_side = None;
         self.abort_deadline_ms = None;
 
@@ -441,11 +445,15 @@ impl GameRoom {
             Color::White => self.game.white_ms_left,
         };
         mover_ms -= charge;
-        if let TimeMode::Increment(i) = self.game.config.time_control.mode {
-            mover_ms += i;
-        }
+        // Flag check comes BEFORE the increment. Adding it first would let a
+        // player who has already run out be rescued by their own increment —
+        // 100ms left, a 3s think and a 5s increment would land on +2.1s
+        // instead of a loss on time.
         if mover_ms <= 0 {
             return Err(MoveError::FlagFall);
+        }
+        if let TimeMode::Increment(i) = self.game.config.time_control.mode {
+            mover_ms += i;
         }
         match mover {
             Color::Black => self.game.black_ms_left = mover_ms,
@@ -465,12 +473,40 @@ impl GameRoom {
         if self.current_player() != Some(mover_id) {
             return Err(MoveError::NotYourTurn);
         }
+        // Kept so a flag fall can put the board back: the clock is only
+        // charged after the move is applied (`update_clock` identifies the
+        // mover as `turn().other()`), so discovering the mover was already
+        // out of time means un-applying a move that never legally happened.
+        let position_before = self.get_position();
+        let mover = self.game.position.turn();
         self.parse_and_apply_move(&uci)?;
         // Forgive up to the mover's measured RTT plus a jitter margin. Falls
         // back to the bare margin if we have no RTT sample yet (e.g. a move
         // that races the first Ping).
         let rtt_cap_ms = self.rtt_of(mover_id).map(|r| r as i64).unwrap_or(0) + RTT_CAP_SLACK_MS;
-        self.update_clock(think_ms, rtt_cap_ms)?;
+        if let Err(e) = self.update_clock(think_ms, rtt_cap_ms) {
+            if !matches!(e, MoveError::FlagFall) {
+                return Err(e);
+            }
+            // The mover ran out of time applying their own move, so they
+            // lose — the winner is their opponent. Resolved here rather than
+            // by the caller because at this point `position.turn()` has
+            // already flipped to the opponent, which is exactly the trap the
+            // previous caller-side version fell into (it took the opposite of
+            // `turn()` and so handed the win to the player who flagged).
+            self.game.position = position_before;
+            match mover {
+                Color::White => self.game.white_ms_left = 0,
+                Color::Black => self.game.black_ms_left = 0,
+            }
+            let plan = self.end_game(
+                KnownOutcome::Decisive {
+                    winner: mover.other(),
+                },
+                GameOverReason::Timeout,
+            );
+            return Ok(MoveOutcome::Ended(plan));
+        }
 
         // Record the move and its resulting clocks now, before any of the
         // early returns below (checkmate, repetition, fifty-move) — a
@@ -505,7 +541,7 @@ impl GameRoom {
             .zobrist_hash::<Zobrist64>(EnPassantMode::Legal);
         let rep_count = {
             let c = self.position_counts.entry(hash).or_insert(0);
-            *c += 1;
+            *c = c.saturating_add(1);
             *c
         };
 
@@ -612,6 +648,23 @@ impl GameRoom {
             side: None,
             deadline_ms: None,
         });
+    }
+
+    /// Cancels every background task this room owns. Called by `end_game`,
+    /// and by anything discarding a room it built but isn't going to install
+    /// (see `AppState::adopt_game`) — a dropped `GameRoom` does not stop its
+    /// own tasks, and an orphaned heartbeat would keep a dead game's
+    /// ownership record alive indefinitely.
+    pub fn abort_tasks(&mut self) {
+        if let Some(h) = self.timeout_task.take() {
+            h.abort();
+        }
+        if let Some(h) = self.abort_task.take() {
+            h.abort();
+        }
+        if let Some(h) = self.heartbeat_task.take() {
+            h.abort();
+        }
     }
 
     pub fn clear_rematch_offer(&mut self) {
@@ -921,7 +974,72 @@ mod tests {
         assert_eq!(room.game.white_ms_left, 100, "clock must not mutate on FlagFall");
     }
 
+    /// The increment must not resurrect a player who has already run out:
+    /// 100ms left against a ~500ms charge is a flag fall even when a 5s
+    /// increment would otherwise leave them comfortably in the black.
+    #[test]
+    fn clock_increment_does_not_rescue_flagged_player() {
+        let (mut room, _, _) = make_room_increment(5_000);
+        room.parse_and_apply_move("e2e4").unwrap();
+        room.game.white_ms_left = 100;
+        room.last_move_at = Some(Instant::now() - Duration::from_millis(500));
+        let result = room.update_clock(0, 0);
+        assert!(
+            matches!(result, Err(MoveError::FlagFall)),
+            "increment must be applied only after the flag check"
+        );
+        assert_eq!(room.game.white_ms_left, 100, "clock must not mutate on FlagFall");
+    }
+
     // ── handle_move_made ─────────────────────────────────────────────────────
+
+    /// A player who runs out of time while making their own move loses it —
+    /// the win goes to the opponent. Regression test: the previous version
+    /// computed the winner from `position.turn()` *after* the move had been
+    /// applied, so it inverted and handed the win to the player who flagged.
+    #[test]
+    fn move_flag_fall_awards_win_to_opponent() {
+        let (mut room, white_id, _) = make_room();
+        room.game.white_ms_left = 100;
+        // elapsed ≈ 500ms with no RTT forgiveness beyond the fixed slack →
+        // White is charged well past their remaining 100ms.
+        room.last_move_at = Some(Instant::now() - Duration::from_millis(500));
+
+        let outcome = room
+            .handle_move_made("e2e4".to_string(), white_id, 5_000)
+            .expect("flag fall resolves as a game end, not a move error");
+
+        assert!(matches!(outcome, MoveOutcome::Ended(_)));
+        assert_eq!(room.end_reason, Some(GameOverReason::Timeout));
+        assert!(
+            matches!(
+                room.status,
+                GameStatus::Finished(Outcome::Known(KnownOutcome::Decisive {
+                    winner: Color::Black
+                }))
+            ),
+            "White flagged, so Black must win; got {:?}",
+            room.status
+        );
+        assert_eq!(room.game.white_ms_left, 0, "flagged clock should read zero");
+    }
+
+    /// The move that triggered the flag fall never legally happened, so it
+    /// must not survive in the position or the persisted history.
+    #[test]
+    fn move_flag_fall_rolls_back_the_move() {
+        let (mut room, white_id, _) = make_room();
+        let before = room.get_position();
+        room.game.white_ms_left = 100;
+        room.last_move_at = Some(Instant::now() - Duration::from_millis(500));
+
+        room.handle_move_made("e2e4".to_string(), white_id, 5_000).unwrap();
+
+        assert_eq!(room.get_position().board(), before.board());
+        assert_eq!(room.get_position().turn(), before.turn());
+        assert!(room.move_history.is_empty(), "rolled-back move must not be recorded");
+        assert!(room.clock_history.is_empty());
+    }
 
     #[test]
     fn move_not_your_turn() {

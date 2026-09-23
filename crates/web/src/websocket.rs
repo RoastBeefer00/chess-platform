@@ -7,8 +7,8 @@ pub async fn game_websocket(
     input: BoxedStream<GameClientMessage, ServerFnError>,
 ) -> Result<BoxedStream<GameServerMessage, ServerFnError>, ServerFnError> {
     use crate::auth::AuthBackend;
-    use crate::db::finalize_now;
-    use crate::game_room::{handle_abort_timeout, handle_timeout, MoveError};
+    use crate::db::{finalize_now, GameOutcomeLookup};
+    use crate::game_room::{handle_abort_timeout, handle_timeout, GameRoom};
     use crate::state::{AdoptOutcome, AppState};
     use axum_login::AuthSession;
     use futures::StreamExt;
@@ -29,6 +29,37 @@ pub async fn game_websocket(
     let user = auth
         .user
         .ok_or_else(|| ServerFnError::new("unauthenticated"))?;
+
+    /// Creates the rematch game and tells the room about it.
+    ///
+    /// Colors swap for the rematch, so the running series score has to swap
+    /// with them: it's stored and rendered as `(white, black)` by board side,
+    /// so carrying it across unchanged credits each player's wins to their
+    /// opponent from the second game on.
+    ///
+    /// Returns `false` if game creation failed, leaving the offer standing so
+    /// the players can simply try again.
+    async fn accept_rematch(state: &AppState, gr: &mut GameRoom) -> bool {
+        let (white_wins, black_wins) = gr.session_score;
+        let new_game_id = match state
+            .create_game(
+                gr.game.config.clone(),
+                gr.game.black_player,
+                gr.game.white_player,
+                (black_wins, white_wins),
+            )
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(?e, "rematch: create_game failed");
+                return false;
+            }
+        };
+        gr.clear_rematch_offer();
+        gr.broadcast(GameServerMessage::RematchAccept { new_game_id });
+        true
+    }
 
     tokio::spawn(async move {
         let first = match input.next().await {
@@ -82,20 +113,33 @@ pub async fn game_websocket(
                     // No live GameRoom and nothing to adopt — either a bogus
                     // id, or a game that genuinely ended (or has
                     // unreplayable data) without this process ever having
-                    // hosted it. Check the DB before giving up, so a
-                    // genuinely-aborted game reconnects to a real GameOver
-                    // replay instead of an undifferentiated error
-                    // indistinguishable from a typo'd URL.
-                    let status = state.game_store.get_game_status(game_id).await.ok().flatten();
-                    let message = if status.as_deref() == Some("aborted") {
-                        Ok(GameServerMessage::GameOver {
-                            winner: None,
-                            reason: GameOverReason::Abort,
-                            white_wins: 0.0,
-                            black_wins: 0.0,
-                        })
-                    } else {
-                        Err(ServerFnError::new("game not found"))
+                    // hosted it. Check the DB before giving up, so an ended
+                    // game reconnects to a real GameOver replay instead of an
+                    // undifferentiated error indistinguishable from a typo'd
+                    // URL. This is also what makes evicting finished rooms
+                    // safe (see `AppState::evict_finished_rooms`): once the
+                    // room is gone, the DB row is the only thing left that
+                    // knows how the game ended.
+                    //
+                    // The series score is reported as 0-0: it only ever lived
+                    // in the room, so by here there's nothing left to report.
+                    let outcome = state
+                        .game_store
+                        .get_finished_outcome(game_id)
+                        .await
+                        .unwrap_or(GameOutcomeLookup::Unknown);
+                    let message = match outcome {
+                        GameOutcomeLookup::Ended { winner, reason } => {
+                            Ok(GameServerMessage::GameOver {
+                                winner,
+                                reason,
+                                white_wins: 0.0,
+                                black_wins: 0.0,
+                            })
+                        }
+                        GameOutcomeLookup::Unknown | GameOutcomeLookup::StillRunning => {
+                            Err(ServerFnError::new("game not found"))
+                        }
                     };
                     let _ = tx.unbounded_send(message);
                     return;
@@ -182,8 +226,18 @@ pub async fn game_websocket(
                         }
                         shakmaty::KnownOutcome::Draw => None,
                     };
-                    let reason = gr.end_reason.clone().unwrap_or(GameOverReason::DrawAgreement);
-                    Some((winner, reason))
+                    // `end_game` is the only thing that sets `Finished`, and
+                    // it always sets `end_reason` alongside — so `None` here
+                    // means the two drifted apart. Skip the replay rather
+                    // than invent a reason and show the player something
+                    // confidently wrong.
+                    match gr.end_reason.clone() {
+                        Some(reason) => Some((winner, reason)),
+                        None => {
+                            tracing::warn!(%game_id, "finished room has no end_reason");
+                            None
+                        }
+                    }
                 }
                 _ => None,
             };
@@ -368,9 +422,21 @@ pub async fn game_websocket(
                                 // never adds latency to the move reaching the
                                 // opponent (that's the instant in-memory broadcast).
                                 let fen = Fen::from_position(&gr.get_position(), EnPassantMode::Legal).to_string();
+                                // The clocks ride along with the position so
+                                // a watch grid on another instance can tick
+                                // this game down — it has no `GameRoom` here
+                                // to read them off. Accurate as of right now:
+                                // the mover's clock was just charged.
+                                let clocks = crate::state::ActiveGameClocks {
+                                    white_ms_left: gr.game.white_ms_left,
+                                    black_ms_left: gr.game.black_ms_left,
+                                    sent_at_ms: crate::state::now_epoch_ms(),
+                                };
                                 let redis_client = state.redis_client.clone();
                                 tokio::spawn(async move {
-                                    redis_client.active_game_update_fen(game_id, &fen).await;
+                                    redis_client
+                                        .active_game_update_position(game_id, &fen, clocks)
+                                        .await;
                                 });
                                 if let Some(h) = gr.timeout_task.take() {
                                     h.abort();
@@ -418,21 +484,10 @@ pub async fn game_websocket(
                                 drop(gr);
                                 finalize_now(&state.game_store, &state.redis_client, plan).await;
                             }
-                            Err(MoveError::FlagFall) => {
-                                // mover ran out applying their own move — they lose.
-                                let winner_color = match gr.game.position.turn() {
-                                    shakmaty::Color::White => shakmaty::Color::Black,
-                                    shakmaty::Color::Black => shakmaty::Color::White,
-                                };
-                                let plan = gr.end_game(
-                                    shakmaty::KnownOutcome::Decisive {
-                                        winner: winner_color,
-                                    },
-                                    GameOverReason::Timeout,
-                                );
-                                drop(gr);
-                                finalize_now(&state.game_store, &state.redis_client, plan).await;
-                            }
+                            // A flag fall while applying the mover's own move
+                            // now resolves inside `handle_move_made` and
+                            // arrives as `Ended` above — it has the mover's
+                            // color to hand, which this arm did not.
                             Err(e) => {
                                 tracing::warn!(?e, "move rejected");
                                 // Client optimistically applied this move
@@ -444,7 +499,13 @@ pub async fn game_websocket(
                             }
                         }
                     }
-                    GameClientMessage::Chat { text: _ } => todo!(),
+                    // Not built yet. `todo!()` here used to panic the whole
+                    // session task on any client that sent one — and this
+                    // variant deserializes straight off the wire, so that
+                    // was reachable by anyone.
+                    GameClientMessage::Chat { text: _ } => {
+                        tracing::debug!("ignoring Chat: not implemented");
+                    }
                     GameClientMessage::Resign => {
                         let my_side = match &player_role {
                             shared::PlayerRole::Player(side) => *side,
@@ -501,68 +562,58 @@ pub async fn game_websocket(
                             }
                         }
                     }
+                    // A rematch starts a whole new rated game, so every arm
+                    // below gates on being a player in a game that's actually
+                    // over. Without the `Finished` check a mid-game rematch
+                    // would leave the user with two `status='active'` rows,
+                    // which breaks the "at most one active game per user"
+                    // assumption `find_active_game` is built on.
                     GameClientMessage::RematchOffer => {
-                        if player_role == PlayerRole::Spectator {
-                            return;
+                        if player_role == PlayerRole::Spectator
+                            || !matches!(gr.status, shared::GameStatus::Finished(_))
+                        {
+                            continue;
                         }
-
-                        if let Some(id) = gr.rematch_offer {
-                            if user.id == id {
-                                return;
-                            } else if gr.game.black_player == id {
-                                let score = gr.session_score;
-                                let new_game_id = match state
-                                    .create_game(
-                                        gr.game.config.clone(),
-                                        gr.game.black_player,
-                                        gr.game.white_player,
-                                        score,
-                                    )
-                                    .await
-                                {
-                                    Ok(id) => id,
-                                    Err(e) => {
-                                        tracing::warn!(?e, "rematch: create_game failed");
-                                        continue;
-                                    }
-                                };
-                                gr.broadcast(GameServerMessage::RematchAccept { new_game_id });
-                                gr.clear_rematch_offer();
+                        match gr.rematch_offer {
+                            // Re-offering our own outstanding offer: nothing
+                            // to do. (This used to `return`, which killed the
+                            // whole session and skipped the disconnect
+                            // cleanup below, leaving the player's presence
+                            // refcount stuck "connected" forever.)
+                            Some(id) if id == user.id => {}
+                            // The opponent already offered, so this is an
+                            // implicit accept — regardless of which color
+                            // they happen to be playing.
+                            Some(_) => {
+                                accept_rematch(&state, &mut gr).await;
                             }
-                        } else {
-                            gr.rematch_offer = Some(user.id);
-                            gr.broadcast(GameServerMessage::RematchOffer { from: user.id });
+                            None => {
+                                gr.rematch_offer = Some(user.id);
+                                gr.broadcast(GameServerMessage::RematchOffer { from: user.id });
+                            }
                         }
                     }
                     GameClientMessage::RematchAccept => {
-                        if player_role == PlayerRole::Spectator {
-                            return;
-                        }
-
-                        let score = gr.session_score;
-                        let new_game_id = match state
-                            .create_game(
-                                gr.game.config.clone(),
-                                gr.game.black_player,
-                                gr.game.white_player,
-                                score,
-                            )
-                            .await
+                        if player_role == PlayerRole::Spectator
+                            || !matches!(gr.status, shared::GameStatus::Finished(_))
                         {
-                            Ok(id) => id,
-                            Err(e) => {
-                                tracing::warn!(?e, "rematch: create_game failed");
-                                continue;
+                            continue;
+                        }
+                        // There must be an outstanding offer, and it must be
+                        // the opponent's. Without this an accept was
+                        // unconditional, so a client could spam it to mint
+                        // unlimited games off a single finished room.
+                        match gr.rematch_offer {
+                            Some(id) if id != user.id => {
+                                accept_rematch(&state, &mut gr).await;
                             }
-                        };
-                        gr.broadcast(GameServerMessage::RematchAccept { new_game_id });
-                        gr.clear_rematch_offer();
+                            _ => {}
+                        }
                     }
                     GameClientMessage::RematchDecline => {
                         if player_role == PlayerRole::Spectator {
-                            return;
+                            continue;
                         }
-
                         if let Some(id) = gr.rematch_offer {
                             if user.id != id {
                                 gr.clear_rematch_offer();
@@ -572,9 +623,8 @@ pub async fn game_websocket(
                     }
                     GameClientMessage::RematchCancel => {
                         if player_role == PlayerRole::Spectator {
-                            return;
+                            continue;
                         }
-
                         if let Some(id) = gr.rematch_offer {
                             if user.id == id {
                                 gr.clear_rematch_offer();
