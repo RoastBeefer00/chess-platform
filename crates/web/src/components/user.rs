@@ -22,7 +22,7 @@ fn UserDropdown(username: String, open: RwSignal<bool>) -> impl IntoView {
     view! {
         <div
             node_ref=menu_ref
-            class="absolute right-0 top-full mt-2 w-40 flex flex-col rounded-md overflow-hidden shadow-xl bg-zinc-900 border border-zinc-800 z-50"
+            class="absolute right-0 top-full mt-2 w-40 flex flex-col rounded-control overflow-hidden shadow-xl bg-zinc-900 border border-zinc-800 z-50"
         >
             <a
                 href={profile_href}
@@ -67,7 +67,7 @@ pub fn UserMenu() -> impl IntoView {
         // `Suspense` would swap in its pulsing-skeleton fallback on every
         // such refetch, flickering the whole nav bar.
         <Transition fallback=|| view! {
-            <div class="w-24 h-8 bg-zinc-800 rounded-md animate-pulse"/>
+            <div class="w-24 h-8 bg-zinc-800 rounded-control animate-pulse"/>
         }>
             {move || user.get().map(|res| match res {
                 Ok(Some(user)) => {
@@ -107,7 +107,7 @@ pub fn UserMenu() -> impl IntoView {
                             <ActionForm action=logout_action>
                                 <button
                                     type="submit"
-                                    class="px-3.5 py-1.5 text-sm font-medium text-zinc-300 rounded-md hover:text-white hover:bg-zinc-800 transition-colors"
+                                    class="px-3.5 py-1.5 text-sm font-medium text-zinc-300 rounded-control hover:text-white hover:bg-zinc-800 transition-colors"
                                 >
                                     {move || if is_guest { "Sign in" } else { "Sign out" }}
                                 </button>
@@ -118,7 +118,7 @@ pub fn UserMenu() -> impl IntoView {
                 _ => view! {
                     <a
                         href="/login"
-                        class="px-3.5 py-1.5 text-sm font-medium text-zinc-950 bg-white rounded-md hover:bg-zinc-100 transition-colors"
+                        class="px-3.5 py-1.5 text-sm font-medium text-zinc-950 bg-white rounded-control hover:bg-zinc-100 transition-colors"
                     >
                         "Log in"
                     </a>

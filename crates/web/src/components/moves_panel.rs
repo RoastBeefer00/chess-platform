@@ -166,7 +166,6 @@ pub fn MovesPanel(
             can_back,
             can_forward,
             set_viewing_ply,
-            go_beginning,
             go_back,
             go_forward,
             go_live,
@@ -273,6 +272,19 @@ fn full_view(
     }
 }
 
+/// The mobile move strip.
+///
+/// Deliberately fewer controls than `full_view`, not the same four shrunk
+/// down. The previous version put all four jump/step buttons at
+/// `px-1.5 py-1` on a phone: four ~24px targets, well under the ~44px
+/// guideline, eating a third of the available width so the moves themselves
+/// scrolled in whatever was left.
+///
+/// Now: two persistent step buttons at a real touch size, plus a "Live" pill
+/// that appears only while the user is actually scrubbing — the only time a
+/// jump control is useful. Jump-to-start is dropped here entirely; it
+/// survives on desktop, where width is free. Hence no `go_beginning`
+/// parameter, unlike `full_view`.
 #[allow(clippy::too_many_arguments)]
 fn compact_view(
     move_numbers: Signal<Vec<usize>>,
@@ -281,13 +293,14 @@ fn compact_view(
     can_back: Signal<bool>,
     can_forward: Signal<bool>,
     set_viewing_ply: WriteSignal<Option<usize>>,
-    go_beginning: impl Fn(()) + Copy + Send + Sync + 'static,
     go_back: impl Fn(()) + Copy + Send + Sync + 'static,
     go_forward: impl Fn(()) + Copy + Send + Sync + 'static,
     go_live: impl Fn(()) + Copy + Send + Sync + 'static,
     play_sound_for_ply: impl Fn(usize) + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
-    let nav_btn_class = "px-1.5 py-1 text-xs font-medium text-zinc-300 border border-zinc-700 rounded hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-700 disabled:hover:text-zinc-300 flex-shrink-0";
+    // `w-10 h-10` = 40px, close to the 44px touch-target guideline and about
+    // as much as fits beside the strip on a narrow phone.
+    let nav_btn_class = "w-10 h-10 flex items-center justify-center text-base font-medium text-zinc-300 border border-zinc-700 rounded-control hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-700 disabled:hover:text-zinc-300 flex-shrink-0";
 
     // Auto-scroll the strip to follow the live frontier so the latest move
     // is always visible. Skip when the user is in review mode (viewing_ply
@@ -308,12 +321,11 @@ fn compact_view(
     });
 
     view! {
-        <div class="flex flex-row items-center gap-1 w-full text-xs font-mono rounded-md bg-zinc-900/60 border border-zinc-800 px-1 py-1">
-            <button on:click=move |_| go_beginning(()) disabled=move || !can_back.get() aria-label="Jump to start" class=nav_btn_class>"«"</button>
+        <div class="flex flex-row items-center gap-1.5 w-full text-sm font-mono rounded-control bg-zinc-900/60 border border-zinc-800 px-1.5 py-1.5">
             <button on:click=move |_| go_back(()) disabled=move || !can_back.get() aria-label="Previous move" class=nav_btn_class>"‹"</button>
             <div
                 node_ref=strip_ref
-                class="flex-1 min-w-0 overflow-x-auto flex flex-row items-center gap-2 whitespace-nowrap pb-1.5"
+                class="flex-1 min-w-0 overflow-x-auto scrollbar-none flex flex-row items-center gap-2 whitespace-nowrap"
             >
                 <For
                     each=move || move_numbers.get()
@@ -331,8 +343,9 @@ fn compact_view(
                             <span class="flex flex-row items-center gap-1 flex-shrink-0">
                                 <span class="text-zinc-500 select-none">{num}"."</span>
                                 <button
-                                    class="px-1 rounded hover:bg-zinc-700 cursor-pointer"
+                                    class="px-2 py-1.5 rounded hover:bg-zinc-700 cursor-pointer"
                                     class:bg-zinc-700=move || selected_move.get() == white_ply
+                                    class:text-white=move || selected_move.get() == white_ply
                                     on:click=move |_| {
                                         set_viewing_ply.set(Some(white_ply));
                                         play_sound_for_ply(white_ply);
@@ -342,8 +355,9 @@ fn compact_view(
                                 </button>
                                 {move || black().map(|b| view! {
                                     <button
-                                        class="px-1 rounded hover:bg-zinc-700 cursor-pointer"
+                                        class="px-2 py-1.5 rounded hover:bg-zinc-700 cursor-pointer"
                                         class:bg-zinc-700=move || selected_move.get() == black_ply
+                                        class:text-white=move || selected_move.get() == black_ply
                                         on:click=move |_| {
                                             set_viewing_ply.set(Some(black_ply));
                                             play_sound_for_ply(black_ply);
@@ -358,7 +372,19 @@ fn compact_view(
                 />
             </div>
             <button on:click=move |_| go_forward(()) disabled=move || !can_forward.get() aria-label="Next move" class=nav_btn_class>"›"</button>
-            <button on:click=move |_| go_live(()) disabled=move || !can_forward.get() aria-label="Jump to live" class=nav_btn_class>"»"</button>
+            // Only while scrubbing — at the live position there is nothing
+            // to jump back to, and hiding it returns the width to the moves.
+            <Show when=move || can_forward.get()>
+                <button
+                    on:click=move |_| go_live(())
+                    aria-label="Jump to live position"
+                    class="h-10 px-3 flex items-center justify-center text-xs font-semibold uppercase tracking-wide
+                           bg-emerald-600 text-white rounded-control hover:bg-emerald-500 transition-colors
+                           cursor-pointer flex-shrink-0"
+                >
+                    "Live"
+                </button>
+            </Show>
         </div>
     }
 }

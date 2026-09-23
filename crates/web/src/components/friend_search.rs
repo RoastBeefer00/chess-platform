@@ -45,7 +45,7 @@ fn SearchResultRow(result: UserSearchResult) -> impl IntoView {
         <div class="flex items-center justify-between gap-3 px-4 py-3">
             <div class="flex items-center gap-3 min-w-0">
                 {result.user.avatar_url.clone().map(|url| view! {
-                    <img src={url} class="w-8 h-8 rounded-full flex-shrink-0" />
+                    <img src={url} alt="" class="w-8 h-8 rounded-full flex-shrink-0" />
                 })}
                 {match href {
                     Some(href) => view! {
@@ -59,7 +59,7 @@ fn SearchResultRow(result: UserSearchResult) -> impl IntoView {
                     <button
                         type="button"
                         on:click=move |_| { send_action.dispatch(SendFriendRequest { target_id }); }
-                        class="px-3 py-1.5 text-xs font-semibold bg-white text-zinc-950 rounded-md hover:bg-zinc-100 transition-colors cursor-pointer flex-shrink-0"
+                        class="px-3 py-1.5 text-xs font-semibold bg-white text-zinc-950 rounded-control hover:bg-zinc-100 transition-colors cursor-pointer flex-shrink-0"
                     >
                         "Add"
                     </button>
@@ -115,7 +115,7 @@ pub fn FriendSearch() -> impl IntoView {
                 placeholder="Search by username…"
                 prop:value=query
                 on:input=on_input
-                class="w-full px-4 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-600"
+                class="w-full px-4 py-2.5 surface-card text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-600"
             />
             <Show when=move || !debounced_query.get().trim().is_empty()>
                 <Transition fallback=|| ()>
@@ -125,7 +125,7 @@ pub fn FriendSearch() -> impl IntoView {
                             view! { <p class="text-zinc-500 text-sm italic px-1">"No users found"</p> }.into_any()
                         } else {
                             view! {
-                                <div class="flex flex-col divide-y divide-zinc-800 rounded-2xl bg-zinc-900 border border-zinc-800 overflow-hidden">
+                                <div class="flex flex-col divide-y divide-zinc-800 surface-card overflow-hidden">
                                     {rows.into_iter().map(|r| view! { <SearchResultRow result=r/> }).collect_view()}
                                 </div>
                             }.into_any()

@@ -39,7 +39,7 @@ pub fn DrawResignControls(
         view! {
             <div class="flex flex-col gap-2 flex-shrink-0">
                 <Show when=move || draw_offer_state.get() == DrawOfferState::OfferedToUs>
-                    <div class="flex flex-col items-stretch gap-2 px-3 py-2 rounded-md bg-zinc-800 border border-zinc-700">
+                    <div class="flex flex-col items-stretch gap-2 px-3 py-2 rounded-control bg-zinc-800 border border-zinc-700">
                         <span class="text-sm text-zinc-300 whitespace-nowrap">"Opponent offers a draw"</span>
                         <div class="flex flex-row gap-2">
                             <button
@@ -49,7 +49,7 @@ pub fn DrawResignControls(
                                 }
                                 title="Accept draw"
                                 aria-label="Accept draw"
-                                class="flex-1 px-3 py-1 text-base font-medium bg-green-700 text-white rounded hover:bg-green-600 transition-colors cursor-pointer"
+                                class="flex-1 px-3 py-1 text-base font-medium bg-emerald-600 text-white rounded hover:bg-emerald-500 transition-colors cursor-pointer"
                             >
                                 "✓"
                             </button>
@@ -146,7 +146,7 @@ pub fn DrawResignControls(
                                 draw_offer_state.set(DrawOfferState::Idle);
                             }
                             title="Accept draw"
-                            class="px-2 py-1 text-xs font-medium bg-green-700 text-white rounded hover:bg-green-600 transition-colors cursor-pointer"
+                            class="px-2 py-1 text-xs font-medium bg-emerald-600 text-white rounded hover:bg-emerald-500 transition-colors cursor-pointer"
                         >
                             "✓½"
                         </button>

@@ -47,7 +47,7 @@ pub fn RematchControls(
                         send.run(GameClientMessage::RematchOffer);
                         rematch_state.set(RematchState::Offering);
                     }
-                    class=format!("{btn_cls} bg-white text-zinc-950 rounded-md hover:bg-zinc-100 transition-colors cursor-pointer whitespace-nowrap")
+                    class=format!("{btn_cls} bg-white text-zinc-950 rounded-control hover:bg-zinc-100 transition-colors cursor-pointer whitespace-nowrap")
                 >
                     "Rematch"
                 </button>
@@ -58,7 +58,7 @@ pub fn RematchControls(
                         send.run(GameClientMessage::RematchCancel);
                         rematch_state.set(RematchState::Idle);
                     }
-                    class=format!("{text_cls} text-zinc-300 border border-zinc-700 rounded-md hover:border-zinc-500 hover:text-white transition-colors cursor-pointer whitespace-nowrap")
+                    class=format!("{text_cls} text-zinc-300 border border-zinc-700 rounded-control hover:border-zinc-500 hover:text-white transition-colors cursor-pointer whitespace-nowrap")
                 >
                     "Cancel"
                 </button>
@@ -71,7 +71,7 @@ pub fn RematchControls(
                         }
                         title="Accept rematch"
                         aria-label="Accept rematch"
-                        class=format!("{btn_cls} bg-green-600 text-white rounded-l-md hover:bg-green-500 transition-colors cursor-pointer")
+                        class=format!("{btn_cls} bg-emerald-600 text-white rounded-l-md hover:bg-emerald-500 transition-colors cursor-pointer")
                     >
                         "✓"
                     </button>

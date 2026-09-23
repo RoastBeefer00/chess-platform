@@ -7,9 +7,9 @@ pub fn NewGameButton(
     #[prop(optional, default = "lg")] size: &'static str,
 ) -> impl IntoView {
     let cls = if size == "sm" {
-        "px-2 py-1.5 text-base font-medium text-zinc-300 border border-zinc-700 rounded-md hover:border-zinc-500 hover:text-white transition-colors cursor-pointer whitespace-nowrap"
+        "px-2 py-1.5 text-base font-medium text-zinc-300 border border-zinc-700 rounded-control hover:border-zinc-500 hover:text-white transition-colors cursor-pointer whitespace-nowrap"
     } else {
-        "px-5 py-2.5 text-sm font-medium text-zinc-300 border border-zinc-700 rounded-md hover:border-zinc-500 hover:text-white transition-colors cursor-pointer whitespace-nowrap"
+        "px-5 py-2.5 text-sm font-medium text-zinc-300 border border-zinc-700 rounded-control hover:border-zinc-500 hover:text-white transition-colors cursor-pointer whitespace-nowrap"
     };
 
     view! {
