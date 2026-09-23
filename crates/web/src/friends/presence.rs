@@ -13,6 +13,13 @@ pub struct IncomingChallenge {
     pub rating_mode: RatingMode,
 }
 
+/// An incoming friend request, as shown by the app-root toast.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IncomingFriendRequest {
+    pub from_id: Uuid,
+    pub from_username: String,
+}
+
 /// An outgoing challenge this tab sent, awaiting a response.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutgoingChallenge {
@@ -47,6 +54,12 @@ pub struct FriendsPresence {
     /// Bump to force the friends-list resource to refetch, same idiom as
     /// `AuthTrigger`.
     pub list_trigger: RwSignal<u64>,
+    /// Unanswered incoming friend requests, for the nav badge. Server-
+    /// computed and pushed (see `push_pending_count`), never diffed here.
+    pub pending_requests: RwSignal<u32>,
+    /// Most recent incoming friend request, for the app-root toast. At most
+    /// one visible at a time, same as `incoming` challenges.
+    pub incoming_request: RwSignal<Option<IncomingFriendRequest>>,
 }
 
 pub fn use_friends_presence() -> FriendsPresence {
@@ -65,6 +78,8 @@ pub fn provide_friends_presence() {
         outgoing: RwSignal::new(None),
         navigate_to_game: RwSignal::new(None),
         list_trigger: RwSignal::new(0),
+        pending_requests: RwSignal::new(0),
+        incoming_request: RwSignal::new(None),
     };
     provide_context(presence);
 
@@ -164,6 +179,15 @@ fn handle_message(presence: &FriendsPresence, msg: shared::FriendsServerMessage)
         }
         FriendsServerMessage::FriendListChanged => {
             presence.list_trigger.update(|v| *v += 1);
+        }
+        FriendsServerMessage::FriendRequestReceived { from } => {
+            presence.incoming_request.set(Some(IncomingFriendRequest {
+                from_id: from.id,
+                from_username: from.username.unwrap_or_else(|| "Anonymous".to_string()),
+            }));
+        }
+        FriendsServerMessage::PendingRequestCount { count } => {
+            presence.pending_requests.set(count);
         }
     }
 }

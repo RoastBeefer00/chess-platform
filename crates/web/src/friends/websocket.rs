@@ -37,6 +37,14 @@ pub async fn friends_websocket(
     let online = state.online_among(&friend_ids).await.into_iter().collect();
     let _ = tx.unbounded_send(Ok(FriendsServerMessage::OnlineSnapshot { online }));
 
+    // Seed the nav badge. Like `OnlineSnapshot` above, the incremental
+    // pushes only ever report *changes*, so without this a tab that opens
+    // with requests already waiting shows a zero badge until the next one
+    // arrives.
+    if let Ok(count) = state.friend_store.count_pending_received(user_id).await {
+        let _ = tx.unbounded_send(Ok(FriendsServerMessage::PendingRequestCount { count }));
+    }
+
     for challenge in state.challenges_for(&user_id).await {
         let _ = tx.unbounded_send(Ok(FriendsServerMessage::ChallengeReceived {
             challenge_id: challenge.id,

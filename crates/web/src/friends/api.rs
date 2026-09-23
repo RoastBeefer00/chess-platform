@@ -23,6 +23,28 @@ async fn current_friends_user() -> Result<shared::FriendSummary, ServerFnError> 
     Ok(shared::FriendSummary { id: user.id, username: user.username, avatar_url: user.avatar_url })
 }
 
+/// Recomputes `user_id`'s unanswered-request count and pushes it to every
+/// tab they have open.
+///
+/// Called after every mutation that can change it, for each side it affects,
+/// rather than trying to apply a delta at each site: the auto-accept path in
+/// `FriendStore::send_request` alone changes the count for one user as a
+/// side effect of the *other* user's action, which is exactly the kind of
+/// case a hand-maintained counter gets wrong.
+#[cfg(feature = "ssr")]
+async fn push_pending_count(state: &crate::state::AppState, user_id: Uuid) {
+    use shared::FriendsServerMessage;
+
+    match state.friend_store.count_pending_received(user_id).await {
+        Ok(count) => {
+            state
+                .notify_friend(user_id, FriendsServerMessage::PendingRequestCount { count })
+                .await;
+        }
+        Err(e) => tracing::warn!(?e, %user_id, "failed to recount pending friend requests"),
+    }
+}
+
 /// Everything a `/u/:username` profile page needs about the social-graph
 /// side in one round trip. Ratings and recent games are fetched separately
 /// by `EloCard`/`RecentGames`, which already know how to load an arbitrary
@@ -94,6 +116,38 @@ pub async fn get_profile(username: String) -> Result<shared::ProfileView, Server
     })
 }
 
+/// The signed-in user's own social graph, for the standalone `/friends`
+/// page. `get_profile` covers the same ground but is keyed by username and
+/// carries a profile's worth of extra data; this is the "my friends" view,
+/// which previously only existed nested inside your own profile page.
+#[server]
+pub async fn get_friends_overview() -> Result<shared::FriendsOverview, ServerFnError> {
+    use crate::state::AppState;
+    use shared::{FriendRow, FriendsOverview};
+
+    let me = current_friends_user().await?;
+    let state = expect_context::<AppState>();
+
+    let friends = state.friend_store.list_friends(me.id).await?;
+    let friend_ids: Vec<Uuid> = friends.iter().map(|f| f.id).collect();
+    let friends_online = state.online_among(&friend_ids).await;
+    let mut friends_in_game = state.game_store.active_games_for(&friend_ids).await?;
+    let friends = friends
+        .into_iter()
+        .map(|f| {
+            let online = friends_online.contains(&f.id);
+            let in_game = friends_in_game.remove(&f.id);
+            FriendRow { user: f, online, in_game }
+        })
+        .collect();
+
+    Ok(FriendsOverview {
+        friends,
+        incoming_requests: state.friend_store.list_pending_received(me.id).await?,
+        outgoing_requests: state.friend_store.list_pending_sent(me.id).await?,
+    })
+}
+
 #[server]
 pub async fn search_users(query: String) -> Result<Vec<UserSearchResult>, ServerFnError> {
     use crate::state::AppState;
@@ -128,6 +182,16 @@ pub async fn send_friend_request(target_id: Uuid) -> Result<FriendRelation, Serv
         SendRequestOutcome::AlreadyPending => FriendRelation::PendingOutgoing,
     };
     state.notify_friend(target_id, FriendsServerMessage::FriendListChanged).await;
+    // A brand-new request is worth interrupting for; an auto-accept (they had
+    // already asked us) is not a request arriving, it's a friendship forming,
+    // and `FriendListChanged` above already covers that.
+    if matches!(outcome, SendRequestOutcome::Created) {
+        state
+            .notify_friend(target_id, FriendsServerMessage::FriendRequestReceived { from: me.clone() })
+            .await;
+    }
+    push_pending_count(&state, target_id).await;
+    push_pending_count(&state, me.id).await;
     Ok(relation)
 }
 
@@ -145,6 +209,7 @@ pub async fn respond_friend_request(requester_id: Uuid, accept: bool) -> Result<
         state.friend_store.decline_request(me.id, requester_id).await?;
     }
     state.notify_friend(requester_id, FriendsServerMessage::FriendListChanged).await;
+    push_pending_count(&state, me.id).await;
     Ok(())
 }
 
@@ -158,6 +223,7 @@ pub async fn cancel_friend_request(target_id: Uuid) -> Result<(), ServerFnError>
 
     state.friend_store.cancel_request(me.id, target_id).await?;
     state.notify_friend(target_id, FriendsServerMessage::FriendListChanged).await;
+    push_pending_count(&state, target_id).await;
     Ok(())
 }
 

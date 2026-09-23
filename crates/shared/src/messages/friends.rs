@@ -41,6 +41,16 @@ pub enum FriendsServerMessage {
     /// Deliberately payload-free — the client just refetches
     /// `friends_overview()` rather than maintaining a diff protocol.
     FriendListChanged,
+    /// Someone sent us a friend request. Carries who, because unlike
+    /// `FriendListChanged` this drives a toast that has to name them —
+    /// previously a request produced no notification at all and you only
+    /// found out by navigating to your own profile and looking.
+    FriendRequestReceived { from: FriendSummary },
+    /// How many unanswered incoming friend requests we have. Pushed on
+    /// connect and again whenever the number changes, from either side —
+    /// this is what the nav badge reads. Recomputed server-side rather than
+    /// diffed, so it can't drift.
+    PendingRequestCount { count: u32 },
 }
 
 #[cfg(test)]
