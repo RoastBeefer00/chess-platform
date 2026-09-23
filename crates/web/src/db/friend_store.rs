@@ -4,6 +4,11 @@ use uuid::Uuid;
 
 use crate::auth::AuthError;
 
+/// How many unanswered friend requests one account may have outstanding.
+/// Generous for a real user, low enough that an account can't blanket the
+/// site — see the check in `send_request`.
+const MAX_PENDING_OUTGOING_REQUESTS: i64 = 50;
+
 #[derive(Clone, Debug)]
 pub struct FriendStore {
     pool: PgPool,
@@ -37,6 +42,34 @@ impl FriendStore {
     ) -> Result<SendRequestOutcome, AuthError> {
         let mut tx = self.pool.begin().await?;
 
+        // The target has to actually exist. Without this the insert below
+        // fails on the foreign key and the caller gets an opaque 500 for
+        // what is really just a bad id.
+        let target_exists =
+            sqlx::query_scalar!("SELECT 1 FROM users WHERE id = $1", addressee)
+                .fetch_optional(&mut *tx)
+                .await?
+                .is_some();
+        if !target_exists {
+            return Err(AuthError::UserNotFound);
+        }
+
+        // Cap outstanding outgoing requests. The per-IP `/api/` governor
+        // bounds the *rate* of requests but not the total a single account
+        // can have pending at once, which is what would let one user paper
+        // every inbox on the site. Accepted friendships don't count against
+        // this — only unanswered requests.
+        let pending_out: i64 = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM friendships
+               WHERE requester_id = $1 AND status = 'pending'"#,
+            requester,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if pending_out >= MAX_PENDING_OUTGOING_REQUESTS {
+            return Err(AuthError::TooManyPendingRequests);
+        }
+
         // 1. Reverse-pending exists → this is an acceptance, not a new request.
         let auto_accepted = sqlx::query!(
             r#"UPDATE friendships SET status = 'accepted', updated_at = now()
@@ -69,6 +102,10 @@ impl FriendStore {
         }
 
         // 3. Conflict: a row already exists between this pair. Classify it.
+        // `fetch_optional`, not `fetch_one`: this only reaches here because
+        // the insert above hit *some* conflict, and assuming it was
+        // necessarily the pair constraint would turn any future unique index
+        // on this table into a `RowNotFound` that fails the request.
         let existing = sqlx::query!(
             r#"SELECT status FROM friendships
                WHERE (LEAST(requester_id, addressee_id), GREATEST(requester_id, addressee_id))
@@ -76,11 +113,11 @@ impl FriendStore {
             requester,
             addressee,
         )
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(match existing.status.as_str() {
-            "accepted" => SendRequestOutcome::AlreadyFriends,
+        Ok(match existing.as_ref().map(|r| r.status.as_str()) {
+            Some("accepted") => SendRequestOutcome::AlreadyFriends,
             _ => SendRequestOutcome::AlreadyPending,
         })
     }
@@ -231,6 +268,21 @@ impl FriendStore {
             .into_iter()
             .map(|r| FriendSummary { id: r.id, username: r.username, avatar_url: r.avatar_url })
             .collect())
+    }
+
+    /// How many unanswered requests are waiting on `user_id`, for the nav
+    /// badge. A `COUNT` rather than `list_pending_received(..).len()` — the
+    /// badge is pushed on every social mutation and doesn't need the rows.
+    #[tracing::instrument(skip(self), fields(%user_id))]
+    pub async fn count_pending_received(&self, user_id: Uuid) -> Result<u32, AuthError> {
+        let count: i64 = sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!" FROM friendships
+               WHERE addressee_id = $1 AND status = 'pending'"#,
+            user_id,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count.max(0) as u32)
     }
 
     /// Pending requests `user_id` sent (they asked someone else).
