@@ -1,4 +1,4 @@
-use leptos::{html::Img, prelude::*};
+use leptos::{html::Div, prelude::*};
 use shakmaty::{Color, Piece, Square};
 
 use crate::components::BoardPerspective;
@@ -46,7 +46,10 @@ pub fn Square(
         p.color == pos.turn() && pos.is_check()
     });
 
-    let image_path = Signal::derive(move || {
+    // The CSS class for this square's piece, e.g. `pc-wK`. The actual image
+    // comes from `--piece-wK`, which `<html data-pieces>` selects — see the
+    // piece-set block in main.css for why this isn't an `<img src>`.
+    let piece_class = Signal::derive(move || {
         piece.get().map(|p| {
             let color = match p.color {
                 Color::White => "w",
@@ -60,7 +63,7 @@ pub fn Square(
                 shakmaty::Role::Queen => "Q",
                 shakmaty::Role::King => "K",
             };
-            format!("/piece/alpha/{}{}.svg", color, role)
+            format!("pc pc-{color}{role}")
         })
     });
 
@@ -126,10 +129,15 @@ pub fn Square(
     view! {
         <div
             class="relative w-full h-full select-none touch-none"
-            class:bg-white=move || !(rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
-            class:bg-green-800=move || (rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
-            class:bg-green-300=move || !(rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
-            class:bg-green-600=move || (rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
+            // Board colours come from `--board-light`/`--board-dark` (see the
+            // board-theme block in main.css), never the UI ramp: they have to
+            // look the same in light and dark mode, and the player picks them
+            // separately. `bg-white` here used to ride `--color-white`, which
+            // the light theme inverts — the light squares would have gone black.
+            class:sq-light=move || !(rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
+            class:sq-dark=move || (rank + file).is_multiple_of(2) && !is_highlighted() && !is_premove_square.get()
+            class:sq-light-hl=move || !(rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
+            class:sq-dark-hl=move || (rank + file).is_multiple_of(2) && is_highlighted() && !is_premove_square.get()
             class:bg-gray-300=move || !(rank + file).is_multiple_of(2) && is_premove_square.get()
             class:bg-gray-500=move || (rank + file).is_multiple_of(2) && is_premove_square.get()
             data-square=format!("{}{}", file_to_char(file), rank_to_char(rank))
@@ -159,8 +167,8 @@ pub fn Square(
                     }.into_any()
                 }}
             </Show>
-            <Show when=move || image_path.get().is_some()>
-                <DraggablePieceImg rank=rank file=file piece=piece image_path=image_path />
+            <Show when=move || piece_class.get().is_some()>
+                <DraggablePieceImg rank=rank file=file piece=piece piece_class=piece_class />
             </Show>
             <Show when=move || perspective.get() == BoardPerspective::White && rank == 0 || perspective.get() == BoardPerspective::Black && rank == 7>
                 <span
@@ -201,7 +209,7 @@ fn DraggablePieceImg(
     rank: usize,
     file: usize,
     piece: Signal<Option<Piece>>,
-    image_path: Signal<Option<String>>,
+    piece_class: Signal<Option<String>>,
 ) -> impl IntoView {
     #[cfg(feature = "hydrate")]
     let selected_square = expect_context::<RwSignal<Option<shakmaty::Square>>>();
@@ -215,7 +223,7 @@ fn DraggablePieceImg(
     #[cfg(not(feature = "hydrate"))]
     let _ = (rank, file, piece);
 
-    let el = NodeRef::<Img>::new();
+    let el = NodeRef::<Div>::new();
     #[cfg(feature = "hydrate")]
     let this_sq = Square::new((rank * 8 + file) as u32);
 
@@ -284,11 +292,14 @@ fn DraggablePieceImg(
     let is_dragging = || false;
 
     view! {
-        <img
-            src=move || image_path.get().unwrap_or_default()
+        // A <div> with a CSS background rather than an <img>: the piece set
+        // is chosen by a custom property, not a src attribute.
+        <div
             node_ref=el
-            draggable="false"
-            class="relative z-10 w-full h-full cursor-grab select-none touch-none"
+            class=move || format!(
+                "relative z-10 w-full h-full cursor-grab select-none touch-none {}",
+                piece_class.get().unwrap_or_default()
+            )
             class:cursor-grabbing=is_dragging
             style=style
             on:pointerdown=on_pointer_down

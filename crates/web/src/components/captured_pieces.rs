@@ -55,22 +55,29 @@ pub fn CapturedPieces(#[prop(into)] position: Signal<shakmaty::Chess>, color: Co
         pieces
     });
 
+    // Desktop gets noticeably larger pieces and a shallower overlap: at the
+    // old flat `w-4` with a `-ml-3` stack, a full set of captures was a
+    // barely-legible smudge on a 27" display. `flex-wrap` plus `min-w-0` on
+    // the parent means a long capture list now wraps to a second line
+    // instead of being clipped by the surrounding `overflow-hidden` cell.
     view! {
-        <div class="flex items-center h-5">
+        <div class="flex flex-wrap items-center gap-y-0.5 min-h-5 md:min-h-7">
             {move || {
                 state
                     .get()
                     .into_iter()
                     .map(|(i, role, first_in_group)| {
-                        let src = format!("/piece/alpha/w{}.svg", role.upper_char());
+                        let piece_class = format!("pc pc-w{}", role.upper_char());
+                        let size = "w-4 h-4 md:w-6 md:h-6";
+                        let size = format!("{size} {piece_class}");
                         let cls = if i == 0 {
-                            "w-4 h-4"
+                            format!("{size} flex-shrink-0")
                         } else if first_in_group {
-                            "w-4 h-4 ml-0.5"
+                            format!("{size} flex-shrink-0 ml-0.5 md:ml-1")
                         } else {
-                            "w-4 h-4 -ml-3"
+                            format!("{size} flex-shrink-0 -ml-3 md:-ml-4")
                         };
-                        view! { <img src=src class=cls draggable="false" /> }
+                        view! { <div class=cls /> }
                     })
                     .collect_view()
             }}

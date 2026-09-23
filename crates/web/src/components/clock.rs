@@ -55,12 +55,15 @@ pub fn Clock(
         }
         let ms = displayed_ms.get();
         let active = is_active.get();
+        // `clock-running`/`clock-low` rather than raw colour utilities —
+        // see the clock-state block in main.css for why these need tokens
+        // that invert as a pair.
         if !active || ms == 0 {
             "text-zinc-300"
         } else if ms < 20_000 {
-            "bg-red-500 text-white font-bold"
+            "clock-low font-bold"
         } else {
-            "bg-zinc-100 text-black"
+            "clock-running"
         }
     };
 

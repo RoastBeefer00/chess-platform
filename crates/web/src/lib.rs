@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 pub mod app;
+pub mod board_prefs;
 pub mod components;
 pub mod elo;
 pub mod friends;
@@ -9,6 +10,7 @@ pub mod matchmaking;
 pub mod pages;
 pub mod puzzle;
 pub mod sound;
+pub mod theme;
 pub mod watch;
 pub mod websocket;
 
