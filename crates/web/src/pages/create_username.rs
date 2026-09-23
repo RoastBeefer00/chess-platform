@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_meta::Title;
 use leptos_router::{lazy_route, LazyRoute};
 
 #[server]
@@ -11,6 +12,11 @@ pub async fn is_username_available(username: String) -> Result<bool, ServerFnErr
     if auth.user.is_none() {
         return Err(ServerFnError::ServerError("unauthorized".to_string()));
     }
+    // Reject junk before it reaches the DB — this doubles as the enumeration
+    // guard, since a malformed name can never match a real one anyway.
+    if shared::validate_username(&username).is_err() {
+        return Ok(false);
+    }
     let state = expect_context::<AppState>();
     Ok(state.user_store.is_username_available(username).await?)
 }
@@ -22,9 +28,28 @@ pub async fn set_username(username: String) -> Result<(), ServerFnError> {
     use axum_login::AuthSession;
 
     let mut auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
-    let Some(user_id) = auth.user.as_ref().map(|u| u.id) else {
+    let Some(user) = auth.user.clone() else {
         return Err(ServerFnError::ServerError("not signed in".to_string()));
     };
+    let user_id = user.id;
+
+    // A server function is a plain HTTP endpoint: the form's `pattern`/
+    // `minlength` attributes and the live availability check are both
+    // conveniences a hand-crafted POST skips straight past. This is the
+    // only check that actually holds.
+    if let Err(msg) = shared::validate_username(&username) {
+        return Err(ServerFnError::ServerError(msg.to_string()));
+    }
+
+    // Onboarding is a one-shot claim, not a rename. Guests already have a
+    // server-assigned `Guest<id>` name, so this is also what stops a
+    // throwaway account from renaming itself into someone else's identity.
+    if user.username.is_some() {
+        return Err(ServerFnError::ServerError(
+            "This account already has a username".to_string(),
+        ));
+    }
+
     let state = expect_context::<AppState>();
     state
         .user_store
@@ -73,10 +98,7 @@ impl LazyRoute for CreateUsernamePage {
         let availability = Resource::new(
             move || uname.get(),
             |u| async move {
-                let locally_valid = u.len() >= 5
-                    && u.len() <= 32
-                    && u.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-                if !locally_valid {
+                if shared::validate_username(&u).is_err() {
                     return Ok::<_, ServerFnError>(None);
                 }
                 is_username_available(u).await.map(Some)
@@ -88,9 +110,10 @@ impl LazyRoute for CreateUsernamePage {
             move || pending.get() || !matches!(availability.get(), Some(Ok(Some(true))));
 
         view! {
-            <div class="flex flex-col items-center justify-center min-h-[calc(100dvh-3.5rem)] px-6">
+            <Title text="Pick a username"/>
+            <div class="flex flex-col items-center justify-center min-h-below-nav px-6">
                 <div class="w-full max-w-sm">
-                    <h1 class="text-2xl font-semibold text-white mb-2 text-center">"Pick a username"</h1>
+                    <h1 class="display-1 text-white mb-2 text-center">"Pick a username"</h1>
                     <p class="text-sm text-zinc-400 mb-8 text-center">
                         "This is how other players will see you."
                     </p>
@@ -109,25 +132,21 @@ impl LazyRoute for CreateUsernamePage {
                                     pattern="[a-zA-Z0-9_]+"
                                     autocomplete="off"
                                     on:input=move |ev| set_uname.set(event_target_value(&ev))
-                                    class="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-md text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
+                                    class="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-control text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500"
                                     placeholder="Enter your username..."
                                 />
                                 {move || {
                                     let u = uname.get();
                                     if u.is_empty() {
                                         view! { <span/> }.into_any()
-                                    } else if u.len() < 5 {
-                                        view! { <p class="text-amber-400 text-sm mt-1">"At least 5 characters"</p> }.into_any()
-                                    } else if u.len() > 32 {
-                                        view! { <p class="text-amber-400 text-sm mt-1">"At most 32 characters"</p> }.into_any()
-                                    } else if !u.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                                        view! { <p class="text-amber-400 text-sm mt-1">"Letters, numbers, and underscores only"</p> }.into_any()
+                                    } else if let Err(msg) = shared::validate_username(&u) {
+                                        view! { <p class="text-amber-400 text-sm mt-1">{msg}</p> }.into_any()
                                     } else {
                                         match availability.get() {
                                             None | Some(Ok(None)) =>
                                                 view! { <p class="text-zinc-500 text-sm mt-1">"Checking..."</p> }.into_any(),
                                             Some(Ok(Some(true))) =>
-                                                view! { <p class="text-green-400 text-sm mt-1">"✓ Available"</p> }.into_any(),
+                                                view! { <p class="text-emerald-400 text-sm mt-1">"✓ Available"</p> }.into_any(),
                                             Some(Ok(Some(false))) =>
                                                 view! { <p class="text-red-400 text-sm mt-1">"✗ Username taken"</p> }.into_any(),
                                             Some(Err(e)) =>
@@ -142,7 +161,7 @@ impl LazyRoute for CreateUsernamePage {
                             <button
                                 type="submit"
                                 disabled=submit_disabled
-                                class="w-full py-2.5 px-4 bg-white text-zinc-950 font-medium rounded-md hover:bg-zinc-100 transition-colors disabled:opacity-50"
+                                class="btn-primary w-full py-2.5 px-4 font-medium disabled:opacity-50 cursor-pointer"
                             >
                                 "Continue"
                             </button>

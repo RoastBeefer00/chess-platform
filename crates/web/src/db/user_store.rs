@@ -15,29 +15,52 @@ impl UserStore {
         Self { pool }
     }
 
+    /// Case-insensitive, matching the `users_username_lower_idx` uniqueness
+    /// constraint — `Magnus` is not available if `magnus` exists.
     #[tracing::instrument(skip(self))]
     pub async fn is_username_available(&self, username: String) -> Result<bool, AuthError> {
         Ok(
-            sqlx::query_scalar!("SELECT 1 FROM users WHERE username = $1", username)
-                .fetch_optional(&self.pool)
-                .await?
-                .is_none(),
+            sqlx::query_scalar!(
+                "SELECT 1 FROM users WHERE LOWER(username) = LOWER($1)",
+                username
+            )
+            .fetch_optional(&self.pool)
+            .await?
+            .is_none(),
         )
     }
 
+    /// Claims `username` for `user_id`.
+    ///
+    /// The `WHERE username IS NULL` guard makes this a one-shot claim rather
+    /// than a rename: combined with the caller's own check it closes the
+    /// window where two concurrent requests for the same account both pass
+    /// an "is it set yet?" test. A unique-violation from the case-insensitive
+    /// index is translated back into `UsernameTaken` — the availability check
+    /// above is advisory, the index is what actually decides, so a race
+    /// between check and update surfaces as "taken" rather than a 500.
     #[tracing::instrument(skip(self), fields(user_id = %user_id))]
     pub async fn set_username(&self, user_id: Uuid, username: String) -> Result<(), AuthError> {
-        if self.is_username_available(username.clone()).await? {
-            sqlx::query!(
-                "UPDATE users SET username = $1 WHERE id = $2",
-                username,
-                user_id
-            )
-            .execute(&self.pool)
-            .await?;
-            Ok(())
-        } else {
-            Err(AuthError::UsernameTaken(username))
+        if !self.is_username_available(username.clone()).await? {
+            return Err(AuthError::UsernameTaken(username));
+        }
+        let result = sqlx::query!(
+            "UPDATE users SET username = $1 WHERE id = $2 AND username IS NULL",
+            username,
+            user_id
+        )
+        .execute(&self.pool)
+        .await;
+
+        match result {
+            Ok(done) if done.rows_affected() == 0 => {
+                Err(AuthError::UsernameAlreadySet)
+            }
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+                Err(AuthError::UsernameTaken(username))
+            }
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -101,12 +124,14 @@ impl UserStore {
         .await?)
     }
 
+    /// Case-insensitive, so `/u/Magnus` and `/u/magnus` resolve to the same
+    /// profile. Index-backed by `users_username_lower_idx`.
     #[tracing::instrument(skip(self))]
     pub async fn find_by_username(&self, username: &str) -> Result<Option<User>, AuthError> {
         Ok(sqlx::query_as!(
             User,
             r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest
-               FROM users WHERE username = $1"#,
+               FROM users WHERE LOWER(username) = LOWER($1)"#,
             username
         )
         .fetch_optional(&self.pool)
@@ -170,6 +195,68 @@ mod tests {
         );
     }
 
+    /// Uniqueness is case-insensitive, so a name that differs only in case
+    /// from an existing one can't be claimed — otherwise `Magnus`, `magnus`
+    /// and `MAGNUS` are three accounts that render identically.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn set_username_rejects_case_variant_of_taken_name(pool: PgPool) {
+        let store = UserStore::new(pool.clone());
+        let user_a = insert_user(&pool).await;
+        let user_b = insert_user(&pool).await;
+        store.set_username(user_a, "magnus".to_string()).await.unwrap();
+
+        assert!(
+            !store.is_username_available("MaGnUs".to_string()).await.unwrap(),
+            "a case variant of a taken name must not read as available"
+        );
+        assert!(
+            matches!(
+                store.set_username(user_b, "MaGnUs".to_string()).await,
+                Err(AuthError::UsernameTaken(_))
+            ),
+            "expected UsernameTaken for a case variant"
+        );
+    }
+
+    /// Onboarding is a one-shot claim. Without this, any account — including
+    /// a throwaway guest, which is created with a server-assigned name — can
+    /// rename itself at will.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn set_username_is_not_a_rename(pool: PgPool) {
+        let store = UserStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+        store.set_username(user_id, "firstname".to_string()).await.unwrap();
+
+        assert!(
+            matches!(
+                store.set_username(user_id, "secondname".to_string()).await,
+                Err(AuthError::UsernameAlreadySet)
+            ),
+            "expected UsernameAlreadySet on a second claim"
+        );
+        let row = sqlx::query!("SELECT username FROM users WHERE id = $1", user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.username.as_deref(), Some("firstname"), "original name must stand");
+    }
+
+    /// Profile URLs resolve regardless of how the name is cased.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn find_by_username_is_case_insensitive(pool: PgPool) {
+        let store = UserStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+        store.set_username(user_id, "MixedCase".to_string()).await.unwrap();
+
+        for probe in ["MixedCase", "mixedcase", "MIXEDCASE"] {
+            assert_eq!(
+                store.find_by_username(probe).await.unwrap().unwrap().id,
+                user_id,
+                "lookup should succeed for {probe}"
+            );
+        }
+    }
+
     #[sqlx::test(migrations = "../../migrations")]
     async fn get_settings_defaults_for_fresh_user(pool: PgPool) {
         let store = UserStore::new(pool.clone());
@@ -184,7 +271,11 @@ mod tests {
         let store = UserStore::new(pool.clone());
         let user_id = insert_user(&pool).await;
 
-        let new_settings = UserSettings { auto_queen: true };
+        let new_settings = UserSettings {
+            auto_queen: true,
+            board_theme: "brown".to_string(),
+            piece_set: "merida".to_string(),
+        };
         store.update_settings(user_id, &new_settings).await.unwrap();
 
         let loaded = store.get_settings(user_id).await.unwrap();
