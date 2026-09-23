@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO rating_history (user_id, mode, rating)\n                   VALUES ($1, 'puzzle', $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e55c8e5131203a84dbaf4677260742e9ca91d0d8ca871e17eba560dd9e9fced2"
+}

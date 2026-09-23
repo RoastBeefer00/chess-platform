@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, username, avatar_url, bio, country, created_at, is_guest\n               FROM users WHERE username = $1",
+  "query": "SELECT id, email, username, avatar_url, bio, country, created_at, is_guest\n               FROM users WHERE LOWER(username) = LOWER($1)",
   "describe": {
     "columns": [
       {
@@ -60,5 +60,5 @@
       false
     ]
   },
-  "hash": "c44fc9326e802dcc4e5e98c20f8d125c6796e33b6069e5c195b1d89abf606122"
+  "hash": "fe8ea9d68184ec1136dfb981ad4d2547be70bdee44a9eaaefaf8678c353204cf"
 }

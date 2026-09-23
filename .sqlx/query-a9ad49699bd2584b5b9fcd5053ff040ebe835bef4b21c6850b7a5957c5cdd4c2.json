@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n                   COUNT(*) AS \"attempted!\",\n                   COUNT(*) FILTER (WHERE solved) AS \"solved!\"\n               FROM puzzle_attempts WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "attempted!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "solved!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "a9ad49699bd2584b5b9fcd5053ff040ebe835bef4b21c6850b7a5957c5cdd4c2"
+}
