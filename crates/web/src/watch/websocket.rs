@@ -84,6 +84,12 @@ pub async fn watch_websocket(
         remote_fen: Option<String>,
         white_ms_left: Option<i64>,
         black_ms_left: Option<i64>,
+        /// When the clocks above were true. For a local room that's "now"
+        /// (they're extrapolated at read time); for a remote one it's the
+        /// timestamp the owning instance mirrored into Redis, which is what
+        /// lets the client tick them down correctly rather than showing a
+        /// figure that stopped being true when the roster tick ran.
+        clock_sent_at_ms: Option<i64>,
     }
 
     struct ResolvedWatchCandidate {
@@ -96,6 +102,7 @@ pub async fn watch_websocket(
         remote_fen: Option<String>,
         white_ms_left: Option<i64>,
         black_ms_left: Option<i64>,
+        clock_sent_at_ms: Option<i64>,
     }
 
     let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
@@ -168,6 +175,7 @@ pub async fn watch_websocket(
                             remote_fen: None,
                             white_ms_left: Some(white_ms_left),
                             black_ms_left: Some(black_ms_left),
+                            clock_sent_at_ms: None,
                         });
                     }
 
@@ -181,8 +189,9 @@ pub async fn watch_websocket(
                             white_id: entry.white_id,
                             black_id: entry.black_id,
                             remote_fen: Some(entry.fen),
-                            white_ms_left: None,
-                            black_ms_left: None,
+                            white_ms_left: entry.clocks.map(|c| c.white_ms_left),
+                            black_ms_left: entry.clocks.map(|c| c.black_ms_left),
+                            clock_sent_at_ms: entry.clocks.map(|c| c.sent_at_ms),
                         });
                     }
                     let total_active = candidates.len();
@@ -205,6 +214,7 @@ pub async fn watch_websocket(
                                     remote_fen: c.remote_fen,
                                     white_ms_left: c.white_ms_left,
                                     black_ms_left: c.black_ms_left,
+                                    clock_sent_at_ms: c.clock_sent_at_ms,
                                 })
                             }
                         }))
@@ -253,7 +263,7 @@ pub async fn watch_websocket(
                             fen,
                             white_ms_left: c.white_ms_left,
                             black_ms_left: c.black_ms_left,
-                            sent_at_ms,
+                            sent_at_ms: c.clock_sent_at_ms.unwrap_or(sent_at_ms),
                         });
                     }
 

@@ -27,7 +27,18 @@ pub async fn get_game_for_analysis(game_id: Uuid) -> Result<AnalysisGameData, Se
 pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use crate::auth::AuthBackend;
     use crate::state::{AdoptOutcome, AppState};
+    use axum_login::AuthSession;
+
+    // Unlike `get_game_for_analysis` below, this one is not a read: on a miss
+    // it adopts the game, which claims cross-instance ownership and spawns a
+    // heartbeat and a flag-fall timer. That's not something an unauthenticated
+    // caller should be able to drive. Guests count — they're ordinary `users`
+    // rows, and spectating is open to them.
+    let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
+    auth.user
+        .ok_or_else(|| ServerFnError::new("unauthenticated"))?;
 
     let state = expect_context::<AppState>();
     let game_room = match state.get_game_room(&game_id).await {

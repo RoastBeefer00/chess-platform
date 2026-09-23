@@ -12,7 +12,15 @@ const RATING_WINDOW: u32 = 500;
 
 #[server]
 pub async fn get_user_rating(id: Uuid, category: Category) -> Result<u32, ServerFnError> {
+    use crate::auth::AuthBackend;
     use crate::state::AppState;
+    use axum_login::AuthSession;
+
+    // Ratings are public on profile pages, but this takes an arbitrary user
+    // id, which makes it an unauthenticated probe for "does this uuid exist".
+    let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
+    auth.user
+        .ok_or_else(|| ServerFnError::new("unauthenticated"))?;
 
     let state = expect_context::<AppState>();
     state
@@ -87,6 +95,27 @@ pub async fn matchmaking_websocket(
             } else {
                 rating_mode
             };
+
+            // The same guard `send_challenge` applies, for the same reason:
+            // a player who is already mid-game must not be able to start a
+            // second one, or they end up with two `status='active'` rows and
+            // `find_active_game`'s "at most one per user" assumption (the
+            // reconnect feature's `LIMIT 1`) silently starts returning the
+            // wrong game.
+            match state.game_store.find_active_game(player_id).await {
+                Ok(Some(_)) => {
+                    let _ = tx.unbounded_send(Err(ServerFnError::new(
+                        "finish your current game first",
+                    )));
+                    return Err(());
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(?e, %player_id, "matchmaking: active-game check failed");
+                    let _ = tx.unbounded_send(Err(ServerFnError::new("unable to join queue")));
+                    return Err(());
+                }
+            }
 
             let key = time_control.bucket(rating_mode);
 

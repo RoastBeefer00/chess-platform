@@ -15,6 +15,7 @@ async fn main() {
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use sqlx::postgres::PgPoolOptions;
+    use std::future::IntoFuture;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::Duration;
@@ -126,6 +127,11 @@ async fn main() {
                 if let Err(err) = app_state.reconcile_stale_active_games().await {
                     tracing::error!(?err, "failed to reconcile stale active games");
                 }
+                // Same cadence, opposite direction: the reaper brings games
+                // back, this drops rooms whose games are long over. Without
+                // it `AppState::games` only ever grows — see
+                // `evict_finished_rooms`.
+                app_state.evict_finished_rooms().await;
             }
         });
     }
@@ -386,20 +392,24 @@ async fn main() {
         .await
         .expect("failed to bind site_addr");
 
-    // Bounded pause before actually exiting on SIGINT/SIGTERM (Fly sends one
-    // of these on every stop — autostop-on-idle, deploys, host migrations —
-    // see fly.toml's kill_timeout, raised specifically to give this room).
-    // Without ANY signal handler at all (the previous state of this file),
-    // the OS default disposition terminates the process immediately, with
-    // zero warning to whatever's currently in flight — including a
-    // just-finished game's finalize write (or a flag-fall's, or an ordinary
-    // per-move persist), fire-and-forget or not. This is what turned a game
-    // that had just been decided by timeout into a silently-lost result,
-    // later misread by the reconciliation reaper as a genuinely abandoned
-    // game. This grace period doesn't make that race impossible — a kill at
-    // the exact wrong instant can still land — but it turns a window of
-    // "however long it takes the OS to schedule the kill, often near-zero"
-    // into one that reliably covers a single fast Postgres round trip.
+    // Graceful shutdown on SIGINT/SIGTERM (Fly sends one of these on every
+    // stop — autostop-on-idle, deploys, host migrations — see fly.toml's
+    // kill_timeout, raised specifically to give this room).
+    //
+    // Without ANY signal handler, the OS default disposition terminates the
+    // process immediately, with zero warning to whatever's currently in
+    // flight — including a just-finished game's finalize write (or a
+    // flag-fall's, or an ordinary per-move persist), fire-and-forget or not.
+    // That is what turned a game decided by timeout into a silently-lost
+    // result, later misread by the reconciliation reaper as abandoned.
+    //
+    // `with_graceful_shutdown` is what actually drains: it stops accepting
+    // and lets in-flight request handlers finish, rather than dropping the
+    // serve future and cutting them off mid-write. The drain has to be
+    // bounded, though — every game, watch and friends connection here is a
+    // long-lived WebSocket that will never close on its own, so an unbounded
+    // drain would just sit until Fly's kill_timeout fired the hard kill this
+    // is trying to avoid.
     const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(10);
     async fn shutdown_signal() {
         use tokio::signal::unix::{signal, SignalKind};
@@ -411,22 +421,40 @@ async fn main() {
         }
     }
 
+    // Lets the drain timer start when the signal actually arrives, rather
+    // than counting down from process start.
+    let (signalled_tx, signalled_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        let _ = signalled_tx.send(());
+    })
+    // `WithGracefulShutdown` is `IntoFuture`, not `Future`, so it has to be
+    // converted before it can be polled twice (once in the select, once
+    // under the drain timeout).
+    .into_future();
+    tokio::pin!(server);
+
     tokio::select! {
-        result = axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        ) => {
+        result = &mut server => {
             result.expect("axum::serve exited with error");
         }
-        _ = shutdown_signal() => {
+        _ = signalled_rx => {
             tracing::warn!(
                 grace_period_secs = SHUTDOWN_GRACE_PERIOD.as_secs(),
-                "shutdown signal received — pausing before exit so in-flight \
-                 writes get a real chance to land instead of being cut off \
-                 with no warning at all",
+                "shutdown signal received — draining in-flight requests",
             );
-            tokio::time::sleep(SHUTDOWN_GRACE_PERIOD).await;
-            tracing::info!("shutdown grace period elapsed, exiting");
+            match tokio::time::timeout(SHUTDOWN_GRACE_PERIOD, &mut server).await {
+                Ok(Ok(())) => tracing::info!("drained cleanly"),
+                Ok(Err(e)) => tracing::error!(?e, "error while draining"),
+                Err(_) => tracing::warn!(
+                    "drain deadline reached with connections still open \
+                     (expected: websockets don't close on their own), exiting",
+                ),
+            }
 
             // Release this instance's ownership of every game it still
             // holds. Without this, a successor instance has to wait out
@@ -442,6 +470,7 @@ async fn main() {
                 }
             }
             drop(games);
+            tracing::info!("shutdown complete");
         }
     }
 }
