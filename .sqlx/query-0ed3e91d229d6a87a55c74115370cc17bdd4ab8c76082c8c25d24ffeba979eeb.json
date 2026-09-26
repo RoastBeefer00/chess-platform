@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, username, avatar_url, bio, country, created_at, is_guest\n               FROM users WHERE LOWER(username) = LOWER($1)",
+  "query": "SELECT id, email, username, avatar_url, bio, country, created_at, is_guest, settings AS \"settings: Json<UserSettings>\"\n               FROM users WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -42,11 +42,16 @@
         "ordinal": 7,
         "name": "is_guest",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "settings: Json<UserSettings>",
+        "type_info": "Jsonb"
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -57,8 +62,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "fe8ea9d68184ec1136dfb981ad4d2547be70bdee44a9eaaefaf8678c353204cf"
+  "hash": "0ed3e91d229d6a87a55c74115370cc17bdd4ab8c76082c8c25d24ffeba979eeb"
 }

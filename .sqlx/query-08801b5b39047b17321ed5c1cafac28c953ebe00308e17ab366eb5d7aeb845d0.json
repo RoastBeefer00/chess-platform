@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, username, avatar_url, bio, country, created_at, is_guest\n                           FROM users WHERE email = $1",
+  "query": "SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at, u.is_guest, u.settings AS \"settings: Json<UserSettings>\"\n                       FROM users u\n                       JOIN oauth_accounts oa ON oa.user_id = u.id\n                       WHERE oa.provider = 'google' AND oa.provider_user_id = $1",
   "describe": {
     "columns": [
       {
@@ -42,6 +42,11 @@
         "ordinal": 7,
         "name": "is_guest",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "settings: Json<UserSettings>",
+        "type_info": "Jsonb"
       }
     ],
     "parameters": {
@@ -57,8 +62,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "d0d414ed64133e5462fba73c1070c2b6b418ddbf9673cd7c7f19229205d4abfa"
+  "hash": "08801b5b39047b17321ed5c1cafac28c953ebe00308e17ab366eb5d7aeb845d0"
 }

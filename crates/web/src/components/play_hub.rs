@@ -1,8 +1,7 @@
 use leptos::prelude::*;
-use shared::{Category, RatingMode, TimeControl, TimeMode};
-use strum::IntoEnumIterator;
+use shared::{RatingMode, TimeControl, TimeMode};
 
-use crate::components::{use_current_user, EloCard, MatchmakingModal, RecentGames, ResumeGame};
+use crate::components::{use_current_user, EloCardRow, MatchmakingModal, RecentGames, ResumeGame};
 
 #[cfg(feature = "hydrate")]
 const RATING_MODE_STORAGE_KEY: &str = "gambit:rating_mode";
@@ -135,7 +134,7 @@ pub fn PlayHub() -> impl IntoView {
 
             // Ratings strip.
             <div class="flex gap-3 overflow-x-auto scrollbar-none pt-6 pb-2">
-                {Category::iter().map(|c| view! { <EloCard category={c} /> }).collect_view()}
+                <EloCardRow/>
             </div>
 
             // ── Primary action ────────────────────────────────────────────

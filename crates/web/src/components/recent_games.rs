@@ -38,6 +38,25 @@ pub async fn get_recent_games(username: Option<String>) -> Result<Vec<RecentGame
     })
 }
 
+/// The signed-in user's own recent games, fetched once per page load.
+/// Root-owned for the same reason as [`MyRatingsResource`].
+#[derive(Copy, Clone)]
+pub struct MyRecentGamesResource(pub Resource<Result<Vec<RecentGame>, ServerFnError>>);
+
+/// Call once at the App root.
+pub fn provide_my_recent_games() {
+    provide_context(MyRecentGamesResource(Resource::new(
+        || (),
+        |_| async move { get_recent_games(None).await },
+    )));
+}
+
+pub fn use_my_recent_games() -> Resource<Result<Vec<RecentGame>, ServerFnError>> {
+    use_context::<MyRecentGamesResource>()
+        .expect("provide_my_recent_games must be called at the App root")
+        .0
+}
+
 fn player_name(p: &RecentGamePlayer) -> String {
     p.username.clone().unwrap_or_else(|| "Anonymous".to_string())
 }
@@ -106,10 +125,13 @@ const RECENT_GAMES_RETRY_BACKOFF_MS: [u32; 4] = [1_000, 2_000, 4_000, 8_000];
 
 #[component]
 pub fn RecentGames(#[prop(optional)] username: Option<String>) -> impl IntoView {
-    let games = Resource::new(
-        move || username.clone(),
-        move |username| async move { get_recent_games(username).await },
-    );
+    let games = match username {
+        None => use_my_recent_games(),
+        Some(name) => Resource::new(
+            move || name.clone(),
+            move |name| async move { get_recent_games(Some(name)).await },
+        ),
+    };
 
     #[cfg(feature = "hydrate")]
     {

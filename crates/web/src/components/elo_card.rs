@@ -1,38 +1,25 @@
 use convert_case::{Case, Casing};
 use leptos::prelude::*;
 use shared::Category;
-use uuid::Uuid;
+use strum::IntoEnumIterator;
 
+/// Every category's rating and 14-day diff for one user, in one round trip.
+///
+/// `username` of `None` means the signed-in caller, resolved server-side in
+/// the same call — so `EloCardRow` takes a plain `String` prop and never has
+/// to wait on another resource to resolve first. Nesting a fresh `Resource`
+/// inside another resource's already-resolved branch (as the profile page
+/// originally did, keying off the profile fetch's returned user id)
+/// intermittently desynced SSR and hydration for sibling resources.
+///
+/// This replaced a per-category server fn that the caller invoked once for
+/// each of the four categories. Leptos resolves those concurrently during
+/// SSR, so a single page render opened four connections for what is one
+/// table, one user, and one query.
 #[server]
-pub async fn get_user_rating_and_diff(
-    id: Uuid,
-    category: Category,
-) -> Result<(u32, i32), ServerFnError> {
-    use crate::state::AppState;
-
-    let app_state = expect_context::<AppState>();
-    app_state
-        .rating_store
-        .get_rating_with_diff(&id, category)
-        .await
-        .map_err(|e| {
-            tracing::error!(%id, ?category, error = %e, "get_user_rating_and_diff failed");
-            ServerFnError::new(format!("Error getting rating for user {id}: {e}"))
-        })
-}
-
-/// Same as `get_user_rating_and_diff`, but by username, resolved server-side
-/// in the same round trip (`None` = the signed-in caller). Lets `EloCard` on
-/// a profile page take just a `username` string prop with no dependency on
-/// any other resource resolving first — nesting a fresh `Resource` inside
-/// another resource's already-resolved branch (as this page originally did,
-/// keying off the profile fetch's returned user id) intermittently desynced
-/// SSR and hydration for sibling resources created that way.
-#[server]
-pub async fn get_user_rating_and_diff_by_username(
+pub async fn get_all_ratings(
     username: Option<String>,
-    category: Category,
-) -> Result<(u32, i32), ServerFnError> {
+) -> Result<Ratings, ServerFnError> {
     use crate::auth::AuthBackend;
     use crate::state::AppState;
     use axum_login::AuthSession;
@@ -52,12 +39,41 @@ pub async fn get_user_rating_and_diff_by_username(
     };
     app_state
         .rating_store
-        .get_rating_with_diff(&id, category)
+        .get_all_ratings_with_diff(&id)
         .await
         .map_err(|e| {
-            tracing::error!(%id, ?category, error = %e, "get_user_rating_and_diff_by_username failed");
-            ServerFnError::new(format!("Error getting rating for user {id}: {e}"))
+            tracing::error!(%id, error = %e, "get_all_ratings failed");
+            ServerFnError::new(format!("Error getting ratings for user {id}: {e}"))
         })
+}
+
+/// The signed-in user's own ratings, fetched once per page load.
+///
+/// This lives at the App root rather than inside `EloCardRow` because of how
+/// `Resource::new` binds to the reactive owner that is current when it runs.
+/// `EloCardRow` is constructed inside `HomePage`'s `<Transition>` branch, and
+/// that closure re-runs on every pass of out-of-order streaming — three
+/// passes per SSR render. A resource created in the component body is
+/// therefore a *different* resource on each pass, and the query runs three
+/// times for one page view. Created once at the root, it runs once.
+/// One row per category: the rating and its 14-day change.
+pub type Ratings = Vec<(Category, u32, i32)>;
+
+#[derive(Copy, Clone)]
+pub struct MyRatingsResource(pub Resource<Result<Ratings, ServerFnError>>);
+
+/// Call once at the App root.
+pub fn provide_my_ratings() {
+    provide_context(MyRatingsResource(Resource::new(
+        || (),
+        |_| async move { get_all_ratings(None).await },
+    )));
+}
+
+pub fn use_my_ratings() -> Resource<Result<Ratings, ServerFnError>> {
+    use_context::<MyRatingsResource>()
+        .expect("provide_my_ratings must be called at the App root")
+        .0
 }
 
 fn category_icon(category: Category) -> AnyView {
@@ -99,29 +115,44 @@ fn category_icon(category: Category) -> AnyView {
 /// Backoff schedule for retrying a failed rating fetch. Sized to ride out a
 /// Fly autostop reboot (machine stops on idle, cold-starts on the next
 /// request — see `fly.toml`'s `auto_stop_machines`): every in-flight request
-/// during that window dies, and without a retry the card would otherwise
+/// during that window dies, and without a retry the row would otherwise
 /// show "\u{2014}" forever until the user manually reloads.
 #[cfg(feature = "hydrate")]
 const RATING_RETRY_BACKOFF_MS: [u32; 4] = [1_000, 2_000, 4_000, 8_000];
 
+/// The strip of rating cards, one per category.
+///
+/// Owns the single fetch for all four — the cards themselves are
+/// presentational. Previously each card owned its own `Resource`, so a row
+/// of four meant four server-fn calls resolved concurrently during SSR, and
+/// four simultaneous pool connections for one user's ratings.
+///
+/// `username` of `None` renders the signed-in user's own ratings.
 #[component]
-pub fn EloCard(category: Category, #[prop(optional)] username: Option<String>) -> impl IntoView {
-    let user_rating = Resource::new(
-        move || username.clone(),
-        move |username| async move { get_user_rating_and_diff_by_username(username, category).await },
-    );
+pub fn EloCardRow(#[prop(optional, into)] username: Option<String>) -> impl IntoView {
+    // The signed-in user's own row comes from the root-owned resource (see
+    // `provide_my_ratings`); a named profile is a different user's ratings,
+    // and the profile page constructs this outside any resource-gated
+    // branch, so a local resource there runs once.
+    let ratings = match username {
+        None => use_my_ratings(),
+        Some(name) => Resource::new(
+            move || name.clone(),
+            move |name| async move { get_all_ratings(Some(name)).await },
+        ),
+    };
 
     #[cfg(feature = "hydrate")]
     {
         let retry_count = RwSignal::new(0usize);
-        Effect::new(move |_| match user_rating.get() {
+        Effect::new(move |_| match ratings.get() {
             Some(Err(_)) => {
                 let attempt = retry_count.get_untracked();
                 if let Some(backoff) = RATING_RETRY_BACKOFF_MS.get(attempt).copied() {
                     retry_count.set(attempt + 1);
                     leptos::task::spawn_local(async move {
                         gloo_timers::future::TimeoutFuture::new(backoff).await;
-                        user_rating.refetch();
+                        ratings.refetch();
                     });
                 }
             }
@@ -130,50 +161,80 @@ pub fn EloCard(category: Category, #[prop(optional)] username: Option<String>) -
         });
     }
 
-    let fallback = move || {
-        view! {
-            <div class="flex flex-col gap-3 p-5 surface-card min-w-[128px]">
-                <div class="w-4 h-4 rounded skeleton-shimmer"/>
-                <div class="flex flex-col gap-2">
-                    <div class="w-16 h-7 rounded skeleton-shimmer"/>
-                    <div class="w-8 h-2.5 rounded skeleton-shimmer"/>
-                    <div class="w-10 h-2 rounded skeleton-shimmer"/>
-                </div>
+    // One `Transition` around the whole strip rather than one per card, so
+    // the four resolve together instead of popping in independently.
+    view! {
+        <Transition fallback=|| view! {
+            <>
+                {Category::iter().map(|c| view! { <EloCardSkeleton category=c/> }).collect_view()}
+            </>
+        }>
+            {move || {
+                let found = ratings.get().and_then(|r| r.ok()).unwrap_or_default();
+                Category::iter()
+                    .map(|category| {
+                        let value = found
+                            .iter()
+                            .find(|(c, _, _)| c.to_string() == category.to_string())
+                            .map(|(_, rating, diff)| (*rating, *diff));
+                        view! { <EloCard category=category value=value/> }
+                    })
+                    .collect_view()
+            }}
+        </Transition>
+    }
+}
+
+/// Placeholder with the card's exact footprint, so the strip doesn't reflow
+/// when the real values land.
+#[component]
+fn EloCardSkeleton(category: Category) -> impl IntoView {
+    let _ = category;
+    view! {
+        <div class="flex flex-col gap-3 p-5 surface-card min-w-[128px]">
+            <div class="w-4 h-4 rounded skeleton-shimmer"/>
+            <div class="flex flex-col gap-2">
+                <div class="w-16 h-7 rounded skeleton-shimmer"/>
+                <div class="w-8 h-2.5 rounded skeleton-shimmer"/>
+                <div class="w-10 h-2 rounded skeleton-shimmer"/>
             </div>
-        }
-    };
+        </div>
+    }
+}
+
+/// A single rating card. Purely presentational — `EloCardRow` above does the
+/// fetching. `value` of `None` renders the em-dash placeholder, which is what
+/// a user with no rating in that category shows.
+#[component]
+pub fn EloCard(category: Category, value: Option<(u32, i32)>) -> impl IntoView {
+    let rating = value.map(|(r, _)| r);
+    let diff = value.map(|(_, d)| d);
 
     view! {
-        <Transition fallback=fallback>
-            <div class="flex flex-col gap-3 p-5 surface-card
-                        hover:border-zinc-700 hover:-translate-y-px active:translate-y-0
-                        transition-all duration-200 min-w-[128px] cursor-default
-                        shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-                {category_icon(category)}
-                <div class="flex flex-col gap-1">
-                    <span class="text-3xl font-bold tracking-tighter text-white leading-none">
-                        {move || user_rating.get()
-                            .and_then(|r| r.ok())
-                            .map(|(r, _)| r.to_string())
-                            .unwrap_or_else(|| "\u{2014}".to_string())}
-                    </span>
-                    <span class=move || {
-                        let diff = user_rating.get().and_then(|r| r.ok()).map(|(_, d)| d).unwrap_or(0);
-                        if diff > 0 { "text-[11px] font-semibold text-emerald-400/80" }
-                        else if diff < 0 { "text-[11px] font-semibold text-red-400/80" }
-                        else { "text-[11px] font-semibold text-zinc-600" }
-                    }>
-                        {move || match user_rating.get().and_then(|r| r.ok()).map(|(_, d)| d) {
-                            Some(d) if d > 0 => format!("+{d}"),
-                            Some(d) if d < 0 => format!("{d}"),
-                            _ => "\u{2014}".to_string(),
-                        }}
-                    </span>
-                    <span class="eyebrow-sm text-zinc-500">
-                        {category.to_string().to_case(Case::Title)}
-                    </span>
-                </div>
+        <div class="flex flex-col gap-3 p-5 surface-card
+                    hover:border-zinc-700 hover:-translate-y-px active:translate-y-0
+                    transition-all duration-200 min-w-[128px] cursor-default
+                    shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            {category_icon(category)}
+            <div class="flex flex-col gap-1">
+                <span class="text-3xl font-bold tracking-tighter text-white leading-none">
+                    {rating.map(|r| r.to_string()).unwrap_or_else(|| "\u{2014}".to_string())}
+                </span>
+                <span class=match diff {
+                    Some(d) if d > 0 => "text-[11px] font-semibold text-emerald-400/80",
+                    Some(d) if d < 0 => "text-[11px] font-semibold text-red-400/80",
+                    _ => "text-[11px] font-semibold text-zinc-600",
+                }>
+                    {match diff {
+                        Some(d) if d > 0 => format!("+{d}"),
+                        Some(d) if d < 0 => format!("{d}"),
+                        _ => "\u{2014}".to_string(),
+                    }}
+                </span>
+                <span class="eyebrow-sm text-zinc-500">
+                    {category.to_string().to_case(Case::Title)}
+                </span>
             </div>
-        </Transition>
+        </div>
     }
 }

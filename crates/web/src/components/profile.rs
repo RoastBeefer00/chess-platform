@@ -1,8 +1,7 @@
 use leptos::prelude::*;
-use shared::{Category, FriendRelation, ProfileView};
-use strum::IntoEnumIterator;
+use shared::{FriendRelation, ProfileView};
 
-use crate::components::{ChallengeModal, EloCard, FriendSearch, FriendsList, RecentGames};
+use crate::components::{ChallengeModal, EloCardRow, FriendSearch, FriendsList, RecentGames};
 use crate::friends::{
     get_profile, use_friends_presence, CancelFriendRequest, RespondFriendRequest, SendFriendRequest,
     Unfriend,
@@ -252,10 +251,7 @@ pub fn Profile(username: String) -> impl IntoView {
                             "Ratings"
                         </h2>
                         <div class="flex gap-3 overflow-x-auto scrollbar-none">
-                            {Category::iter().map(|c| {
-                                let username = username.clone();
-                                view! { <EloCard category={c} username={username}/> }
-                            }).collect_view()}
+                            <EloCardRow username={username.clone()}/>
                         </div>
                     </div>
 

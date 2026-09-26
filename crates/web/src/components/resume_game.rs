@@ -17,6 +17,34 @@ pub async fn get_active_game() -> Result<Option<ActiveGame>, ServerFnError> {
     Ok(state.game_store.find_active_game(user_id).await?)
 }
 
+/// The signed-in user's in-progress game, fetched once per page load.
+/// Root-owned for the same reason as [`crate::components::MyRatingsResource`].
+///
+/// Still keyed on the current-user resource so it issues no query at all
+/// until there is a user to query for.
+#[derive(Copy, Clone)]
+pub struct MyActiveGameResource(pub Resource<Option<ActiveGame>>);
+
+/// Call once at the App root.
+pub fn provide_my_active_game() {
+    let user = use_current_user();
+    provide_context(MyActiveGameResource(Resource::new(
+        move || user.get(),
+        move |u| async move {
+            match u {
+                Some(Ok(Some(_))) => get_active_game().await.ok().flatten(),
+                _ => None,
+            }
+        },
+    )));
+}
+
+pub fn use_my_active_game() -> Resource<Option<ActiveGame>> {
+    use_context::<MyActiveGameResource>()
+        .expect("provide_my_active_game must be called at the App root")
+        .0
+}
+
 fn opponent_name(p: &RecentGamePlayer) -> String {
     p.username.clone().unwrap_or_else(|| "Anonymous".to_string())
 }
@@ -26,17 +54,7 @@ fn opponent_name(p: &RecentGamePlayer) -> String {
 /// device, since the game itself lives server-side, not in the tab.
 #[component]
 pub fn ResumeGame() -> impl IntoView {
-    let user = use_current_user();
-
-    let active_game = Resource::new(
-        move || user.get(),
-        move |u| async move {
-            match u {
-                Some(Ok(Some(_))) => get_active_game().await.ok().flatten(),
-                _ => None,
-            }
-        },
-    );
+    let active_game = use_my_active_game();
 
     view! {
         <Transition fallback=|| ()>

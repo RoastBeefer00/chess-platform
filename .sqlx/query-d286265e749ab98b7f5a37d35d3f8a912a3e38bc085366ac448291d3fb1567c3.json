@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                r.mode,\n                r.rating AS current_rating,\n                r.rating - COALESCE(prior.rating, oldest_in_window.rating, r.rating) AS diff\n            FROM ratings r\n            LEFT JOIN LATERAL (\n                SELECT rating\n                FROM rating_history\n                WHERE user_id = r.user_id\n                  AND mode = r.mode\n                  AND recorded_at <= now() - INTERVAL '14 days'\n                ORDER BY recorded_at DESC\n                LIMIT 1\n            ) prior ON true\n            LEFT JOIN LATERAL (\n                SELECT rating\n                FROM rating_history\n                WHERE user_id = r.user_id\n                  AND mode = r.mode\n                  AND recorded_at >= now() - INTERVAL '14 days'\n                ORDER BY recorded_at ASC\n                LIMIT 1\n            ) oldest_in_window ON true\n            WHERE r.user_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mode",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "current_rating",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "diff",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "d286265e749ab98b7f5a37d35d3f8a912a3e38bc085366ac448291d3fb1567c3"
+}

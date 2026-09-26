@@ -16,6 +16,8 @@ use openidconnect::{
     RedirectUrl,
 };
 use serde::{Deserialize, Serialize};
+use shared::UserSettings;
+use sqlx::types::Json;
 use sqlx::{query_as, PgPool};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
@@ -54,6 +56,11 @@ pub struct User {
     pub country: Option<String>,
     pub created_at: time::OffsetDateTime,
     pub is_guest: bool,
+    /// Carried on the user row rather than fetched separately. The session
+    /// layer already loads this row on every authenticated request, so
+    /// selecting one more column is free where a second `get_settings` query
+    /// is not — see `components::auth::current_user`.
+    pub settings: Json<UserSettings>,
 }
 
 impl AuthUser for User {
@@ -245,7 +252,7 @@ impl AuthnBackend for AuthBackend {
                 // Look up existing oauth_accounts row
                 let existing = sqlx::query_as!(
                     User,
-                    r#"SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at, u.is_guest
+                    r#"SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at, u.is_guest, u.settings AS "settings: Json<UserSettings>"
                        FROM users u
                        JOIN oauth_accounts oa ON oa.user_id = u.id
                        WHERE oa.provider = 'github' AND oa.provider_user_id = $1"#,
@@ -274,7 +281,7 @@ impl AuthnBackend for AuthBackend {
                 let existing_by_email = if has_verified_email {
                     sqlx::query_as!(
                         User,
-                        r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest
+                        r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest, settings AS "settings: Json<UserSettings>"
                            FROM users WHERE email = $1"#,
                         email
                     )
@@ -290,7 +297,7 @@ impl AuthnBackend for AuthBackend {
                         let new_user = sqlx::query_as!(
                             User,
                             r#"INSERT INTO users (id, email) VALUES ($1, $2)
-                               RETURNING id, email, username, avatar_url, bio, country, created_at, is_guest"#,
+                               RETURNING id, email, username, avatar_url, bio, country, created_at, is_guest, settings AS "settings: Json<UserSettings>""#,
                             user_id,
                             email,
                         )
@@ -384,7 +391,7 @@ impl AuthnBackend for AuthBackend {
 
                 let existing = sqlx::query_as!(
                     User,
-                    r#"SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at, u.is_guest
+                    r#"SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at, u.is_guest, u.settings AS "settings: Json<UserSettings>"
                        FROM users u
                        JOIN oauth_accounts oa ON oa.user_id = u.id
                        WHERE oa.provider = 'google' AND oa.provider_user_id = $1"#,
@@ -406,7 +413,7 @@ impl AuthnBackend for AuthBackend {
                 let existing_by_email = if has_verified_email {
                     sqlx::query_as!(
                         User,
-                        r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest
+                        r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest, settings AS "settings: Json<UserSettings>"
                            FROM users WHERE email = $1"#,
                         email
                     )
@@ -422,7 +429,7 @@ impl AuthnBackend for AuthBackend {
                         let new_user = sqlx::query_as!(
                             User,
                             r#"INSERT INTO users (id, email) VALUES ($1, $2)
-                               RETURNING id, email, username, avatar_url, bio, country, created_at, is_guest"#,
+                               RETURNING id, email, username, avatar_url, bio, country, created_at, is_guest, settings AS "settings: Json<UserSettings>""#,
                             user_id,
                             email,
                         )
@@ -464,7 +471,7 @@ impl AuthnBackend for AuthBackend {
                 let user = sqlx::query_as!(
                     User,
                     r#"INSERT INTO users (id, email, username, is_guest) VALUES ($1, $2, $3, true)
-                       RETURNING id, email, username, avatar_url, bio, country, created_at, is_guest"#,
+                       RETURNING id, email, username, avatar_url, bio, country, created_at, is_guest, settings AS "settings: Json<UserSettings>""#,
                     user_id,
                     email,
                     username,
@@ -482,7 +489,7 @@ impl AuthnBackend for AuthBackend {
     async fn get_user(&self, id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
         Ok(query_as!(
             User,
-            r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest
+            r#"SELECT id, email, username, avatar_url, bio, country, created_at, is_guest, settings AS "settings: Json<UserSettings>"
                FROM users WHERE id = $1"#,
             id
         )

@@ -20,12 +20,11 @@ pub struct UserSummary {
 #[server]
 pub async fn current_user() -> Result<Option<UserSummary>, ServerFnError> {
     use crate::auth::AuthBackend;
-    use crate::state::AppState;
     use axum_login::AuthSession;
+    // `settings` rides along on the user row the session layer has already
+    // loaded, so this server fn issues no query of its own.
     let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
     let Some(u) = auth.user else { return Ok(None) };
-    let state = expect_context::<AppState>();
-    let settings = state.user_store.get_settings(u.id).await?;
     Ok(Some(UserSummary {
         id: u.id,
         email: u.email,
@@ -34,7 +33,7 @@ pub async fn current_user() -> Result<Option<UserSummary>, ServerFnError> {
         bio: u.bio,
         country: u.country,
         is_guest: u.is_guest,
-        settings,
+        settings: u.settings.0,
     }))
 }
 
