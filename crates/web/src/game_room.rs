@@ -404,6 +404,58 @@ impl GameRoom {
         })
     }
 
+    /// Brings this room in line with a DB row that's already recorded a
+    /// real outcome the room itself never decided — a manual data fix (see
+    /// the 2026-09-21 incident this exists for), or, in a future
+    /// multi-instance world, a peer's reaper acting on a row this instance
+    /// still thinks it owns. Broadcasts the same final `ClockSync`/
+    /// `GameOver` a normal `end_game` would, so anyone still connected
+    /// sees the correction immediately rather than a frozen board. Unlike
+    /// `end_game`, this never touches `session_score` (no decisive event
+    /// happened *here*) and returns nothing to persist — the DB is the
+    /// source of truth being synced *from*, not written to. No-op if the
+    /// room already agrees it's finished.
+    #[instrument(skip(self), fields(game_id = %self.game.id, ?winner, ?reason))]
+    pub fn sync_finished_from_db(&mut self, winner: Option<Side>, reason: GameOverReason) {
+        if matches!(self.status, GameStatus::Finished(_)) {
+            return;
+        }
+        let outcome = match winner {
+            Some(Side::White) => KnownOutcome::Decisive { winner: Color::White },
+            Some(Side::Black) => KnownOutcome::Decisive { winner: Color::Black },
+            None => KnownOutcome::Draw,
+        };
+        self.status = GameStatus::Finished(Outcome::Known(outcome));
+        self.end_reason = Some(reason.clone());
+
+        let sent_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.broadcast(GameServerMessage::ClockSync {
+            white_ms_left: self.game.white_ms_left,
+            black_ms_left: self.game.black_ms_left,
+            turn: self.game.position.turn().into(),
+            sent_at_ms,
+            clock_running: false,
+        });
+
+        let (white_wins, black_wins) = self.session_score;
+        self.broadcast(GameServerMessage::GameOver { winner, reason, white_wins, black_wins });
+
+        if let Some(h) = self.timeout_task.take() {
+            h.abort();
+        }
+        if let Some(h) = self.abort_task.take() {
+            h.abort();
+        }
+        if let Some(h) = self.heartbeat_task.take() {
+            h.abort();
+        }
+        self.abort_side = None;
+        self.abort_deadline_ms = None;
+    }
+
     #[instrument(skip(self), fields(game_id = %self.game.id))]
     pub fn parse_and_apply_move(&mut self, uci: &str) -> Result<Move, MoveError> {
         let uci_move = uci
@@ -1178,6 +1230,39 @@ mod tests {
         assert_eq!(plan.game_id, room.game.id);
         assert_eq!(plan.white_id, white_id);
         assert_eq!(plan.black_id, black_id);
+    }
+
+    // ── sync_finished_from_db ────────────────────────────────────────────────
+
+    #[test]
+    fn sync_finished_from_db_sets_status_and_reason_without_touching_score() {
+        let (mut room, _, _) = make_room();
+        room.sync_finished_from_db(Some(Side::White), GameOverReason::Resignation);
+        assert!(matches!(room.status, GameStatus::Finished(_)));
+        assert_eq!(room.end_reason, Some(GameOverReason::Resignation));
+        // No decisive event happened *here* — the DB already accounted for
+        // whatever this outcome was, so this must never double-count it.
+        assert_eq!(room.session_score, (0.0, 0.0));
+    }
+
+    #[test]
+    fn sync_finished_from_db_none_winner_is_draw_outcome() {
+        let (mut room, _, _) = make_room();
+        room.sync_finished_from_db(None, GameOverReason::Abort);
+        assert!(matches!(
+            room.status,
+            GameStatus::Finished(Outcome::Known(KnownOutcome::Draw))
+        ));
+        assert_eq!(room.end_reason, Some(GameOverReason::Abort));
+    }
+
+    #[test]
+    fn sync_finished_from_db_is_idempotent() {
+        let (mut room, _, _) = make_room();
+        room.sync_finished_from_db(Some(Side::White), GameOverReason::Checkmate);
+        room.sync_finished_from_db(Some(Side::Black), GameOverReason::Resignation);
+        // Second call must be a no-op — the reason from the *first* call wins.
+        assert_eq!(room.end_reason, Some(GameOverReason::Checkmate));
     }
 
     // ── add_player / remove_player / current_player ──────────────────────────

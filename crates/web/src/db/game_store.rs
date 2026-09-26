@@ -412,6 +412,12 @@ impl GameStore {
     /// `game_websocket` join handler replay a real `GameOver` instead of an
     /// undifferentiated "game not found" indistinguishable from a typo'd URL.
     ///
+    /// Also used by `AppState::reconcile_local_rooms_against_db` to resync a
+    /// live room against a row that already recorded an outcome the room
+    /// never decided — a manual data fix, or a peer's reaper acting on a row
+    /// this instance still thinks it owns. That caller needs to tell "no such
+    /// row" from "still running" too, which is why this returns a three-way
+    /// enum rather than an `Option`.
     #[tracing::instrument(skip(self), fields(%game_id))]
     pub async fn get_finished_outcome(
         &self,
@@ -449,10 +455,16 @@ impl GameStore {
             Some("repetition") => GameOverReason::Repetition,
             Some("fifty_move") => GameOverReason::FiftyMove,
             Some("draw_agreement") => GameOverReason::DrawAgreement,
+            Some("abandonment") => GameOverReason::Abort,
+            // Unrecognised or NULL: the row says the game ended, so the
+            // least-wrong answer is Abort. Deliberately not `None`-like —
+            // both callers are better off correcting to *something* than
+            // leaving a finished game behaving as live.
             _ => GameOverReason::Abort,
         };
         Ok(GameOutcomeLookup::Ended { winner, reason })
     }
+
 
     /// Persists move/clock history for a still-in-progress game. Called
     /// after every move (fire-and-forget, see `spawn_progress_persist`) so a
@@ -1169,6 +1181,62 @@ mod tests {
         insert_game_row(&pool, game_id, white_id, black_id, true).await; // still 'active'
 
         assert!(store.get_game_for_analysis(game_id).await.unwrap().is_none());
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn get_finished_outcome_decodes_a_decisive_finish(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+        let plan = make_plan(
+            game_id,
+            white_id,
+            black_id,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::Black },
+            GameOverReason::Resignation,
+        );
+        store.finalize_game(plan).await.unwrap();
+
+        assert_eq!(
+            store.get_finished_outcome(game_id).await.unwrap(),
+            GameOutcomeLookup::Ended {
+                winner: Some(Side::Black),
+                reason: GameOverReason::Resignation,
+            }
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn get_finished_outcome_decodes_an_abort_as_no_winner(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+        let plan = make_plan(game_id, white_id, black_id, true, KnownOutcome::Draw, GameOverReason::Abort);
+        store.abort_game(plan).await.unwrap();
+
+        assert_eq!(
+            store.get_finished_outcome(game_id).await.unwrap(),
+            GameOutcomeLookup::Ended { winner: None, reason: GameOverReason::Abort }
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn get_finished_outcome_none_for_still_active_game(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await; // still 'active'
+
+        assert_eq!(
+            store.get_finished_outcome(game_id).await.unwrap(),
+            GameOutcomeLookup::StillRunning
+        );
     }
 
     #[sqlx::test(migrations = "../../migrations")]

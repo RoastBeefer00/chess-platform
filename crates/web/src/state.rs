@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::auth::{AuthBackend, AuthError};
-use crate::db::{FriendStore, GameStore, PuzzleStore, RatingStore, UserStore};
+use crate::db::{FriendStore, GameOutcomeLookup, GameStore, PuzzleStore, RatingStore, UserStore};
 use crate::game_room::GameRoom;
 
 pub type GameId = Uuid;
@@ -558,6 +558,50 @@ impl AppState {
             tracing::warn!(count, ids = ?unadoptable, "reconciled_stale_active_games: aborted unadoptable");
         }
         Ok(count)
+    }
+
+    /// The mirror image of `reconcile_stale_active_games`: that one asks
+    /// "is anyone actually holding this DB row"; this one asks "does the
+    /// DB still agree with what I'm holding." Normal gameplay can never
+    /// produce this drift on its own (a room's own `end_game` always
+    /// mutates memory before the DB write), but a few real paths can: a
+    /// manual data fix (see `GameRoom::sync_finished_from_db` — the
+    /// 2026-09-21 incident this exists for), or, in a future
+    /// multi-instance deployment, a peer's reaper aborting a row this
+    /// instance still legitimately owns. Run on the same cadence as
+    /// `reconcile_stale_active_games` (see `main.rs`). Returns how many
+    /// rooms were resynced.
+    #[tracing::instrument(skip(self))]
+    pub async fn reconcile_local_rooms_against_db(&self) -> u64 {
+        let rooms: Vec<(GameId, Arc<Mutex<GameRoom>>)> = {
+            let games = self.games.lock().await;
+            games.iter().map(|(id, r)| (*id, r.clone())).collect()
+        };
+
+        let mut resynced = 0u64;
+        for (game_id, room) in rooms {
+            let is_ongoing = matches!(room.lock().await.status, GameStatus::Ongoing);
+            if !is_ongoing {
+                continue;
+            }
+            let (winner, reason) = match self.game_store.get_finished_outcome(game_id).await {
+                Ok(GameOutcomeLookup::Ended { winner, reason }) => (winner, reason),
+                // Row gone, or still active — nothing to correct either way.
+                Ok(_) => continue,
+                Err(e) => {
+                    tracing::warn!(?e, %game_id, "reconcile_local_rooms_against_db: failed to check DB status");
+                    continue;
+                }
+            };
+            room.lock().await.sync_finished_from_db(winner, reason.clone());
+            self.redis_client.active_game_remove(game_id).await;
+            resynced += 1;
+            tracing::warn!(
+                %game_id, ?winner, ?reason,
+                "reconciled_local_room_against_db: DB had already recorded a finish this room didn't know about",
+            );
+        }
+        resynced
     }
 
     #[tracing::instrument(skip(self, tx), fields(user_id = %id, %session_id))]
@@ -2072,6 +2116,78 @@ mod tests {
         assert_eq!(unadoptable_status, "aborted");
 
         app_state.redis_client.active_game_remove(adoptable_id).await;
+    }
+
+    /// The regression test for the 2026-09-21 incident: a manual DB fix (or,
+    /// in a future multi-instance deployment, a peer's reaper) marking a
+    /// game finished/aborted out from under a room this instance still
+    /// holds as `Ongoing` in memory must not leave that room as a
+    /// permanent ghost — the next reconcile tick has to notice and resync.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn reconcile_local_rooms_resyncs_a_room_the_db_says_is_already_over(pool: PgPool) {
+        let app_state = make_app_state(pool.clone()).await;
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+
+        let config = GameConfig {
+            time_control: TimeControl { initial_time: 180_000, mode: TimeMode::Increment(0) },
+            variant: shared::Variant::Standard,
+            rated: RatingMode::Casual,
+        };
+        let game_id = app_state.create_game(config, white_id, black_id, (0.0, 0.0)).await.unwrap();
+        // `create_game` alone leaves the room `WaitingForOpponent` — it only
+        // becomes `Ongoing` once both players actually join over the
+        // websocket. Set it directly rather than driving a real handshake,
+        // since this test is about `reconcile_local_rooms_against_db`, not
+        // the join flow.
+        app_state.get_game_room(&game_id).await.unwrap().lock().await.status = GameStatus::Ongoing;
+
+        // Simulates exactly what happened in production: the DB row gets
+        // corrected directly, with no way to tell the already-running room.
+        sqlx::query!(
+            "UPDATE games SET status = 'finished', result = 'white', termination = 'resignation', ended_at = now() WHERE id = $1",
+            game_id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let resynced = app_state.reconcile_local_rooms_against_db().await;
+        assert_eq!(resynced, 1);
+
+        let room = app_state.get_game_room(&game_id).await.expect("room stays registered");
+        let gr = room.lock().await;
+        assert!(matches!(gr.status, GameStatus::Finished(_)));
+        assert_eq!(gr.end_reason, Some(shared::messages::GameOverReason::Resignation));
+        drop(gr);
+
+        assert!(
+            app_state.redis_client.active_game_owner(game_id).await.is_none(),
+            "ownership record must be released once the room is known to be over"
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn reconcile_local_rooms_leaves_a_genuinely_active_room_alone(pool: PgPool) {
+        let app_state = make_app_state(pool.clone()).await;
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+
+        let config = GameConfig {
+            time_control: TimeControl { initial_time: 180_000, mode: TimeMode::Increment(0) },
+            variant: shared::Variant::Standard,
+            rated: RatingMode::Casual,
+        };
+        let game_id = app_state.create_game(config, white_id, black_id, (0.0, 0.0)).await.unwrap();
+        app_state.get_game_room(&game_id).await.unwrap().lock().await.status = GameStatus::Ongoing;
+
+        let resynced = app_state.reconcile_local_rooms_against_db().await;
+        assert_eq!(resynced, 0, "a room the DB still agrees is active must be left alone");
+
+        let room = app_state.get_game_room(&game_id).await.unwrap();
+        assert!(matches!(room.lock().await.status, GameStatus::Ongoing));
+
+        app_state.redis_client.active_game_remove(game_id).await;
     }
 
     /// The adoption compare-and-set: two instances racing to claim the same
