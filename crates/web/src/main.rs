@@ -54,11 +54,25 @@ async fn main() {
     let addr = conf.leptos_options.site_addr;
     let leptos_options = conf.leptos_options;
 
+    // `min_connections(0)`, deliberately. A serverless Postgres (Neon, and
+    // most of its peers) only suspends its compute when there are ZERO open
+    // connections, and bills for wall-clock time until then. `min_connections(1)`
+    // pins one open forever, so the compute can never suspend and an app
+    // nobody is using bills 24/7 — which is exactly how this project
+    // exhausted a month of compute hours while idle. `idle_timeout` does not
+    // save you: it reaps connections *above* the minimum, never the last one.
+    //
+    // The cost of 0 is a cold-connect on the first query after an idle
+    // period, which is the right trade for a hobby-scale deployment.
     let pool = PgPoolOptions::new()
         .max_connections(10)
-        .min_connections(1)
+        .min_connections(0)
         .max_lifetime(Some(Duration::from_secs(15 * 60)))
-        .idle_timeout(Some(Duration::from_secs(5 * 60)))
+        // Short, so the pool actually empties soon after the last request
+        // rather than holding the database awake for another five minutes.
+        // Suspend latency is this plus the provider's own idle threshold, so
+        // every minute here is a minute of billed compute on an idle app.
+        .idle_timeout(Some(Duration::from_secs(60)))
         .acquire_timeout(Duration::from_secs(10))
         .test_before_acquire(true)
         .connect(&std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"))
@@ -132,6 +146,29 @@ async fn main() {
             tick.tick().await; // skip the immediate first tick — just ran above
             loop {
                 tick.tick().await;
+
+                // Nothing held locally means nothing to reconcile, and —
+                // more importantly — an idle instance must issue NO queries
+                // at all. A query a minute keeps a serverless Postgres from
+                // ever suspending (Neon's default idle threshold is minutes,
+                // not hours), so this loop alone was enough to bill compute
+                // around the clock on an app with no players. Skipping here
+                // is what lets the pool drain to zero and the database
+                // actually go to sleep.
+                //
+                // What this gives up: an orphaned DB row left by a crashed
+                // instance is no longer adopted or aborted in the background
+                // while nobody is playing. That is acceptable because the
+                // on-demand path already covers the case that matters — a
+                // player reconnecting to such a game hits `adopt_game`
+                // directly (see the websocket join handler), which rebuilds
+                // it without waiting for a sweep. The sweep is a safety net
+                // for rows nobody is asking about, and nobody is asking
+                // about anything while the instance is empty.
+                if !app_state.has_live_rooms().await {
+                    continue;
+                }
+
                 if let Err(err) = app_state.reconcile_stale_active_games().await {
                     tracing::error!(?err, "failed to reconcile stale active games");
                 }

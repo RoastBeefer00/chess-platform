@@ -28,7 +28,7 @@ impl ThemeChoice {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_stored(s: &str) -> Self {
         match s {
             "light" => ThemeChoice::Light,
             "dark" => ThemeChoice::Dark,
@@ -68,7 +68,7 @@ pub fn stored_choice() -> ThemeChoice {
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
         .and_then(|s| s.get_item(THEME_STORAGE_KEY).ok().flatten())
-        .map(|v| ThemeChoice::from_str(&v))
+        .map(|v| ThemeChoice::from_stored(&v))
         .unwrap_or(ThemeChoice::System)
 }
 

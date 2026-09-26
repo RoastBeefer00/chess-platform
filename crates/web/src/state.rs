@@ -428,6 +428,16 @@ impl AppState {
         AdoptOutcome::Adopted(room_arc)
     }
 
+    /// Whether this instance is holding any game rooms at all.
+    ///
+    /// Gates the periodic reconcile loop in `main.rs`. The point is not to
+    /// save the work — it's that an instance holding nothing must issue no
+    /// database queries, so a serverless Postgres can suspend its compute
+    /// instead of billing around the clock for an app with no players.
+    pub async fn has_live_rooms(&self) -> bool {
+        !self.games.lock().await.is_empty()
+    }
+
     /// Drops finished rooms nobody is connected to any more.
     ///
     /// `self.games` previously only ever grew: nothing removed from it, so
