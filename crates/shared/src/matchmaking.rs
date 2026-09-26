@@ -29,12 +29,24 @@ pub struct TimeControl {
 }
 
 impl TimeControl {
+    /// Which rating pool a game counts toward.
+    ///
+    /// Decided by the initial time alone — the increment is deliberately not
+    /// part of it, so 5+0 and 5+5 are the same category, as the play hub's
+    /// own grouping already says they are.
+    ///
+    /// The boundaries follow the usual convention (bullet under 3 minutes,
+    /// blitz under 10) and, importantly, agree with how `PlayHub` groups the
+    /// presets it offers. They did not before: 5+0 and 5+5 both sat under
+    /// "Blitz" in the UI while updating the *Rapid* rating, and 2+1 sat under
+    /// "Bullet" while updating Blitz. Any change here has to keep
+    /// `category_matches_play_hub_grouping` below passing.
     pub fn category(&self) -> Category {
         let seconds = self.initial_time / 1000;
         match seconds {
-            ..120 => Category::Bullet,
-            120..300 => Category::Blitz,
-            300..1500 => Category::Rapid,
+            ..180 => Category::Bullet,
+            180..600 => Category::Blitz,
+            600..1500 => Category::Rapid,
             _ => Category::Classical,
         }
     }
@@ -96,35 +108,38 @@ mod tests {
     use super::*;
 
     // ── TimeControl::category ────────────────────────────────────────────────
+    //
+    // Boundaries are on the INITIAL time only; the increment never moves a
+    // game between pools.
 
     #[test]
-    fn category_bullet_under_120s() {
+    fn category_bullet_under_180s() {
         let tc = TimeControl { initial_time: 119_000, mode: TimeMode::Increment(0) };
         assert!(matches!(tc.category(), Category::Bullet));
     }
 
     #[test]
-    fn category_boundary_119999ms_is_bullet() {
-        // 119_999 ms / 1000 = 119 s (integer division) → Bullet
-        let tc = TimeControl { initial_time: 119_999, mode: TimeMode::Increment(0) };
+    fn category_boundary_179999ms_is_bullet() {
+        // 179_999 ms / 1000 = 179 s (integer division) → Bullet
+        let tc = TimeControl { initial_time: 179_999, mode: TimeMode::Increment(0) };
         assert!(matches!(tc.category(), Category::Bullet));
     }
 
     #[test]
-    fn category_boundary_120s_is_blitz() {
-        let tc = TimeControl { initial_time: 120_000, mode: TimeMode::Increment(0) };
+    fn category_boundary_180s_is_blitz() {
+        let tc = TimeControl { initial_time: 180_000, mode: TimeMode::Increment(0) };
         assert!(matches!(tc.category(), Category::Blitz));
     }
 
     #[test]
-    fn category_boundary_299s_is_blitz() {
-        let tc = TimeControl { initial_time: 299_000, mode: TimeMode::Increment(0) };
+    fn category_boundary_599s_is_blitz() {
+        let tc = TimeControl { initial_time: 599_000, mode: TimeMode::Increment(0) };
         assert!(matches!(tc.category(), Category::Blitz));
     }
 
     #[test]
-    fn category_boundary_300s_is_rapid() {
-        let tc = TimeControl { initial_time: 300_000, mode: TimeMode::Increment(0) };
+    fn category_boundary_600s_is_rapid() {
+        let tc = TimeControl { initial_time: 600_000, mode: TimeMode::Increment(0) };
         assert!(matches!(tc.category(), Category::Rapid));
     }
 
@@ -138,6 +153,52 @@ mod tests {
     fn category_boundary_1500s_is_classical() {
         let tc = TimeControl { initial_time: 1_500_000, mode: TimeMode::Increment(0) };
         assert!(matches!(tc.category(), Category::Classical));
+    }
+
+    /// The increment must not move a game between rating pools. This is the
+    /// bug that prompted the boundary change: 5+5 updated the Rapid rating
+    /// while the UI offered it as Blitz.
+    #[test]
+    fn category_ignores_the_increment() {
+        for inc in [0, 1_000, 2_000, 5_000, 10_000, 60_000] {
+            let tc = TimeControl { initial_time: 300_000, mode: TimeMode::Increment(inc) };
+            assert!(
+                matches!(tc.category(), Category::Blitz),
+                "5+{}s should be Blitz, same as 5+0",
+                inc / 1000
+            );
+        }
+        // Same for a delay-based control.
+        let tc = TimeControl { initial_time: 300_000, mode: TimeMode::Delay(10_000) };
+        assert!(matches!(tc.category(), Category::Blitz));
+    }
+
+    /// Every preset the play hub offers must land in the pool the hub files
+    /// it under. Keep this in sync with `PlayHub`'s BULLET/BLITZ/RAPID lists —
+    /// the two disagreeing is exactly how 5+0, 5+5 and 2+1 ended up updating
+    /// the wrong rating.
+    #[test]
+    fn category_matches_play_hub_grouping() {
+        let presets: &[(&str, i64, i64, Category)] = &[
+            ("1 + 0", 60_000, 0, Category::Bullet),
+            ("1 + 1", 60_000, 1_000, Category::Bullet),
+            ("2 + 1", 120_000, 1_000, Category::Bullet),
+            ("3 + 0", 180_000, 0, Category::Blitz),
+            ("3 + 2", 180_000, 2_000, Category::Blitz),
+            ("5 + 0", 300_000, 0, Category::Blitz),
+            ("5 + 5", 300_000, 5_000, Category::Blitz),
+            ("10 + 0", 600_000, 0, Category::Rapid),
+            ("15 + 10", 900_000, 10_000, Category::Rapid),
+        ];
+        for (label, initial, inc, expected) in presets {
+            let tc = TimeControl { initial_time: *initial, mode: TimeMode::Increment(*inc) };
+            assert_eq!(
+                tc.category().to_string(),
+                expected.to_string(),
+                "{label} should be {expected}, got {}",
+                tc.category()
+            );
+        }
     }
 
     // ── TimeControl::bucket ──────────────────────────────────────────────────
