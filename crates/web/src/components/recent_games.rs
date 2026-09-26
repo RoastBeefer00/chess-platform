@@ -19,6 +19,13 @@ pub async fn get_recent_games(username: Option<String>) -> Result<Vec<RecentGame
     use crate::state::AppState;
     use axum_login::AuthSession;
 
+    // Signed-in callers only, in both branches — see the matching note on
+    // `get_all_ratings`. The `Some(name)` branch used to skip the check, so
+    // a signed-out request could read any account's game history.
+    let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
+    let Some(viewer_id) = auth.user.as_ref().map(|u| u.id) else {
+        return Err(ServerFnError::new("not signed in"));
+    };
     let state = expect_context::<AppState>();
     let user_id = match username {
         Some(name) => state
@@ -27,10 +34,7 @@ pub async fn get_recent_games(username: Option<String>) -> Result<Vec<RecentGame
             .await?
             .ok_or_else(|| ServerFnError::new("user not found"))?
             .id,
-        None => {
-            let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
-            auth.user.as_ref().map(|u| u.id).ok_or_else(|| ServerFnError::new("not signed in"))?
-        }
+        None => viewer_id,
     };
     state.game_store.list_recent_games(user_id, 10).await.map_err(|e| {
         tracing::error!(%user_id, error = %e, "get_recent_games failed");

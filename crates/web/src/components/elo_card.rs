@@ -24,6 +24,15 @@ pub async fn get_all_ratings(
     use crate::state::AppState;
     use axum_login::AuthSession;
 
+    // Signed-in callers only, in both branches. Ratings are shown on the
+    // profile page, which lives behind `RequireAuth` — but that gate is in
+    // the UI, and a server fn is an HTTP endpoint anyone can call. The
+    // `Some(name)` branch used to skip this check entirely, so a signed-out
+    // request could read any account's ratings.
+    let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
+    let Some(viewer_id) = auth.user.as_ref().map(|u| u.id) else {
+        return Err(ServerFnError::new("not signed in"));
+    };
     let app_state = expect_context::<AppState>();
     let id = match username {
         Some(name) => app_state
@@ -32,10 +41,7 @@ pub async fn get_all_ratings(
             .await?
             .ok_or_else(|| ServerFnError::new("user not found"))?
             .id,
-        None => {
-            let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
-            auth.user.as_ref().map(|u| u.id).ok_or_else(|| ServerFnError::new("not signed in"))?
-        }
+        None => viewer_id,
     };
     app_state
         .rating_store
