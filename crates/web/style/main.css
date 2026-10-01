@@ -162,27 +162,27 @@
 :root,
 [data-board="green"] {
     --board-light: #edeed1;
-    --board-dark: #779952;
+    --board-dark: #698748;
 }
 [data-board="brown"] {
     --board-light: #f0d9b5;
-    --board-dark: #b58863;
+    --board-dark: #9f7857;
 }
 [data-board="blue"] {
     --board-light: #dee3e6;
-    --board-dark: #8ca2ad;
+    --board-dark: #7b8f98;
 }
 [data-board="purple"] {
     --board-light: #e8e3f0;
-    --board-dark: #9f90b0;
+    --board-dark: #8c7f9b;
 }
 [data-board="grey"] {
     --board-light: #dcdcdc;
-    --board-dark: #8f8f8f;
+    --board-dark: #7e7e7e;
 }
 [data-board="wood"] {
     --board-light: #d8a45b;
-    --board-dark: #8a5a2b;
+    --board-dark: #794f26;
 }
 
 .sq-light {

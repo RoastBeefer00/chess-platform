@@ -158,6 +158,32 @@ fn PuzzleStatusPanel(
                     <span class="text-emerald-400 font-semibold">"Solved!"</span>
                 </Show>
             </div>
+            // Immediately below the feedback line, which on mobile puts it
+            // immediately below the board — the one spot that is reliably on
+            // screen without scrolling. It used to sit below Analyze, Share
+            // and the theme icons, which put its bottom edge 299px into a
+            // 352px panel: with the nav, the page padding and a full-width
+            // board above it, that lands at y=773 on a phone, past the ~700px
+            // a 844px device actually leaves once the browser's own chrome
+            // takes its share. From here it lands at 635 and is visible on
+            // every size checked down to 680.
+            //
+            // Reserving the panel's height in `--board-chrome` was the other
+            // option, but it fixes this by shrinking the board on every
+            // phone — a bad trade for the thing people came to look at. The
+            // secondary actions are the ones worth a scroll.
+            //
+            // Ordering against the Hint button below does not matter: Hint
+            // shows only while unsolved and this only once solved, so the two
+            // are never present together.
+            <Show when=move || status.get() == SolveStatus::Solved>
+                <button
+                    on:click=move |_| on_next.run(())
+                    class="btn-primary w-full px-4 py-2 text-sm font-semibold cursor-pointer"
+                >
+                    "Next puzzle"
+                </button>
+            </Show>
             <Show when=move || status.get() != SolveStatus::Solved>
                 <button
                     on:click=move |_| on_hint.run(())
@@ -215,12 +241,6 @@ fn PuzzleStatusPanel(
                             })
                             .collect_view()}
                     </div>
-                    <button
-                        on:click=move |_| on_next.run(())
-                        class="btn-primary w-full px-4 py-2 text-sm font-semibold cursor-pointer"
-                    >
-                        "Next puzzle"
-                    </button>
                 </div>
             </Show>
             <button

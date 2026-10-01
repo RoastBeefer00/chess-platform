@@ -122,7 +122,15 @@ fn square_center(sq: shakmaty::Square, perspective: BoardPerspective) -> (f64, f
 /// stroke-width units (the marker's `markerUnits` default) — shared with
 /// `pull_back_last_point`'s call site so the line-shortening distance
 /// always matches however big the marker itself actually renders.
-const ARROWHEAD_MARKER_SIZE: f64 = 4.0;
+///
+/// Because the marker is measured in stroke-width units, the head grows
+/// with the arm and the two keep a fixed ratio. Thickening the arm alone
+/// would therefore scale the head up by just as much and leave it looking
+/// exactly as oversized as before. So this came down from 4.0 as the arm
+/// widths below went up, which thickens the arm while leaving the head at
+/// very nearly the size it already drew (rank 0: 4.0 x 0.18 = 0.72 before,
+/// 3.0 x 0.24 = 0.72 now).
+const ARROWHEAD_MARKER_SIZE: f64 = 3.0;
 
 fn arrow_points(from: (f64, f64), to: (f64, f64)) -> Vec<(f64, f64)> {
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
@@ -614,24 +622,35 @@ pub fn ChessBoard(
                             .get()
                             .into_iter()
                             .map(|(from, to, rank)| {
-                                let (opacity, width) = match rank {
-                                    0 => (0.85, 0.18),
-                                    1 => (0.55, 0.14),
-                                    _ => (0.30, 0.10),
+                                // The engine's top choice gets its own
+                                // colour rather than being the brightest of
+                                // several greys: rank is otherwise carried
+                                // only by opacity and width, which is hard
+                                // to read when two lines score closely. Sky
+                                // blue is distinct from both the grey
+                                // alternates and the green of the user's own
+                                // arrows, and stays legible on all six board
+                                // themes — it is lighter and far more
+                                // saturated than any of their dark squares.
+                                let (stroke, opacity, width) = match rank {
+                                    0 => ("#38bdf8", 0.90, 0.24),
+                                    1 => ("#9ca3af", 0.55, 0.19),
+                                    _ => ("#9ca3af", 0.30, 0.14),
                                 };
-                                arrow_polyline(from, to, persp, "#9ca3af", opacity, width)
+                                arrow_polyline(from, to, persp, stroke, opacity, width)
                             })
                             .collect_view()
                     }}
                     // User-drawn (right-click-drag) annotation arrows — a
                     // distinct green so they read as "your annotation" next
-                    // to the engine suggestions' gray, drawn on top of them.
+                    // to the engine's blue best move and grey alternates,
+                    // drawn on top of them.
                     {move || {
                         let persp = perspective.get();
                         user_arrows
                             .get()
                             .into_iter()
-                            .map(|(from, to)| arrow_polyline(from, to, persp, "#22c55e", 0.8, 0.16))
+                            .map(|(from, to)| arrow_polyline(from, to, persp, "#22c55e", 0.8, 0.2))
                             .collect_view()
                     }}
                     // Live preview while a right-click-drag is in progress —
@@ -643,7 +662,7 @@ pub fn ChessBoard(
                         let persp = perspective.get();
                         arrow_drag.get().and_then(|drag| {
                             let to = drag.to?;
-                            (to != drag.from).then(|| arrow_polyline(drag.from, to, persp, "#22c55e", 0.4, 0.16))
+                            (to != drag.from).then(|| arrow_polyline(drag.from, to, persp, "#22c55e", 0.4, 0.2))
                         })
                     }}
                 </svg>
