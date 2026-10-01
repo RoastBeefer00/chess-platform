@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO puzzle_attempts\n                   (user_id, puzzle_id, solved, rating_before, rating_after)\n               VALUES ($1, $2, $3, $4, $5)\n               ON CONFLICT DO NOTHING\n               RETURNING puzzle_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "puzzle_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Bool",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "689bf350eb76bce8e8696d7266bb955e18d8378175d97873eab7fad78aa85bea"
+}

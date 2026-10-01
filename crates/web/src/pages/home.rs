@@ -17,7 +17,7 @@ impl LazyRoute for HomePage {
         let user = use_current_user();
 
         view! {
-            <Transition fallback=|| view! { <div class="min-h-[calc(100dvh-3.5rem)]"></div> }>
+            <Transition fallback=|| view! { <div class="min-h-below-nav"></div> }>
                 {move || user.get().map(|res| match res {
                     // Signed-in but hasn't completed onboarding — finish that
                     // before they can do anything (otherwise they'd queue for

@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use shakmaty::{Color, Role, Square};
 
+
 #[cfg(feature = "hydrate")]
 use crate::components::move_target;
 use crate::components::{BoardPerspective, PendingPromotion};
@@ -93,17 +94,17 @@ fn PromotionPickerCard(perspective: Signal<BoardPerspective>) -> impl IntoView {
             view! {
                 <div
                     node_ref=card_ref
-                    class="absolute z-40 flex flex-col rounded-md overflow-hidden shadow-xl bg-zinc-900/95 border border-zinc-700"
+                    class="absolute z-40 flex flex-col rounded-control overflow-hidden shadow-xl bg-zinc-900/95 border border-zinc-700"
                     style=anchor_style
                 >
                     {ROLES.iter().map(|&(role, role_char)| {
-                        let src = format!("/piece/alpha/{color_char}{role_char}.svg");
+                        let piece_class = format!("pc pc-{color_char}{role_char}");
                         view! {
                             <button
                                 class="aspect-square w-full bg-transparent hover:bg-zinc-700/60 cursor-pointer p-0.5"
                                 on:click=move |_| choose(role)
                             >
-                                <img src=src draggable="false" class="w-full h-full pointer-events-none select-none" />
+                                <div class=format!("w-full h-full pointer-events-none select-none {piece_class}") />
                             </button>
                         }
                     }).collect_view()}

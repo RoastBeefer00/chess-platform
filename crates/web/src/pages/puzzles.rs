@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 
 use leptos::prelude::*;
+use leptos_meta::Title;
 use leptos_router::{hooks::use_query_map, lazy_route, LazyRoute};
 use shakmaty::{fen::Fen, uci::UciMove, CastlingMode, Chess, Color, Position as _, Square};
 
 use crate::components::{BoardPerspective, ChessBoard};
-use crate::puzzle::{get_puzzle, get_random_puzzle};
+use crate::puzzle::{get_puzzle, get_random_puzzle, record_puzzle_result};
 use crate::sound::{self, sfx};
 
 /// The full set of lichess puzzle theme tags present in the vendored
@@ -108,6 +109,8 @@ fn theme_icon(theme: &str) -> &str {
 #[component]
 fn PuzzleStatusPanel(
     rating: RwSignal<i32>,
+    /// The solver's own progress, or `None` while loading / signed out.
+    stats: RwSignal<Option<shared::PuzzleStats>>,
     themes: RwSignal<String>,
     solver_color: RwSignal<Option<Color>>,
     status: RwSignal<SolveStatus>,
@@ -121,8 +124,18 @@ fn PuzzleStatusPanel(
     share_copied: RwSignal<bool>,
 ) -> impl IntoView {
     view! {
-        <div class="rounded-md bg-zinc-900/60 border border-zinc-800 p-3 flex flex-col items-center md:items-start gap-2 text-sm text-zinc-400">
+        <div class="surface-card p-4 flex flex-col items-center md:items-start gap-2 text-sm text-zinc-400">
             <span>"Rating " {move || rating.get()}</span>
+            // Only for signed-in solvers — a signed-out visitor has no
+            // progress to show, and an always-zero row would just read as
+            // broken.
+            {move || stats.get().map(|s| view! {
+                <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                    <span class="text-zinc-300 font-semibold">"You " {s.rating}</span>
+                    <span class="text-zinc-600">"·"</span>
+                    <span>{s.solved} " / " {s.attempted} " solved"</span>
+                </span>
+            })}
             // The solver's color for this puzzle, fixed once it loads — not
             // tied to `position`'s live turn, which would otherwise flicker
             // to the opponent's color for the brief window their forced
@@ -137,19 +150,19 @@ fn PuzzleStatusPanel(
             </span>
             <div class="h-5 flex items-center">
                 <Show when=move || status.get() == SolveStatus::Wrong>
-                    <span class="px-3 py-1 rounded-md bg-red-500 text-white text-xs font-semibold shadow-lg">
+                    <span class="px-3 py-1 rounded-control bg-red-500 text-white text-xs font-semibold shadow-lg">
                         "Try again"
                     </span>
                 </Show>
                 <Show when=move || status.get() == SolveStatus::Solved>
-                    <span class="text-green-400 font-semibold">"Solved!"</span>
+                    <span class="text-emerald-400 font-semibold">"Solved!"</span>
                 </Show>
             </div>
             <Show when=move || status.get() != SolveStatus::Solved>
                 <button
                     on:click=move |_| on_hint.run(())
                     disabled=move || board_locked.get() || hint_stage.get() == HintStage::Arrow
-                    class="w-full px-3 py-1.5 rounded-md border border-zinc-700 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:hover:border-zinc-700 disabled:hover:text-zinc-300 disabled:cursor-not-allowed"
+                    class="w-full px-3 py-1.5 rounded-control border border-zinc-700 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:hover:border-zinc-700 disabled:hover:text-zinc-300 disabled:cursor-not-allowed"
                 >
                     {move || match hint_stage.get() {
                         HintStage::None => "Hint",
@@ -160,13 +173,13 @@ fn PuzzleStatusPanel(
             </Show>
             <a
                 href={move || analysis_href.get()}
-                class="w-full text-center px-3 py-1.5 rounded-md border border-zinc-700 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors"
+                class="w-full text-center px-3 py-1.5 rounded-control border border-zinc-700 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors"
             >
                 "Analyze"
             </a>
             <button
                 on:click=move |_| on_share.run(())
-                class="w-full px-3 py-1.5 rounded-md border border-zinc-700 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
+                class="w-full px-3 py-1.5 rounded-control border border-zinc-700 text-xs font-medium text-zinc-300 hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
             >
                 {move || if share_copied.get() { "Copied!" } else { "Share" }}
             </button>
@@ -204,7 +217,7 @@ fn PuzzleStatusPanel(
                     </div>
                     <button
                         on:click=move |_| on_next.run(())
-                        class="w-full px-4 py-2 rounded-md bg-green-700 hover:bg-green-600 text-white text-sm font-semibold transition-colors cursor-pointer"
+                        class="btn-primary w-full px-4 py-2 text-sm font-semibold cursor-pointer"
                     >
                         "Next puzzle"
                     </button>
@@ -212,7 +225,7 @@ fn PuzzleStatusPanel(
             </Show>
             <button
                 on:click=move |_| on_back.run(())
-                class="w-full px-3 py-1.5 rounded-md text-xs font-medium text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+                class="w-full px-3 py-1.5 rounded-control text-xs font-medium text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
             >
                 "← Back to filters"
             </button>
@@ -252,13 +265,13 @@ fn PuzzleFilterLanding(
                     "← Back to puzzle"
                 </button>
             </Show>
-            <h1 class="text-lg font-semibold text-white">"Puzzles"</h1>
+            <h1 class="display-1 text-white">"Puzzles"</h1>
             <div class="w-full flex flex-col gap-2">
-                <label class="text-sm text-zinc-400">"Rating range"</label>
+                <label class="eyebrow text-zinc-500">"Rating range"</label>
                 <div class="flex items-center gap-2">
                     <input
                         type="number"
-                        class="w-24 px-2 py-1.5 rounded-md bg-zinc-900 border border-zinc-700 text-white text-sm"
+                        class="w-24 px-2 py-1.5 rounded-control bg-zinc-900 border border-zinc-700 text-white text-sm"
                         prop:value=move || min_rating.get()
                         on:input=move |e| {
                             if let Ok(v) = event_target_value(&e).parse::<i32>() {
@@ -269,7 +282,7 @@ fn PuzzleFilterLanding(
                     <span class="text-zinc-500">"–"</span>
                     <input
                         type="number"
-                        class="w-24 px-2 py-1.5 rounded-md bg-zinc-900 border border-zinc-700 text-white text-sm"
+                        class="w-24 px-2 py-1.5 rounded-control bg-zinc-900 border border-zinc-700 text-white text-sm"
                         prop:value=move || max_rating.get()
                         on:input=move |e| {
                             if let Ok(v) = event_target_value(&e).parse::<i32>() {
@@ -281,7 +294,7 @@ fn PuzzleFilterLanding(
             </div>
             <div class="w-full flex flex-col gap-2">
                 <div class="flex items-center justify-between">
-                    <label class="text-sm text-zinc-400">"Themes"</label>
+                    <label class="eyebrow text-zinc-500">"Themes"</label>
                     <Show when=move || !themes_filter.get().is_empty()>
                         <button
                             on:click=move |_| themes_filter.update(|s| s.clear())
@@ -298,9 +311,9 @@ fn PuzzleFilterLanding(
                         view! {
                             <button
                                 on:click=move |_| toggle_theme(theme)
-                                class="flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs transition-colors cursor-pointer hover:border-zinc-500"
-                                class:border-blue-400=selected
-                                class:bg-blue-900=selected
+                                class="flex items-center gap-1.5 px-2 py-1 rounded-control border text-xs transition-colors cursor-pointer hover:border-zinc-500"
+                                class:accent-ring=selected
+                                class:bg-zinc-800=selected
                                 class:text-white=selected
                                 class:border-zinc-700=move || !selected.get()
                                 class:text-zinc-400=move || !selected.get()
@@ -314,7 +327,7 @@ fn PuzzleFilterLanding(
             </div>
             <button
                 on:click=move |_| on_start.run(())
-                class="w-full px-4 py-2 rounded-md bg-green-700 hover:bg-green-600 text-white text-sm font-semibold transition-colors cursor-pointer"
+                class="btn-primary w-full px-4 py-2 text-sm font-semibold cursor-pointer"
             >
                 "Start Solving"
             </button>
@@ -383,6 +396,10 @@ impl LazyRoute for PuzzlesPage {
 
         let solution = RwSignal::new(Vec::<String>::new());
         let puzzle_id = RwSignal::new(None::<String>);
+        // The signed-in solver's running puzzle progress. `None` while it's
+        // still loading and for signed-out visitors, who can solve freely
+        // but accumulate nothing.
+        let stats = RwSignal::new(None::<shared::PuzzleStats>);
         let start_fen = RwSignal::new(String::new());
         let rating = RwSignal::new(0_i32);
         let themes = RwSignal::new(String::new());
@@ -499,6 +516,32 @@ impl LazyRoute for PuzzlesPage {
             });
         });
 
+        // Reports an outcome for the puzzle currently on the board.
+        //
+        // `record_puzzle_result` only ever stores a given puzzle's *first*
+        // outcome, which is what makes calling this from three places safe:
+        // a wrong move and a hint both report a failure immediately (so an
+        // abandoned puzzle still counts against you, as on lichess), and a
+        // later clean solve of that same puzzle can't overwrite it.
+        #[cfg(feature = "hydrate")]
+        leptos::task::spawn_local(async move {
+            match crate::puzzle::get_puzzle_stats().await {
+                Ok(loaded) => stats.set(loaded),
+                Err(e) => leptos::logging::warn!("failed to load puzzle stats: {e}"),
+            }
+        });
+
+        let report_outcome = move |solved: bool| {
+            let Some(id) = puzzle_id.get_untracked() else { return };
+            leptos::task::spawn_local(async move {
+                match record_puzzle_result(id, solved).await {
+                    Ok(Some(updated)) => stats.set(Some(updated)),
+                    Ok(None) => {}
+                    Err(e) => leptos::logging::warn!("failed to record puzzle result: {e}"),
+                }
+            });
+        };
+
         let on_move = Callback::new(move |m: shakmaty::Move| {
             let uci = m.to_uci(CastlingMode::Standard).to_string();
             let current_ply = ply.get_untracked();
@@ -521,6 +564,7 @@ impl LazyRoute for PuzzlesPage {
                     if solved {
                         status.set(SolveStatus::Solved);
                         sound::play(sfx::VICTORY);
+                        report_outcome(true);
                         return;
                     }
 
@@ -544,6 +588,7 @@ impl LazyRoute for PuzzlesPage {
                 LocalCheck::Incorrect => {
                     status.set(SolveStatus::Wrong);
                     sound::play(sfx::ERROR);
+                    report_outcome(false);
                     let mut squares = vec![m.to()];
                     if let Some(from) = m.from() {
                         squares.push(from);
@@ -563,6 +608,8 @@ impl LazyRoute for PuzzlesPage {
         // the button once `hint_stage` reaches `Arrow`.
         let on_hint = Callback::new(move |_: ()| match hint_stage.get_untracked() {
             HintStage::None => {
+                // Taking a hint forfeits the puzzle for rating purposes.
+                report_outcome(false);
                 let sol = solution.get_untracked();
                 let current_ply = ply.get_untracked();
                 let idx = 1 + 2 * current_ply;
@@ -622,6 +669,7 @@ impl LazyRoute for PuzzlesPage {
         });
 
         view! {
+            <Title text="Puzzles"/>
             <div class="flex flex-col items-center w-full py-4 gap-4">
                 <Show when=move || viewing_landing.get()>
                     <PuzzleFilterLanding
@@ -642,7 +690,7 @@ impl LazyRoute for PuzzlesPage {
                         </Show>
                         <Show when=move || puzzle_loaded.get()>
                             <div class="flex flex-col items-center gap-3 w-full">
-                                <div class="relative w-[min(100vw,calc(100dvh-15rem))] md:w-[min(100vw,calc(100dvh-12.5rem))]">
+                                <div class="relative board-frame">
                                     <ChessBoard
                                         position={position}
                                         perspective={perspective}
@@ -660,7 +708,8 @@ impl LazyRoute for PuzzlesPage {
                                     // `AnalysisBoard`'s own side column uses.
                                     <div class="hidden md:flex absolute top-1/2 -translate-y-1/2 left-full ml-4 w-64 flex-col gap-3">
                                         <PuzzleStatusPanel
-                                            rating=rating themes=themes solver_color=solver_color status=status
+                                            rating=rating
+                                            stats=stats themes=themes solver_color=solver_color status=status
                                             hint_stage=hint_stage board_locked=board_locked
                                             on_next=next_puzzle on_hint=on_hint on_back=back_to_filters
                                             analysis_href=analysis_href
@@ -675,7 +724,8 @@ impl LazyRoute for PuzzlesPage {
                                 // would visibly jump every time it happens.
                                 <div class="md:hidden w-full max-w-md">
                                     <PuzzleStatusPanel
-                                        rating=rating themes=themes solver_color=solver_color status=status
+                                        rating=rating
+                                        stats=stats themes=themes solver_color=solver_color status=status
                                         hint_stage=hint_stage board_locked=board_locked
                                         on_next=next_puzzle on_hint=on_hint on_back=back_to_filters
                                         analysis_href=analysis_href

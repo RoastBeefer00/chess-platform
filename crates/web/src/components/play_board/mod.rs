@@ -22,6 +22,54 @@ fn format_score(score: f32) -> String {
     }
 }
 
+
+/// Picks whichever of two per-color values belongs at the top of the board,
+/// given the viewer's perspective. The board is always drawn with the
+/// viewer's own color at the bottom, so nearly every piece of per-color
+/// state (clocks, captures, scores, latency, abort deadlines) needs this
+/// same flip; written out inline it was eight near-identical `match`
+/// blocks.
+fn top<T: Send + Sync + 'static>(
+    perspective: Signal<BoardPerspective>,
+    white: impl Fn() -> T + Send + Sync + 'static,
+    black: impl Fn() -> T + Send + Sync + 'static,
+) -> Signal<T> {
+    Signal::derive(move || match perspective.get() {
+        BoardPerspective::White => black(),
+        BoardPerspective::Black => white(),
+    })
+}
+
+/// The bottom-of-board counterpart to [`top`] — the viewer's own side.
+fn bottom<T: Send + Sync + 'static>(
+    perspective: Signal<BoardPerspective>,
+    white: impl Fn() -> T + Send + Sync + 'static,
+    black: impl Fn() -> T + Send + Sync + 'static,
+) -> Signal<T> {
+    Signal::derive(move || match perspective.get() {
+        BoardPerspective::White => white(),
+        BoardPerspective::Black => black(),
+    })
+}
+
+/// Rematch / new game / analyse, shown once a game is over. Rendered twice —
+/// in the mobile bottom strip and in the desktop side column — which is why
+/// it's a component rather than two copies of the same three tags.
+#[component]
+fn PostGameControls(
+    rematch_state: RwSignal<RematchState>,
+    #[prop(into)] send: Callback<shared::GameClientMessage>,
+    #[prop(into)] on_new_game: Callback<()>,
+    tc_label: Signal<String>,
+    game_id: Uuid,
+) -> impl IntoView {
+    view! {
+        <RematchControls rematch_state=rematch_state send=send size="sm" />
+        <NewGameButton on_new_game=on_new_game tc_label=tc_label size="sm" />
+        <AnalyzeLink game_id=game_id size="sm" />
+    }
+}
+
 #[component]
 #[cfg_attr(not(feature = "hydrate"), allow(unused_variables))]
 pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
@@ -84,6 +132,9 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     let black_connected = RwSignal::new(true);
     let self_rtt_ms = RwSignal::new(None::<u32>);
     let self_ws_connected = RwSignal::new(true);
+    // See `SessionState::ws_clock_seen` — guards the `game_info` effect
+    // below from overwriting socket-supplied clocks.
+    let ws_clock_seen = RwSignal::new(false);
     #[cfg(feature = "hydrate")]
     let offset_samples: StoredValue<Vec<(i64, i64)>, LocalStorage> =
         StoredValue::new_local(Vec::new());
@@ -113,14 +164,8 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     let perspective = Signal::derive(move || BoardPerspective::from(player_role.get()));
 
     // Session score from each player's perspective.
-    let top_wins = Signal::derive(move || match perspective.get() {
-        BoardPerspective::White => black_wins.get(),
-        BoardPerspective::Black => white_wins.get(),
-    });
-    let bottom_wins = Signal::derive(move || match perspective.get() {
-        BoardPerspective::White => white_wins.get(),
-        BoardPerspective::Black => black_wins.get(),
-    });
+    let top_wins = top(perspective, move || white_wins.get(), move || black_wins.get());
+    let bottom_wins = bottom(perspective, move || white_wins.get(), move || black_wins.get());
 
     let top_advantage = Signal::derive(move || {
         let top_color = match perspective.get() {
@@ -131,14 +176,8 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     });
     let bottom_advantage = Signal::derive(move || -top_advantage.get());
 
-    let top_ms = Signal::derive(move || match perspective.get() {
-        BoardPerspective::White => black_ms.get(),
-        BoardPerspective::Black => white_ms.get(),
-    });
-    let bottom_ms = Signal::derive(move || match perspective.get() {
-        BoardPerspective::White => white_ms.get(),
-        BoardPerspective::Black => black_ms.get(),
-    });
+    let top_ms = top(perspective, move || white_ms.get(), move || black_ms.get());
+    let bottom_ms = bottom(perspective, move || white_ms.get(), move || black_ms.get());
     let top_active = Signal::derive(move || {
         if !clock_running.get() {
             return false;
@@ -175,24 +214,25 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         }
     });
     // Perspective-adjusted abort deadlines for the top/bottom clock widgets.
-    let top_abort_deadline = Signal::derive(move || match perspective.get() {
-        BoardPerspective::White => black_abort_deadline.get(),
-        BoardPerspective::Black => white_abort_deadline.get(),
-    });
-    let bottom_abort_deadline = Signal::derive(move || match perspective.get() {
-        BoardPerspective::White => white_abort_deadline.get(),
-        BoardPerspective::Black => black_abort_deadline.get(),
-    });
+    let top_abort_deadline = top(
+        perspective,
+        move || white_abort_deadline.get(),
+        move || black_abort_deadline.get(),
+    );
+    let bottom_abort_deadline = bottom(
+        perspective,
+        move || white_abort_deadline.get(),
+        move || black_abort_deadline.get(),
+    );
 
-    // Perspective-adjusted connection signals for the indicator dots.
-    let opponent_rtt = Signal::derive(move || match perspective.get() {
-        BoardPerspective::White => black_rtt_ms.get(),
-        BoardPerspective::Black => white_rtt_ms.get(),
-    });
-    let opponent_connected = Signal::derive(move || match perspective.get() {
-        BoardPerspective::White => black_connected.get(),
-        BoardPerspective::Black => white_connected.get(),
-    });
+    // Perspective-adjusted connection signals for the indicator dots — the
+    // opponent is always the player at the top of the board.
+    let opponent_rtt = top(perspective, move || white_rtt_ms.get(), move || black_rtt_ms.get());
+    let opponent_connected = top(
+        perspective,
+        move || white_connected.get(),
+        move || black_connected.get(),
+    );
 
     let display_position = Signal::derive(move || match viewing_ply.get() {
         None => position.get(),
@@ -241,9 +281,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         if let Some(from) = m.from() {
             last_move.set(Some((from, m.to())));
         }
-        let sound_src = sound::for_move(&new_pos, &m);
-        leptos::logging::log!("move sound (own): {sound_src}");
-        sound::play(sound_src);
+        sound::play(sound::for_move(&new_pos, &m));
         let uci = m.to_uci(shakmaty::CastlingMode::Standard).to_string();
         #[cfg(feature = "hydrate")]
         last_sent_uci.set_value(Some(uci.clone()));
@@ -320,12 +358,24 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             black_connected,
             self_rtt_ms,
             self_ws_connected,
+            ws_clock_seen,
+            navigate: {
+                let nav = leptos_router::hooks::use_navigate();
+                Callback::new(move |path: String| {
+                    nav(&path, Default::default());
+                })
+            },
         };
+        let cancelled: StoredValue<bool, LocalStorage> = StoredValue::new_local(false);
         let session_handles = ws_session::SessionHandles {
             current_tx,
             last_sent_uci,
             offset_samples,
+            cancelled,
         };
+        // `spawn_local` outlives this component on its own; without this the
+        // game's socket keeps reconnecting forever after we navigate away.
+        on_cleanup(move || cancelled.set_value(true));
         spawn_local(async move {
             let Some(my_uuid) = user.await.ok().flatten().map(|u| u.id) else {
                 leptos::logging::warn!("PlayBoard mounted without authenticated user");
@@ -369,7 +419,15 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
         }
     });
 
+    // Seed the clocks from the HTTP snapshot, but never over the socket:
+    // both write the same signals and there is no ordering between them, so
+    // a resource that resolved after the socket's first `ClockSync` used to
+    // stomp a live clock with an older value and visibly jump it backwards.
+    // The socket is authoritative the moment it has said anything.
     Effect::new(move || {
+        if ws_clock_seen.get() {
+            return;
+        }
         if let Some(Ok(info)) = game_info.get() {
             white_ms.set(info.white_ms_left);
             black_ms.set(info.black_ms_left);
@@ -419,7 +477,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
     provide_context(premoves);
 
     view! {
-        <div class="flex flex-col items-center justify-center w-full py-2 h-[calc(100dvh-3.5rem)]">
+        <div class="flex flex-col items-center justify-center w-full py-2 h-below-nav">
             <Show when=move || searching.get().is_some()>
                 {move || searching.get().map(|(time_control, rating_mode)| view! {
                     <MatchmakingModal
@@ -429,20 +487,28 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     />
                 })}
             </Show>
-            <Show when=move || game_result.get().is_some() && !modal_dismissed.get()>
-                <GameOverModal
-                    game_id=game_id
-                    outcome=game_result.get().unwrap()
-                    reason=end_reason.get()
-                    my_side=player_role.get().and_then(|r| r.color()).map(shared::Side::from)
-                    on_close=move |_| modal_dismissed.set(true)
-                    on_new_game=on_new_game_cb
-                    rematch_state=rematch_state
-                    send=send
-                    tc_label=tc_label
-                />
-            </Show>
-            <div class="relative w-[min(100vw,calc(100dvh-15rem))] md:w-[min(100vw,calc(100dvh-12.5rem))]">
+            // Driven off the value rather than a `Show` + `unwrap`: the
+            // child closure and the `when` predicate both depended on
+            // `game_result`, and nothing orders them, so a transition back to
+            // `None` could have run the child first and panicked.
+            {move || (!modal_dismissed.get())
+                .then(|| game_result.get())
+                .flatten()
+                .map(|outcome| view! {
+                    <GameOverModal
+                        game_id=game_id
+                        outcome=outcome
+                        reason=end_reason.get()
+                        my_side=player_role.get().and_then(|r| r.color()).map(shared::Side::from)
+                        on_close=move |_| modal_dismissed.set(true)
+                        on_new_game=on_new_game_cb
+                        rematch_state=rematch_state
+                        send=send
+                        tc_label=tc_label
+                    />
+                })
+            }
+            <div class="relative board-frame">
                 // Top player row
                 <div class="flex flex-row items-center pl-2 py-2 gap-2 overflow-hidden">
                     <div class="min-w-0 overflow-hidden">
@@ -459,7 +525,10 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     <Show when=move || game_result.get().is_none()>
                         <ConnectionIndicator rtt_ms=opponent_rtt connected=opponent_connected />
                     </Show>
-                    <div class="min-w-0 overflow-hidden">
+                    // `min-w-0` without `overflow-hidden`: the captures row
+                    // wraps now rather than running off, and clipping it
+                    // would just hide the second line.
+                    <div class="min-w-0">
                         {move || view! {
                             <CapturedPieces position={position} color={match perspective.get() {
                                 BoardPerspective::White => Color::White,
@@ -516,7 +585,10 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                     <Show when=move || game_result.get().is_none()>
                         <ConnectionIndicator rtt_ms=self_rtt_ms connected=self_ws_connected />
                     </Show>
-                    <div class="min-w-0 overflow-hidden">
+                    // `min-w-0` without `overflow-hidden`: the captures row
+                    // wraps now rather than running off, and clipping it
+                    // would just hide the second line.
+                    <div class="min-w-0">
                         {move || view! {
                             <CapturedPieces position={position} color={match perspective.get() {
                                 BoardPerspective::White => Color::Black,
@@ -548,9 +620,10 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                 && player_role.get().is_some_and(|r| matches!(r, PlayerRole::Player(_)))
                         }>
                             <div class="md:hidden flex flex-row items-center gap-1">
-                                <RematchControls rematch_state=rematch_state send=send size="sm" />
-                                <NewGameButton on_new_game=on_new_game_cb tc_label=tc_label size="sm" />
-                                <AnalyzeLink game_id=game_id size="sm" />
+                                <PostGameControls
+                                    rematch_state=rematch_state send=send
+                                    on_new_game=on_new_game_cb tc_label=tc_label game_id=game_id
+                                />
                             </div>
                         </Show>
                         {move || (white_wins.get() + black_wins.get() > 0.0).then(|| view! {
@@ -582,7 +655,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                 </div>
                 // Desktop side column: move list + controls
                 <div class="hidden md:flex absolute top-0 bottom-0 left-full ml-4 w-64 flex-col gap-3">
-                    <div class="flex-1 min-h-0 flex flex-col rounded-md bg-zinc-900/60 border border-zinc-800 p-2">
+                    <div class="flex-1 min-h-0 flex flex-col rounded-control bg-zinc-900/60 border border-zinc-800 p-2">
                         <MovesPanel moves={move_history} viewing_ply={viewing_ply} set_viewing_ply={set_viewing_ply} />
                     </div>
                     // Desktop live-game controls
@@ -602,9 +675,10 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                             && player_role.get().is_some_and(|r| matches!(r, PlayerRole::Player(_)))
                     }>
                         <div class="flex flex-row items-center gap-2 flex-shrink-0 flex-wrap">
-                            <RematchControls rematch_state=rematch_state send=send size="sm" />
-                            <NewGameButton on_new_game=on_new_game_cb tc_label=tc_label size="sm" />
-                            <AnalyzeLink game_id=game_id size="sm" />
+                            <PostGameControls
+                                rematch_state=rematch_state send=send
+                                on_new_game=on_new_game_cb tc_label=tc_label game_id=game_id
+                            />
                         </div>
                     </Show>
                 </div>

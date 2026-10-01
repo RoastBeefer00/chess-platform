@@ -1,18 +1,41 @@
 # Known Issues
 
-Track of intentional gaps that are not blockers for launch but should be addressed.
+Track of intentional gaps that are not blockers for launch but should be
+addressed.
 
-## Game state is in-memory only
+Keep this file honest — an entry describing work that has since shipped is
+worse than no entry, because the next person re-solves it. The
+"Game state is in-memory only" entry that used to head this list was exactly
+that: games now persist their moves and clocks incrementally on every move,
+and a surviving instance adopts an orphaned game and replays it from the DB
+rather than aborting it (see `GameStore::persist_progress`,
+`AppState::adopt_game`, `AppState::reconcile_stale_active_games`).
 
-`GameRoom`s live inside `AppState.games` (`HashMap<Uuid, Arc<Mutex<GameRoom>>>`).
-A server restart drops every in-progress game — clients reconnect to a `game not
-found` error and lose their position, clocks, and rating-affecting result.
+## Chess960 games cannot be adopted
 
-**Impact**: every deploy aborts active games. Disruptive but not a data loss
-risk against the DB.
+Game adoption (`AppState::adopt_game`) rebuilds a `GameRoom` by replaying the
+persisted `moves` onto `Chess::default()`. A variant whose starting position
+isn't the standard one has no way to reconstruct it, because the real
+starting FEN is never persisted — `GameRoom::from_persisted` fails the
+replay, and the game is treated as unadoptable and aborted.
 
-**Planned fix**: persist game state on every move, replay from DB on cold start.
-Tracked in `docs/game-saving-elo.md`.
+Nothing ships Chess960 today (`Variant::Standard` is hardcoded at every
+`GameConfig` construction site), so this is a latent constraint on adding it
+rather than a live bug.
+
+**Planned fix**: persist `initial_fen` on the `games` row — the column
+already exists, unused — and replay from it instead of `Chess::default()`.
+
+## Watch grid clocks lag on remote games
+
+Cross-instance clocks are mirrored into the `active_games:{id}` Redis hash on
+every move, so a watch tile for a game owned by another instance ticks
+correctly. Between moves, though, the mirrored snapshot only refreshes on the
+owning room's 10s heartbeat, so a remote tile can be up to ~10s stale right
+after a reconnect. Locally-owned tiles read the live `GameRoom` and have no
+such gap.
+
+**Impact**: cosmetic, and only visible with more than one instance running.
 
 ## WebSocket frame size is bounded only at the HTTP body layer
 

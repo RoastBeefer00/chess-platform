@@ -97,7 +97,9 @@ pub fn MoveNavButtons(tree: RwSignal<MoveTree>, cursor: RwSignal<NodeId>) -> imp
             }
             let uci = t.uci(id);
             if let Ok(parsed) = uci.parse::<shakmaty::uci::UciMove>() {
-                let parent_pos = t.position(t.parent(id).unwrap()).clone();
+                let parent_pos = t
+                    .position(t.parent(id).expect("a displayed move node always has a parent"))
+                    .clone();
                 if let Ok(m) = parsed.to_move(&parent_pos) {
                     sound::play(sound::for_move(t.position(id), &m));
                 }
@@ -131,7 +133,7 @@ pub fn MoveNavButtons(tree: RwSignal<MoveTree>, cursor: RwSignal<NodeId>) -> imp
     let can_back = Signal::derive(move || cursor.get() != 0);
     let can_forward = Signal::derive(move || tree.with(|t| t.first_child(cursor.get()).is_some()));
 
-    let btn_class = "flex-1 py-2.5 text-3xl leading-none font-medium text-zinc-300 border border-zinc-700 rounded-md hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-700 disabled:hover:text-zinc-300";
+    let btn_class = "flex-1 py-2.5 text-3xl leading-none font-medium text-zinc-300 border border-zinc-700 rounded-control hover:border-zinc-500 hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-zinc-700 disabled:hover:text-zinc-300";
 
     view! {
         <div class="flex flex-row items-stretch gap-1.5 w-full">
@@ -166,7 +168,9 @@ pub fn AnalysisMovesPanel(
             // position; `sound::for_move` wants the resulting position.
             let uci = t.uci(id);
             if let Ok(parsed) = uci.parse::<shakmaty::uci::UciMove>() {
-                let parent_pos = t.position(t.parent(id).unwrap()).clone();
+                let parent_pos = t
+                    .position(t.parent(id).expect("a displayed move node always has a parent"))
+                    .clone();
                 if let Ok(m) = parsed.to_move(&parent_pos) {
                     sound::play(sound::for_move(t.position(id), &m));
                 }
@@ -334,7 +338,7 @@ pub fn AnalysisMovesPanel(
         // `MoveNavButtons` instance the caller places wherever makes sense
         // (see that component's doc comment for why).
         view! {
-            <div class="w-full overflow-x-auto flex flex-row items-center gap-2 whitespace-nowrap text-xs font-mono rounded-md bg-zinc-900/60 border border-zinc-800 px-2 py-1.5">
+            <div class="w-full overflow-x-auto flex flex-row items-center gap-2 whitespace-nowrap text-xs font-mono rounded-control bg-zinc-900/60 border border-zinc-800 px-2 py-1.5">
                 {body}
             </div>
         }.into_any()

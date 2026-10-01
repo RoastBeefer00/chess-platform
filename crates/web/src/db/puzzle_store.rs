@@ -1,5 +1,9 @@
-use shared::PuzzleSummary;
+use shared::{PuzzleStats, PuzzleSummary};
 use sqlx::PgPool;
+use uuid::Uuid;
+
+use crate::auth::AuthError;
+use crate::elo;
 
 #[derive(Clone, Debug)]
 pub struct PuzzleStore {
@@ -9,6 +13,122 @@ pub struct PuzzleStore {
 impl PuzzleStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// Records the outcome of `user_id`'s first attempt at `puzzle_id` and
+    /// moves their puzzle rating accordingly, treating the puzzle's own
+    /// rating as the opponent's.
+    ///
+    /// Idempotent per (user, puzzle): a repeat attempt is stored-once by the
+    /// primary key and returns the unchanged stats, so replaying a puzzle
+    /// you've already beaten can't farm rating. That also makes it safe for
+    /// the client to call this without tracking whether it already has.
+    ///
+    /// Returns the stats as of after the attempt.
+    #[tracing::instrument(skip(self), fields(%user_id, %puzzle_id, solved))]
+    pub async fn record_attempt(
+        &self,
+        user_id: Uuid,
+        puzzle_id: &str,
+        solved: bool,
+    ) -> Result<PuzzleStats, AuthError> {
+        let mut tx = self.pool.begin().await?;
+
+        let puzzle_rating: Option<i32> =
+            sqlx::query_scalar!("SELECT rating FROM puzzles WHERE id = $1", puzzle_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some(puzzle_rating) = puzzle_rating else {
+            return Err(AuthError::Internal(format!("no such puzzle: {puzzle_id}")));
+        };
+
+        let current = sqlx::query!(
+            "SELECT rating, games FROM ratings WHERE user_id = $1 AND mode = 'puzzle'",
+            user_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let score = if solved { 1.0 } else { 0.0 };
+        let new_rating = elo::new_rating(current.rating, puzzle_rating, score, current.games);
+
+        // `ON CONFLICT DO NOTHING` is the idempotency gate — everything
+        // below only runs when this actually inserted a row.
+        let inserted = sqlx::query!(
+            r#"INSERT INTO puzzle_attempts
+                   (user_id, puzzle_id, solved, rating_before, rating_after)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT DO NOTHING
+               RETURNING puzzle_id"#,
+            user_id,
+            puzzle_id,
+            solved,
+            current.rating,
+            new_rating,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        if inserted.is_some() {
+            sqlx::query!(
+                r#"UPDATE ratings SET rating = $2, games = games + 1, updated_at = now()
+                   WHERE user_id = $1 AND mode = 'puzzle'"#,
+                user_id,
+                new_rating,
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            sqlx::query!(
+                r#"INSERT INTO rating_history (user_id, mode, rating)
+                   VALUES ($1, 'puzzle', $2)"#,
+                user_id,
+                new_rating,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let stats = Self::stats_tx(&mut tx, user_id).await?;
+        tx.commit().await?;
+        Ok(stats)
+    }
+
+    /// `user_id`'s puzzle rating and solve counts.
+    #[tracing::instrument(skip(self), fields(%user_id))]
+    pub async fn stats(&self, user_id: Uuid) -> Result<PuzzleStats, AuthError> {
+        let mut tx = self.pool.begin().await?;
+        let stats = Self::stats_tx(&mut tx, user_id).await?;
+        tx.commit().await?;
+        Ok(stats)
+    }
+
+    async fn stats_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        user_id: Uuid,
+    ) -> Result<PuzzleStats, AuthError> {
+        let rating: i32 = sqlx::query_scalar!(
+            "SELECT rating FROM ratings WHERE user_id = $1 AND mode = 'puzzle'",
+            user_id,
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+
+        let counts = sqlx::query!(
+            r#"SELECT
+                   COUNT(*) AS "attempted!",
+                   COUNT(*) FILTER (WHERE solved) AS "solved!"
+               FROM puzzle_attempts WHERE user_id = $1"#,
+            user_id,
+        )
+        .fetch_one(&mut **tx)
+        .await?;
+
+        Ok(PuzzleStats {
+            rating,
+            solved: counts.solved.max(0) as u32,
+            attempted: counts.attempted.max(0) as u32,
+        })
     }
 
     /// A uniformly random puzzle matching `themes` (any-of; empty = no
@@ -163,5 +283,92 @@ mod tests {
     async fn by_id_none_for_unknown_id(pool: PgPool) {
         let store = PuzzleStore::new(pool);
         assert!(store.by_id("does-not-exist").await.unwrap().is_none());
+    }
+
+    // ── puzzle progress ──────────────────────────────────────────────────
+
+    async fn insert_user(pool: &PgPool) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query!(
+            "INSERT INTO users (id, email) VALUES ($1, $2)",
+            id,
+            format!("{id}@test.invalid"),
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn fresh_user_starts_at_the_default_puzzle_rating(pool: PgPool) {
+        let store = PuzzleStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+
+        let stats = store.stats(user_id).await.unwrap();
+        assert_eq!(stats, shared::PuzzleStats { rating: 1500, solved: 0, attempted: 0 });
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn solving_raises_the_rating_and_counts_the_solve(pool: PgPool) {
+        let store = PuzzleStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+        insert_puzzle(&pool, "p1", "e2e4 e7e5").await;
+
+        let stats = store.record_attempt(user_id, "p1", true).await.unwrap();
+        assert!(stats.rating > 1500, "a solve at equal rating should gain; got {}", stats.rating);
+        assert_eq!(stats.solved, 1);
+        assert_eq!(stats.attempted, 1);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn failing_lowers_the_rating_but_still_counts_as_attempted(pool: PgPool) {
+        let store = PuzzleStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+        insert_puzzle(&pool, "p1", "e2e4 e7e5").await;
+
+        let stats = store.record_attempt(user_id, "p1", false).await.unwrap();
+        assert!(stats.rating < 1500, "a failure at equal rating should lose; got {}", stats.rating);
+        assert_eq!(stats.solved, 0);
+        assert_eq!(stats.attempted, 1);
+    }
+
+    /// The whole point of the (user, puzzle) primary key: replaying a puzzle
+    /// you have already beaten must not move your rating again.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn re_attempting_the_same_puzzle_is_a_no_op(pool: PgPool) {
+        let store = PuzzleStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+        insert_puzzle(&pool, "p1", "e2e4 e7e5").await;
+
+        let first = store.record_attempt(user_id, "p1", true).await.unwrap();
+        let second = store.record_attempt(user_id, "p1", true).await.unwrap();
+        assert_eq!(first, second, "a repeat attempt must not change anything");
+
+        // Nor does a later *failure* overwrite a recorded success — first
+        // outcome wins, which is what lets the client report from three
+        // different places without coordinating.
+        let third = store.record_attempt(user_id, "p1", false).await.unwrap();
+        assert_eq!(first, third);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn distinct_puzzles_accumulate(pool: PgPool) {
+        let store = PuzzleStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+        insert_puzzle(&pool, "p1", "e2e4 e7e5").await;
+        insert_puzzle(&pool, "p2", "d2d4 d7d5").await;
+
+        store.record_attempt(user_id, "p1", true).await.unwrap();
+        let stats = store.record_attempt(user_id, "p2", false).await.unwrap();
+        assert_eq!(stats.solved, 1);
+        assert_eq!(stats.attempted, 2);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn unknown_puzzle_is_an_error(pool: PgPool) {
+        let store = PuzzleStore::new(pool.clone());
+        let user_id = insert_user(&pool).await;
+        assert!(store.record_attempt(user_id, "nope", true).await.is_err());
     }
 }

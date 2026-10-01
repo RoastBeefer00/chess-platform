@@ -3,7 +3,7 @@ use leptos::prelude::*;
 #[component]
 pub fn Landing() -> impl IntoView {
     view! {
-        <section class="relative min-h-[calc(100dvh-3.5rem)] flex items-center justify-center px-6 overflow-hidden">
+        <section class="relative min-h-below-nav flex items-center justify-center px-6 overflow-hidden">
             // Subtle radial spotlight behind the hero.
             <div class="absolute inset-0 pointer-events-none" style="background: radial-gradient(circle at center, rgba(255,255,255,0.06) 0%, transparent 60%);"></div>
 
@@ -16,7 +16,7 @@ pub fn Landing() -> impl IntoView {
                 </p>
                 <a
                     href="/login"
-                    class="w-full sm:w-auto px-6 py-3 text-sm font-semibold bg-white text-zinc-950 rounded-md hover:bg-zinc-100 transition-colors"
+                    class="w-full sm:w-auto px-6 py-3 text-sm font-semibold bg-white text-zinc-950 rounded-control hover:bg-zinc-100 transition-colors"
                 >
                     "Get started"
                 </a>

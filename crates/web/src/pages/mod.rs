@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod create_username;
+pub mod friends;
 pub mod home;
 pub mod login;
 pub mod not_found;
@@ -11,6 +12,7 @@ pub mod watch;
 
 pub use analysis::AnalysisPage;
 pub use create_username::CreateUsernamePage;
+pub use friends::FriendsPage;
 pub use home::HomePage;
 pub use login::LoginPage;
 pub use not_found::NotFoundPage;

@@ -1,15 +1,509 @@
 @import "tailwindcss";
 @source "../src/**/*.rs";
 
+/* Layout tokens.
+ *
+ * `--nav-h` is the fixed navbar's height. It used to be written out as a
+ * literal `3.5rem` inside six separate `calc(100dvh-3.5rem)` Tailwind
+ * arbitrary values, plus `pt-14` on <main> and `h-14` on the nav itself —
+ * eight places that all had to change together. The nav sets its own height
+ * from this too, so there is exactly one source of truth.
+ *
+ * `--board-chrome` is how much vertical space the player rows, clocks and
+ * move strip take up around a board, so the board can size itself to fill
+ * whatever is left. The `-md` variant is the (smaller) desktop figure, where
+ * the move list sits beside the board instead of under it. */
+:root {
+    --nav-h: 3.5rem;
+    --board-chrome: 15rem;
+    --board-chrome-md: 12.5rem;
+    /* A board with no surrounding player rows at all — the bare
+     * `ChessBoard` default, used by the analysis board and puzzles. */
+    --board-chrome-bare: 11.5rem;
+}
+
+.h-nav {
+    height: var(--nav-h);
+}
+.pt-nav {
+    padding-top: var(--nav-h);
+}
+/* Fill the viewport below the fixed navbar. */
+.min-h-below-nav {
+    min-height: calc(100dvh - var(--nav-h));
+}
+.h-below-nav {
+    height: calc(100dvh - var(--nav-h));
+}
+
+/* A square board sized to the viewport height left over after its chrome,
+ * never wider than the viewport. `board-frame` is the sized wrapper;
+ * `board-frame-max` constrains a fluid child to the same width instead. */
+.board-frame {
+    width: min(100vw, calc(100dvh - var(--board-chrome)));
+}
+.board-frame-max {
+    max-width: min(100vw, calc(100dvh - var(--board-chrome)));
+}
+.board-frame-bare {
+    width: min(100vw, calc(100dvh - var(--board-chrome-bare)));
+}
+@media (min-width: 768px) {
+    /* Matches `board-frame`'s desktop height, for a side column that runs the
+     * full height of the board it sits beside. Defined inside the media query
+     * rather than used as `md:h-board-md` — Tailwind only generates variant
+     * prefixes for its own utilities, so `md:` on a custom class silently
+     * produces nothing. Its only consumer is `hidden md:flex`, so it is never
+     * visible below this breakpoint anyway. */
+    .h-board-md {
+        height: calc(100dvh - var(--board-chrome-md));
+    }
+    .board-frame {
+        width: min(100vw, calc(100dvh - var(--board-chrome-md)));
+    }
+    .board-frame-max {
+        max-width: min(100vw, calc(100dvh - var(--board-chrome-md)));
+    }
+}
+
 @keyframes shimmer {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
 }
 
+/* ---------------------------------------------------------------------------
+ * Design tokens (Direction B — "Board-forward").
+ *
+ * Warm charcoal surfaces and a sage accent pulled from the board's dark
+ * square, chosen over the two alternatives after comparing real renders.
+ *
+ * Worth recording: Tailwind's own `stone` ramp was tried first and rejected.
+ * Against `zinc` at near-black (#0c0a09 vs #09090b) the warmth is simply not
+ * perceptible, so it rendered as a clone of the cool-neutral direction. The
+ * values below are hand-mixed with real saturation, and the surfaces sit
+ * further apart so the tint has somewhere to show.
+ *
+ * Everything is a variable so a future direction change stays a token edit
+ * rather than a sweep through every call site.
+ * ------------------------------------------------------------------------ */
+:root {
+    --color-zinc-950: #14110d;
+    --color-zinc-900: #211c16;
+    --color-zinc-800: #322a21;
+    --color-zinc-700: #493e31;
+    --color-zinc-600: #64563f;
+    --color-zinc-500: #8d7f66;
+    --color-zinc-400: #b4a68a;
+    --color-zinc-300: #ddd2bb;
+    --color-zinc-200: #ece4d5;
+    --color-zinc-100: #f6f1e7;
+    --color-white: #fbf8f1;
+
+    --accent: #4d7c4f;
+    --accent-hover: #5f9461;
+    --accent-fg: #ffffff;
+
+    --radius-control: 0.5rem;
+    --radius-card: 1rem;
+    --display-size: 1.875rem;
+    --display-tracking: -0.025em;
+}
+
+/* Light theme.
+ *
+ * The neutral ramp is *inverted* rather than replaced. The app was written
+ * dark-first, so `zinc-950` always means "furthest back" and `zinc-100`
+ * always means "most prominent text"; flipping the ramp preserves every one
+ * of those relationships across ~380 `zinc-*` usages without touching a
+ * single component. `--color-white` inverts with it, so `text-white` (the
+ * brightest text) becomes the darkest.
+ *
+ * It stays in the warm family rather than reverting to cool grey — otherwise
+ * switching theme would also switch the brand.
+ *
+ * Deliberately NOT inverted: `--color-black`, because `bg-black/60` is the
+ * modal scrim and a dark scrim over a light page is correct; and the board
+ * colours, which have their own tokens below.
+ *
+ * Keyed off `[data-theme]` alone rather than `prefers-color-scheme`: the
+ * inline script in `shell()` resolves the system preference and writes the
+ * attribute before first paint, so there is one source of truth and no
+ * flash. The app is a WASM bundle that does not run without JS anyway. */
+:root[data-theme="light"] {
+    --color-zinc-950: #faf7f2;
+    --color-zinc-900: #ffffff;
+    --color-zinc-800: #e8e0d3;
+    --color-zinc-700: #d6cab6;
+    --color-zinc-600: #a89a80;
+    --color-zinc-500: #8d7f66;
+    --color-zinc-400: #5f5443;
+    --color-zinc-300: #443c30;
+    --color-zinc-200: #322a21;
+    --color-zinc-100: #211c16;
+    --color-zinc-50: #14110d;
+    --color-white: #14110d;
+}
+
+/* ---------------------------------------------------------------------------
+ * Board themes.
+ *
+ * Square colours are deliberately NOT part of the UI ramp above. They are
+ * the board, not chrome: they must look the same whether the surrounding app
+ * is light or dark, and the player picks them independently.
+ *
+ * This also fixes a real bug. `Square` used `bg-white` for light squares,
+ * which rides `--color-white` — so under the light theme's inverted ramp the
+ * board's light squares would have rendered near-black.
+ *
+ * Scoped to `[data-board]` rather than `:root[data-board]` so any element can
+ * carry a theme: the settings swatches each set their own, which is what lets
+ * them preview in their own colours instead of all painting the page's.
+ * ------------------------------------------------------------------------ */
+:root,
+[data-board="green"] {
+    --board-light: #edeed1;
+    --board-dark: #779952;
+}
+[data-board="brown"] {
+    --board-light: #f0d9b5;
+    --board-dark: #b58863;
+}
+[data-board="blue"] {
+    --board-light: #dee3e6;
+    --board-dark: #8ca2ad;
+}
+[data-board="purple"] {
+    --board-light: #e8e3f0;
+    --board-dark: #9f90b0;
+}
+[data-board="grey"] {
+    --board-light: #dcdcdc;
+    --board-dark: #8f8f8f;
+}
+[data-board="wood"] {
+    --board-light: #d8a45b;
+    --board-dark: #8a5a2b;
+}
+
+.sq-light {
+    background-color: var(--board-light);
+}
+.sq-dark {
+    background-color: var(--board-dark);
+}
+/* Last-move / selection tint, derived from the theme rather than fixed, so
+ * every board theme gets a highlight that belongs to it. */
+.sq-light-hl {
+    background-color: color-mix(in srgb, var(--board-light) 62%, #ffe27a);
+}
+.sq-dark-hl {
+    background-color: color-mix(in srgb, var(--board-dark) 62%, #ffe27a);
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Piece sets.
+ *
+ * Driven by `<html data-pieces>` and CSS custom properties rather than a
+ * Rust-side signal feeding an `<img src>`. That is not the obvious design,
+ * so: the signal version did not work. The value reached `BoardPrefs`
+ * correctly (verified by logging) and the settings swatches updated, but the
+ * squares kept rendering the default set. The board *theme* worked throughout
+ * — and the only thing it does differently is go through a DOM attribute.
+ * So pieces now use the same route, which sidesteps whatever the reactive
+ * path was doing and has the side benefit of swapping all 32 pieces in one
+ * style recalculation instead of 32 attribute writes.
+ *
+ * Generated: 12 sets x 12 pieces. Keep in sync with `shared::PIECE_SETS`;
+ * `shared`'s `every_listed_piece_set_is_vendored` test guards the asset side.
+ * ------------------------------------------------------------------------ */
+:root,
+[data-pieces="alpha"] {
+    --piece-wK: url('/piece/alpha/wK.svg');
+    --piece-wQ: url('/piece/alpha/wQ.svg');
+    --piece-wR: url('/piece/alpha/wR.svg');
+    --piece-wB: url('/piece/alpha/wB.svg');
+    --piece-wN: url('/piece/alpha/wN.svg');
+    --piece-wP: url('/piece/alpha/wP.svg');
+    --piece-bK: url('/piece/alpha/bK.svg');
+    --piece-bQ: url('/piece/alpha/bQ.svg');
+    --piece-bR: url('/piece/alpha/bR.svg');
+    --piece-bB: url('/piece/alpha/bB.svg');
+    --piece-bN: url('/piece/alpha/bN.svg');
+    --piece-bP: url('/piece/alpha/bP.svg');
+}
+[data-pieces="cburnett"] {
+    --piece-wK: url('/piece/cburnett/wK.svg');
+    --piece-wQ: url('/piece/cburnett/wQ.svg');
+    --piece-wR: url('/piece/cburnett/wR.svg');
+    --piece-wB: url('/piece/cburnett/wB.svg');
+    --piece-wN: url('/piece/cburnett/wN.svg');
+    --piece-wP: url('/piece/cburnett/wP.svg');
+    --piece-bK: url('/piece/cburnett/bK.svg');
+    --piece-bQ: url('/piece/cburnett/bQ.svg');
+    --piece-bR: url('/piece/cburnett/bR.svg');
+    --piece-bB: url('/piece/cburnett/bB.svg');
+    --piece-bN: url('/piece/cburnett/bN.svg');
+    --piece-bP: url('/piece/cburnett/bP.svg');
+}
+[data-pieces="merida"] {
+    --piece-wK: url('/piece/merida/wK.svg');
+    --piece-wQ: url('/piece/merida/wQ.svg');
+    --piece-wR: url('/piece/merida/wR.svg');
+    --piece-wB: url('/piece/merida/wB.svg');
+    --piece-wN: url('/piece/merida/wN.svg');
+    --piece-wP: url('/piece/merida/wP.svg');
+    --piece-bK: url('/piece/merida/bK.svg');
+    --piece-bQ: url('/piece/merida/bQ.svg');
+    --piece-bR: url('/piece/merida/bR.svg');
+    --piece-bB: url('/piece/merida/bB.svg');
+    --piece-bN: url('/piece/merida/bN.svg');
+    --piece-bP: url('/piece/merida/bP.svg');
+}
+[data-pieces="maestro"] {
+    --piece-wK: url('/piece/maestro/wK.svg');
+    --piece-wQ: url('/piece/maestro/wQ.svg');
+    --piece-wR: url('/piece/maestro/wR.svg');
+    --piece-wB: url('/piece/maestro/wB.svg');
+    --piece-wN: url('/piece/maestro/wN.svg');
+    --piece-wP: url('/piece/maestro/wP.svg');
+    --piece-bK: url('/piece/maestro/bK.svg');
+    --piece-bQ: url('/piece/maestro/bQ.svg');
+    --piece-bR: url('/piece/maestro/bR.svg');
+    --piece-bB: url('/piece/maestro/bB.svg');
+    --piece-bN: url('/piece/maestro/bN.svg');
+    --piece-bP: url('/piece/maestro/bP.svg');
+}
+[data-pieces="fresca"] {
+    --piece-wK: url('/piece/fresca/wK.svg');
+    --piece-wQ: url('/piece/fresca/wQ.svg');
+    --piece-wR: url('/piece/fresca/wR.svg');
+    --piece-wB: url('/piece/fresca/wB.svg');
+    --piece-wN: url('/piece/fresca/wN.svg');
+    --piece-wP: url('/piece/fresca/wP.svg');
+    --piece-bK: url('/piece/fresca/bK.svg');
+    --piece-bQ: url('/piece/fresca/bQ.svg');
+    --piece-bR: url('/piece/fresca/bR.svg');
+    --piece-bB: url('/piece/fresca/bB.svg');
+    --piece-bN: url('/piece/fresca/bN.svg');
+    --piece-bP: url('/piece/fresca/bP.svg');
+}
+[data-pieces="gioco"] {
+    --piece-wK: url('/piece/gioco/wK.svg');
+    --piece-wQ: url('/piece/gioco/wQ.svg');
+    --piece-wR: url('/piece/gioco/wR.svg');
+    --piece-wB: url('/piece/gioco/wB.svg');
+    --piece-wN: url('/piece/gioco/wN.svg');
+    --piece-wP: url('/piece/gioco/wP.svg');
+    --piece-bK: url('/piece/gioco/bK.svg');
+    --piece-bQ: url('/piece/gioco/bQ.svg');
+    --piece-bR: url('/piece/gioco/bR.svg');
+    --piece-bB: url('/piece/gioco/bB.svg');
+    --piece-bN: url('/piece/gioco/bN.svg');
+    --piece-bP: url('/piece/gioco/bP.svg');
+}
+[data-pieces="governor"] {
+    --piece-wK: url('/piece/governor/wK.svg');
+    --piece-wQ: url('/piece/governor/wQ.svg');
+    --piece-wR: url('/piece/governor/wR.svg');
+    --piece-wB: url('/piece/governor/wB.svg');
+    --piece-wN: url('/piece/governor/wN.svg');
+    --piece-wP: url('/piece/governor/wP.svg');
+    --piece-bK: url('/piece/governor/bK.svg');
+    --piece-bQ: url('/piece/governor/bQ.svg');
+    --piece-bR: url('/piece/governor/bR.svg');
+    --piece-bB: url('/piece/governor/bB.svg');
+    --piece-bN: url('/piece/governor/bN.svg');
+    --piece-bP: url('/piece/governor/bP.svg');
+}
+[data-pieces="dubrovny"] {
+    --piece-wK: url('/piece/dubrovny/wK.svg');
+    --piece-wQ: url('/piece/dubrovny/wQ.svg');
+    --piece-wR: url('/piece/dubrovny/wR.svg');
+    --piece-wB: url('/piece/dubrovny/wB.svg');
+    --piece-wN: url('/piece/dubrovny/wN.svg');
+    --piece-wP: url('/piece/dubrovny/wP.svg');
+    --piece-bK: url('/piece/dubrovny/bK.svg');
+    --piece-bQ: url('/piece/dubrovny/bQ.svg');
+    --piece-bR: url('/piece/dubrovny/bR.svg');
+    --piece-bB: url('/piece/dubrovny/bB.svg');
+    --piece-bN: url('/piece/dubrovny/bN.svg');
+    --piece-bP: url('/piece/dubrovny/bP.svg');
+}
+[data-pieces="staunty"] {
+    --piece-wK: url('/piece/staunty/wK.svg');
+    --piece-wQ: url('/piece/staunty/wQ.svg');
+    --piece-wR: url('/piece/staunty/wR.svg');
+    --piece-wB: url('/piece/staunty/wB.svg');
+    --piece-wN: url('/piece/staunty/wN.svg');
+    --piece-wP: url('/piece/staunty/wP.svg');
+    --piece-bK: url('/piece/staunty/bK.svg');
+    --piece-bQ: url('/piece/staunty/bQ.svg');
+    --piece-bR: url('/piece/staunty/bR.svg');
+    --piece-bB: url('/piece/staunty/bB.svg');
+    --piece-bN: url('/piece/staunty/bN.svg');
+    --piece-bP: url('/piece/staunty/bP.svg');
+}
+[data-pieces="horsey"] {
+    --piece-wK: url('/piece/horsey/wK.svg');
+    --piece-wQ: url('/piece/horsey/wQ.svg');
+    --piece-wR: url('/piece/horsey/wR.svg');
+    --piece-wB: url('/piece/horsey/wB.svg');
+    --piece-wN: url('/piece/horsey/wN.svg');
+    --piece-wP: url('/piece/horsey/wP.svg');
+    --piece-bK: url('/piece/horsey/bK.svg');
+    --piece-bQ: url('/piece/horsey/bQ.svg');
+    --piece-bR: url('/piece/horsey/bR.svg');
+    --piece-bB: url('/piece/horsey/bB.svg');
+    --piece-bN: url('/piece/horsey/bN.svg');
+    --piece-bP: url('/piece/horsey/bP.svg');
+}
+[data-pieces="anarcandy"] {
+    --piece-wK: url('/piece/anarcandy/wK.svg');
+    --piece-wQ: url('/piece/anarcandy/wQ.svg');
+    --piece-wR: url('/piece/anarcandy/wR.svg');
+    --piece-wB: url('/piece/anarcandy/wB.svg');
+    --piece-wN: url('/piece/anarcandy/wN.svg');
+    --piece-wP: url('/piece/anarcandy/wP.svg');
+    --piece-bK: url('/piece/anarcandy/bK.svg');
+    --piece-bQ: url('/piece/anarcandy/bQ.svg');
+    --piece-bR: url('/piece/anarcandy/bR.svg');
+    --piece-bB: url('/piece/anarcandy/bB.svg');
+    --piece-bN: url('/piece/anarcandy/bN.svg');
+    --piece-bP: url('/piece/anarcandy/bP.svg');
+}
+[data-pieces="celtic"] {
+    --piece-wK: url('/piece/celtic/wK.svg');
+    --piece-wQ: url('/piece/celtic/wQ.svg');
+    --piece-wR: url('/piece/celtic/wR.svg');
+    --piece-wB: url('/piece/celtic/wB.svg');
+    --piece-wN: url('/piece/celtic/wN.svg');
+    --piece-wP: url('/piece/celtic/wP.svg');
+    --piece-bK: url('/piece/celtic/bK.svg');
+    --piece-bQ: url('/piece/celtic/bQ.svg');
+    --piece-bR: url('/piece/celtic/bR.svg');
+    --piece-bB: url('/piece/celtic/bB.svg');
+    --piece-bN: url('/piece/celtic/bN.svg');
+    --piece-bP: url('/piece/celtic/bP.svg');
+}
+
+/* One class per piece, resolving to whichever set is active. */
+.pc {
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
+}
+.pc-wK { background-image: var(--piece-wK); }
+.pc-wQ { background-image: var(--piece-wQ); }
+.pc-wR { background-image: var(--piece-wR); }
+.pc-wB { background-image: var(--piece-wB); }
+.pc-wN { background-image: var(--piece-wN); }
+.pc-wP { background-image: var(--piece-wP); }
+.pc-bK { background-image: var(--piece-bK); }
+.pc-bQ { background-image: var(--piece-bQ); }
+.pc-bR { background-image: var(--piece-bR); }
+.pc-bB { background-image: var(--piece-bB); }
+.pc-bN { background-image: var(--piece-bN); }
+.pc-bP { background-image: var(--piece-bP); }
+
+/* Section labels. Three near-identical spellings of this had accumulated
+ * (`text-[11px]/0.14em`, `text-[10px]/0.12em`, `text-xs/tracking-wider`);
+ * these are the two that survive — `eyebrow` for a section heading, `-sm`
+ * for the tighter inline variant used inside cards and tiles.
+ *
+ * Colour is deliberately NOT set here. These are unlayered rules, so they
+ * beat Tailwind's layered utilities on the cascade — baking in `text-zinc-500`
+ * would make `text-emerald-400` alongside it silently do nothing. */
+.eyebrow {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+}
+.eyebrow-sm {
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+}
+
+/* ---------------------------------------------------------------------------
+ * Clock states.
+ *
+ * The running clock is an inverted chip: brightest surface, darkest text. It
+ * has to stay that way in both themes, which raw utilities could not manage —
+ * it was `bg-zinc-100 text-black`, and while `zinc-100` inverts with the ramp
+ * (near-white in dark, near-black in light) `black` does not, so light mode
+ * put black text on a near-black chip.
+ *
+ * Pairing 100 against 950 works because they invert *together*: whichever way
+ * round the ramp is, those two are still its opposite ends.
+ *
+ * The low-time state is the opposite case — its red is a fixed alarm colour
+ * that must not follow the ramp at all, so both halves are literal.
+ * ------------------------------------------------------------------------ */
+.clock-running {
+    background-color: var(--color-zinc-100);
+    color: var(--color-zinc-950);
+}
+.clock-low {
+    background-color: #dc2626;
+    color: #ffffff;
+}
+
+/* Token-driven primitives. The point of these is that a direction change is
+ * a variable change, not an edit to every call site. */
+.btn-primary {
+    background-color: var(--accent);
+    color: var(--accent-fg);
+    border-radius: var(--radius-control);
+    transition: background-color 150ms;
+}
+.btn-primary:hover {
+    background-color: var(--accent-hover);
+}
+.accent-text {
+    color: var(--accent);
+}
+/* Selection ring for pickers. Solid rather than mixed toward transparent —
+ * at 45% over a dark surface it read as barely-there grey. */
+.accent-ring {
+    border-color: var(--accent);
+}
+.surface-card {
+    background-color: var(--color-zinc-900);
+    border: 1px solid var(--color-zinc-800);
+    border-radius: var(--radius-card);
+}
+.rounded-control {
+    border-radius: var(--radius-control);
+}
+.rounded-card {
+    border-radius: var(--radius-card);
+}
+/* The missing rung in the type ramp: the site otherwise jumps straight from
+ * `text-sm` body to `text-3xl` page titles with nothing in between.
+ *
+ * `font-size`/`font-weight` are set explicitly because Tailwind's preflight
+ * resets headings to `inherit`; a bare utility-less <h1> would otherwise
+ * render at body size. */
+.display-1 {
+    font-size: var(--display-size);
+    font-weight: 700;
+    letter-spacing: var(--display-tracking);
+    line-height: 1.05;
+}
+/* Hardcoded hex rather than `var(--color-zinc-*)` because a gradient needs
+ * three related stops, not one token — so it gets an explicit light variant
+ * below instead of riding the ramp inversion. */
 .skeleton-shimmer {
     background: linear-gradient(90deg, #27272a 25%, #3f3f46 50%, #27272a 75%);
     background-size: 200% 100%;
     animation: shimmer 1.8s ease-in-out infinite;
+}
+:root[data-theme="light"] .skeleton-shimmer {
+    background: linear-gradient(90deg, #e4e4e7 25%, #f4f4f5 50%, #e4e4e7 75%);
+    background-size: 200% 100%;
 }
 
 .scrollbar-none {

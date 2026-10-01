@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_meta::Title;
 use leptos_router::{lazy_route, LazyRoute};
 
 use crate::components::WatchGrid;
@@ -13,6 +14,10 @@ impl LazyRoute for WatchPage {
     }
 
     fn view(_data: Self) -> AnyView {
-        view! { <WatchGrid/> }.into_any()
+        view! {
+            <Title text="Watch"/>
+            <WatchGrid/>
+        }
+        .into_any()
     }
 }

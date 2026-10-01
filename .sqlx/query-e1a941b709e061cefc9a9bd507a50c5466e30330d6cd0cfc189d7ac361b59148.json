@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT rating, games FROM ratings WHERE user_id = $1 AND mode = 'puzzle'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rating",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "games",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "e1a941b709e061cefc9a9bd507a50c5466e30330d6cd0cfc189d7ac361b59148"
+}

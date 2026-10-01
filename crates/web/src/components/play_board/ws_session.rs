@@ -40,6 +40,16 @@ pub(super) struct SessionState {
     pub black_connected: RwSignal<bool>,
     pub self_rtt_ms: RwSignal<Option<u32>>,
     pub self_ws_connected: RwSignal<bool>,
+    /// True once the socket has delivered authoritative clocks.
+    ///
+    /// `PlayBoard` also seeds the clocks from its `get_game_info` resource,
+    /// and the two race: whichever lands second wins. When the resource was
+    /// the slower of the two, its older snapshot overwrote a clock the
+    /// socket had already synced, and the display jumped backwards. The
+    /// resource now defers to the socket once this is set.
+    pub ws_clock_seen: RwSignal<bool>,
+    /// Client-side route change, for the rematch hand-off.
+    pub navigate: Callback<String>,
 }
 
 #[derive(Copy, Clone)]
@@ -47,6 +57,15 @@ pub(super) struct SessionHandles {
     pub current_tx: StoredValue<Option<mpsc::UnboundedSender<GameClientMessage>>, LocalStorage>,
     pub last_sent_uci: StoredValue<Option<String>, LocalStorage>,
     pub offset_samples: StoredValue<Vec<(i64, i64)>, LocalStorage>,
+    /// Set by `PlayBoard`'s `on_cleanup` when the component goes away.
+    ///
+    /// `spawn_local` is not tied to the spawning component's lifetime, so
+    /// without this the reconnect loop below outlives the board: navigating
+    /// off a game (to the home page, a profile, anywhere) left that game's
+    /// WebSocket open and, worse, reconnecting forever in the background,
+    /// writing into signals nothing renders any more. Same shape as
+    /// `WatchGrid`'s own cancellation flag.
+    pub cancelled: StoredValue<bool, LocalStorage>,
 }
 
 pub(super) async fn run_session(
@@ -65,6 +84,9 @@ pub(super) async fn run_session(
 
     let mut backoff_ms: u32 = 500;
     loop {
+        if h.cancelled.get_value() {
+            return;
+        }
         let (tx, rx) = mpsc::unbounded::<GameClientMessage>();
         h.current_tx.set_value(Some(tx.clone()));
         if tx
@@ -162,6 +184,7 @@ pub(super) async fn run_session(
                             sent_at_ms: server_sent_at,
                         } => {
                             use shakmaty::{uci::UciMove, Position as _};
+                            s.ws_clock_seen.set(true);
                             s.white_ms.set(white_ms_left);
                             s.black_ms.set(black_ms_left);
                             s.sent_at_ms.set(server_sent_at);
@@ -193,9 +216,7 @@ pub(super) async fn run_session(
                             if let Some(from) = m.from() {
                                 s.last_move.set(Some((from, m.to())));
                             }
-                            let sound_src = sound::for_move(&new_pos, &m);
-                            leptos::logging::log!("move sound (incoming): {sound_src}");
-                            sound::play(sound_src);
+                            sound::play(sound::for_move(&new_pos, &m));
                             let is_my_turn = s
                                 .player_role
                                 .get_untracked()
@@ -293,6 +314,7 @@ pub(super) async fn run_session(
                             sent_at_ms: server_sent_at,
                             clock_running: running,
                         } => {
+                            s.ws_clock_seen.set(true);
                             s.white_ms.set(w_ms);
                             s.black_ms.set(b_ms);
                             s.sent_at_ms.set(server_sent_at);
@@ -321,6 +343,7 @@ pub(super) async fn run_session(
                             }
                             s.set_move_history.set(moves);
                             s.premoves.set(vec![]);
+                            s.ws_clock_seen.set(true);
                             s.white_ms.set(w_ms);
                             s.black_ms.set(b_ms);
                             s.sent_at_ms.set(server_sent_at);
@@ -340,9 +363,15 @@ pub(super) async fn run_session(
                             }
                         }
                         GameServerMessage::RematchAccept { new_game_id } => {
-                            let url = format!("/game/{new_game_id}");
-                            let _ = web_sys::window()
-                                .and_then(|w| w.location().set_href(&url).ok());
+                            // In-app navigation, not `location.set_href` — a
+                            // full reload here tore down the whole WASM
+                            // runtime and re-fetched every asset between two
+                            // games of the same series. Safe now that
+                            // `ChessBoard` removes its window listeners and
+                            // this session cancels itself on unmount; before
+                            // those two fixes, remounting the board left
+                            // stale listeners firing at disposed signals.
+                            s.navigate.run(format!("/game/{new_game_id}"));
                         }
                         GameServerMessage::RematchDecline => {
                             s.rematch_state.set(RematchState::Declined);
@@ -401,6 +430,9 @@ pub(super) async fn run_session(
             }
         }
 
+        if h.cancelled.get_value() {
+            return;
+        }
         s.self_ws_connected.set(false);
         s.self_rtt_ms.set(None);
         h.current_tx.set_value(None);

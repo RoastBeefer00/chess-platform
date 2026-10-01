@@ -5,7 +5,10 @@
 -- ARGV[4]  = rated ("1"/"0")
 -- ARGV[5]  = fen
 -- ARGV[6]  = owner_instance (the adopting instance)
--- ARGV[7]  = TTL in seconds
+-- ARGV[7]  = white_ms_left
+-- ARGV[8]  = black_ms_left
+-- ARGV[9]  = clock_sent_at_ms (server UNIX epoch ms the clocks are true as of)
+-- ARGV[10] = TTL in seconds
 --
 -- Atomic compare-and-set for game adoption: claims ownership of a game
 -- whose active_games hash is missing (heartbeat lapsed / never existed),
@@ -30,7 +33,10 @@ redis.call('HSET', key,
   'category', ARGV[3],
   'rated', ARGV[4],
   'fen', ARGV[5],
-  'owner_instance', ARGV[6]
+  'owner_instance', ARGV[6],
+  'white_ms', ARGV[7],
+  'black_ms', ARGV[8],
+  'clock_at', ARGV[9]
 )
-redis.call('EXPIRE', key, tonumber(ARGV[7]))
+redis.call('EXPIRE', key, tonumber(ARGV[10]))
 return 1

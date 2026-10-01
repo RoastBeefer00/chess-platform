@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_meta::Title;
 use leptos_router::{hooks::use_params_map, lazy_route, LazyRoute};
 use uuid::Uuid;
 
@@ -23,6 +24,7 @@ impl LazyRoute for PlayPage {
         };
 
         view! {
+            <Title text="Game"/>
             <div>
                 {move || game_id().map(|id| view! { <PlayBoard game_id=id /> })}
             </div>

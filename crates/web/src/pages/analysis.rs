@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_meta::Title;
 use leptos_router::{hooks::use_query_map, lazy_route, LazyRoute};
 use uuid::Uuid;
 
@@ -35,6 +36,7 @@ impl LazyRoute for AnalysisPage {
         };
 
         view! {
+            <Title text="Analysis"/>
             <AnalysisBoard game_id={Signal::derive(game_id)} puzzle={Signal::derive(puzzle_load)}/>
         }
         .into_any()

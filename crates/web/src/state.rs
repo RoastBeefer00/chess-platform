@@ -16,7 +16,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::auth::{AuthBackend, AuthError};
-use crate::db::{FriendStore, GameStore, PuzzleStore, RatingStore, UserStore};
+use crate::db::{FriendStore, GameOutcomeLookup, GameStore, PuzzleStore, RatingStore, UserStore};
 use crate::game_room::GameRoom;
 
 pub type GameId = Uuid;
@@ -87,6 +87,13 @@ impl PendingChallenge {
 /// on both `challenge:{id}` and `mm:pending:{user_id}`.
 const CHALLENGE_TTL_SECS: i64 = 60;
 const PENDING_MATCH_TTL_SECS: i64 = 60;
+
+/// How long a finished room sticks around after its last session closes
+/// before `AppState::evict_finished_rooms` drops it. Long enough to cover a
+/// mobile client that suspended its WebSocket mid-result and comes back to
+/// replay `GameOver`, plus the rematch decision, which is a live back-and-
+/// forth between two people on a modal — neither takes minutes.
+const FINISHED_ROOM_GRACE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 #[derive(FromRef, Clone, Debug)]
 pub struct AppState {
@@ -162,32 +169,12 @@ impl AppState {
             Fen::from_position(&game.get_position(), EnPassantMode::Legal).to_string()
         };
 
-        // Started before insertion so the very first heartbeat can never
-        // race a lookup finding the room but not yet ticking. Aborted in
-        // `GameRoom::end_game`, same as `timeout_task`/`abort_task`.
-        let heartbeat_redis = self.redis_client.clone();
-        let heartbeat_category = game_config.time_control.category().to_string();
-        let heartbeat_rated = game_config.rated.is_rated();
-        let heartbeat_fen = start_fen.clone();
-        game.heartbeat_task = Some(tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS)).await;
-                heartbeat_redis
-                    .heartbeat_active_game(
-                        game_id,
-                        white_player,
-                        black_player,
-                        &heartbeat_category,
-                        heartbeat_rated,
-                        &heartbeat_fen,
-                    )
-                    .await;
-            }
-        }));
-
-        let mut games = self.games.lock().await;
-        games.insert(game_id, Arc::new(Mutex::new(game)));
-        drop(games);
+        // The DB row comes first. Everything after this point — the heartbeat
+        // task, the `games` entry, the Redis ownership record — is process
+        // state with no owner but this function, so creating any of it before
+        // the write that can still fail means a failure strands it: the room
+        // and its heartbeat would tick on forever against a game that doesn't
+        // exist, with nothing left holding a handle to stop them.
         let initial_time_seconds = (game_config.time_control.initial_time / 1000) as i32;
         let time_increment_seconds = match game_config.time_control.mode {
             shared::TimeMode::Increment(ms) => (ms / 1000) as i32,
@@ -207,6 +194,42 @@ impl AppState {
             .await?;
         tracing::info!(%game_id, "game_created");
 
+        // Started before insertion so the very first heartbeat can never
+        // race a lookup finding the room but not yet ticking. Aborted in
+        // `GameRoom::end_game`, same as `timeout_task`/`abort_task`.
+        let heartbeat_redis = self.redis_client.clone();
+        let heartbeat_category = game_config.time_control.category().to_string();
+        let heartbeat_rated = game_config.rated.is_rated();
+        let heartbeat_fen = start_fen.clone();
+        let initial_ms = game_config.time_control.initial_time;
+        game.heartbeat_task = Some(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS)).await;
+                heartbeat_redis
+                    .heartbeat_active_game(
+                        game_id,
+                        white_player,
+                        black_player,
+                        &heartbeat_category,
+                        heartbeat_rated,
+                        &heartbeat_fen,
+                        // Between moves the mirrored clocks are only a
+                        // fallback for recreating a lost record; the move
+                        // path keeps them current. See update_fen_game.lua.
+                        ActiveGameClocks {
+                            white_ms_left: initial_ms,
+                            black_ms_left: initial_ms,
+                            sent_at_ms: now_epoch_ms(),
+                        },
+                    )
+                    .await;
+            }
+        }));
+
+        let mut games = self.games.lock().await;
+        games.insert(game_id, Arc::new(Mutex::new(game)));
+        drop(games);
+
         // Cross-instance watch-grid roster index + ownership record — see
         // `RedisClient::active_game_upsert`. `instance_id()` is this
         // process's own identity, so any other instance's routing
@@ -220,6 +243,11 @@ impl AppState {
                 game_config.rated.is_rated(),
                 &start_fen,
                 &instance_id(),
+                ActiveGameClocks {
+                    white_ms_left: game_config.time_control.initial_time,
+                    black_ms_left: game_config.time_control.initial_time,
+                    sent_at_ms: now_epoch_ms(),
+                },
             )
             .await;
 
@@ -296,12 +324,18 @@ impl AppState {
             }
         };
 
-        // Check-then-insert must happen under the same guard as the Redis
-        // claim below — otherwise two reconnects racing on this instance
-        // (or a reaper sweep racing a reconnect) could both pass the
-        // `games.get` check before either claims ownership.
-        let mut games = self.games.lock().await;
-        if let Some(existing) = games.get(&game_id) {
+        // Fast path: somebody already adopted it on this instance.
+        //
+        // The lock is deliberately NOT held across the Redis claim below —
+        // `self.games` is the lock every `get_game_room` on this process
+        // takes, so holding it for a network round trip stalls all of them.
+        // Correctness doesn't need it to be: the claim is itself the
+        // cross-instance mutual exclusion (an atomic set-if-absent, see
+        // `claim_game.lua`), so at most one caller anywhere can come out of
+        // it holding `won`. Two local callers racing therefore can't both
+        // reach the insert, and the re-check under the lock afterwards
+        // covers the remaining ordering.
+        if let Some(existing) = self.games.lock().await.get(&game_id) {
             return AdoptOutcome::Adopted(existing.clone());
         }
 
@@ -309,6 +343,11 @@ impl AppState {
         let fen = {
             use shakmaty::{fen::Fen, EnPassantMode};
             Fen::from_position(&room.get_position(), EnPassantMode::Legal).to_string()
+        };
+        let adopted_clocks = ActiveGameClocks {
+            white_ms_left: room.game.white_ms_left,
+            black_ms_left: room.game.black_ms_left,
+            sent_at_ms: now_epoch_ms(),
         };
         let won = self
             .redis_client
@@ -320,6 +359,7 @@ impl AppState {
                 row.rated,
                 &fen,
                 &instance_id(),
+                adopted_clocks,
             )
             .await;
         if !won {
@@ -350,14 +390,26 @@ impl AppState {
                         &heartbeat_category,
                         heartbeat_rated,
                         &heartbeat_fen,
+                        adopted_clocks,
                     )
                     .await;
             }
         }));
 
         let room_arc = Arc::new(Mutex::new(room));
-        games.insert(game_id, room_arc.clone());
-        drop(games);
+        {
+            let mut games = self.games.lock().await;
+            // Re-check: another task on this instance could have inserted
+            // while we were in Redis. It can't have won the claim (we did),
+            // so whatever is there came from a path that doesn't conflict —
+            // defer to it and drop the room we built rather than replace a
+            // handle other sessions may already be holding.
+            if let Some(existing) = games.get(&game_id) {
+                room_arc.lock().await.abort_tasks();
+                return AdoptOutcome::Adopted(existing.clone());
+            }
+            games.insert(game_id, room_arc.clone());
+        }
         tracing::info!(%game_id, "game_adopted");
 
         // Re-arm the flag-fall timer. Safe even for a zero-move (still
@@ -374,6 +426,68 @@ impl AppState {
         room_arc.lock().await.timeout_task = Some(timeout_handle);
 
         AdoptOutcome::Adopted(room_arc)
+    }
+
+    /// Whether this instance is holding any game rooms at all.
+    ///
+    /// Gates the periodic reconcile loop in `main.rs`. The point is not to
+    /// save the work — it's that an instance holding nothing must issue no
+    /// database queries, so a serverless Postgres can suspend its compute
+    /// instead of billing around the clock for an app with no players.
+    pub async fn has_live_rooms(&self) -> bool {
+        !self.games.lock().await.is_empty()
+    }
+
+    /// Drops finished rooms nobody is connected to any more.
+    ///
+    /// `self.games` previously only ever grew: nothing removed from it, so
+    /// every game a process ever hosted kept its `GameRoom` — full move
+    /// history, clock history, repetition table and broadcast channel — for
+    /// the life of the process. That's an unbounded leak, and it also made
+    /// the watch grid's roster pass lock every long-dead room on every tick.
+    ///
+    /// A finished room can't be dropped the instant it ends: a reconnecting
+    /// client replays `GameOver` off it, and the rematch flow reads
+    /// `session_score` off it. So eviction waits for both no connected
+    /// sessions and `FINISHED_ROOM_GRACE` since the game ended. Past that a
+    /// reconnect falls back to the DB (see the `Unadoptable` branch in
+    /// `websocket.rs`), which still replays a real result.
+    ///
+    /// Returns how many rooms were dropped.
+    #[tracing::instrument(skip(self))]
+    pub async fn evict_finished_rooms(&self) -> usize {
+        let mut evicted = Vec::new();
+        {
+            let mut games = self.games.lock().await;
+            let mut keep = HashMap::with_capacity(games.len());
+            for (game_id, room) in games.drain() {
+                let drop_it = {
+                    let gr = room.lock().await;
+                    matches!(gr.status, GameStatus::Finished(_))
+                        && gr.connected.is_empty()
+                        && gr
+                            .finished_at
+                            .is_some_and(|t| t.elapsed() >= FINISHED_ROOM_GRACE)
+                };
+                if drop_it {
+                    evicted.push(room);
+                } else {
+                    keep.insert(game_id, room);
+                }
+            }
+            *games = keep;
+        }
+
+        // Outside the map lock: `end_game` already aborted these, but a room
+        // that reached `Finished` by some other route shouldn't leave tasks
+        // running just because this is the thing that noticed.
+        for room in &evicted {
+            room.lock().await.abort_tasks();
+        }
+        if !evicted.is_empty() {
+            tracing::debug!(count = evicted.len(), "evicted finished game rooms");
+        }
+        evicted.len()
     }
 
     /// Removes a finished/aborted game's entry from the cross-instance
@@ -480,15 +594,15 @@ impl AppState {
             if !is_ongoing {
                 continue;
             }
-            let outcome = match self.game_store.get_finished_outcome(game_id).await {
-                Ok(Some(outcome)) => outcome,
-                Ok(None) => continue,
+            let (winner, reason) = match self.game_store.get_finished_outcome(game_id).await {
+                Ok(GameOutcomeLookup::Ended { winner, reason }) => (winner, reason),
+                // Row gone, or still active — nothing to correct either way.
+                Ok(_) => continue,
                 Err(e) => {
                     tracing::warn!(?e, %game_id, "reconcile_local_rooms_against_db: failed to check DB status");
                     continue;
                 }
             };
-            let (winner, reason) = outcome;
             room.lock().await.sync_finished_from_db(winner, reason.clone());
             self.redis_client.active_game_remove(game_id).await;
             resynced += 1;
@@ -624,6 +738,17 @@ impl AppState {
 /// This process's own identity — `FLY_MACHINE_ID` in production (injected
 /// automatically by Fly Machines), a fixed fallback in local dev where
 /// there's only ever one instance anyway.
+/// Server wall-clock in UNIX epoch ms — the basis for every clock snapshot
+/// that crosses an instance boundary (see `update_fen_game.lua`). Epoch, not
+/// `Instant`, precisely because it has to mean the same thing on the machine
+/// that reads it as on the one that wrote it.
+pub(crate) fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 pub(crate) fn instance_id() -> String {
     std::env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "local".to_string())
 }
@@ -749,12 +874,16 @@ pub struct RedisClient {
     presence_hash: String,
     claim_game_hash: String,
     heartbeat_game_hash: String,
+    upsert_game_hash: String,
+    update_fen_hash: String,
 }
 
 const FIND_PAIR_SCRIPT: &str = include_str!("matchmaking/find_pair.lua");
 const PRESENCE_SCRIPT: &str = include_str!("friends/presence.lua");
 const CLAIM_GAME_SCRIPT: &str = include_str!("claim_game.lua");
 const HEARTBEAT_GAME_SCRIPT: &str = include_str!("heartbeat_game.lua");
+const UPSERT_GAME_SCRIPT: &str = include_str!("upsert_game.lua");
+const UPDATE_FEN_SCRIPT: &str = include_str!("update_fen_game.lua");
 
 /// TTL on `active_games:{id}` — the heartbeat for game ownership. Renewed
 /// every `ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS` by `GameRoom::heartbeat_task`
@@ -776,6 +905,8 @@ impl RedisClient {
         let presence_hash = Self::load_script(&pool, PRESENCE_SCRIPT).await;
         let claim_game_hash = Self::load_script(&pool, CLAIM_GAME_SCRIPT).await;
         let heartbeat_game_hash = Self::load_script(&pool, HEARTBEAT_GAME_SCRIPT).await;
+        let upsert_game_hash = Self::load_script(&pool, UPSERT_GAME_SCRIPT).await;
+        let update_fen_hash = Self::load_script(&pool, UPDATE_FEN_SCRIPT).await;
 
         subscriber.connect();
         subscriber
@@ -799,7 +930,15 @@ impl RedisClient {
             }
         });
 
-        Self { pool, find_pair_hash, presence_hash, claim_game_hash, heartbeat_game_hash }
+        Self {
+            pool,
+            find_pair_hash,
+            presence_hash,
+            claim_game_hash,
+            heartbeat_game_hash,
+            upsert_game_hash,
+            update_fen_hash,
+        }
     }
 
     async fn load_script(pool: &fred::clients::Pool, script: &str) -> String {
@@ -1070,22 +1209,32 @@ impl RedisClient {
         rated: bool,
         fen: &str,
         owner_instance: &str,
+        clocks: ActiveGameClocks,
     ) {
         let key = format!("active_games:{game_id}");
-        let fields: Vec<(&str, String)> = vec![
-            ("white_id", white_id.to_string()),
-            ("black_id", black_id.to_string()),
-            ("category", category.to_string()),
-            ("rated", if rated { "1" } else { "0" }.to_string()),
-            ("fen", fen.to_string()),
-            ("owner_instance", owner_instance.to_string()),
-        ];
-        if let Err(e) = self.pool.hset::<(), _, _>(&key, fields).await {
+        // One script rather than HSET-then-EXPIRE: see upsert_game.lua for
+        // why the two must not be separate round trips.
+        let result: Result<i64, _> = self
+            .pool
+            .evalsha(
+                &self.upsert_game_hash,
+                vec![key],
+                vec![
+                    white_id.to_string(),
+                    black_id.to_string(),
+                    category.to_string(),
+                    if rated { "1" } else { "0" }.to_string(),
+                    fen.to_string(),
+                    owner_instance.to_string(),
+                    clocks.white_ms_left.to_string(),
+                    clocks.black_ms_left.to_string(),
+                    clocks.sent_at_ms.to_string(),
+                    ACTIVE_GAME_TTL_SECS.to_string(),
+                ],
+            )
+            .await;
+        if let Err(e) = result {
             tracing::warn!(?e, %game_id, "active_game_upsert failed");
-            return;
-        }
-        if let Err(e) = self.pool.expire::<(), _>(&key, ACTIVE_GAME_TTL_SECS, None).await {
-            tracing::warn!(?e, %game_id, "active_game_upsert: setting TTL failed");
         }
     }
 
@@ -1108,6 +1257,7 @@ impl RedisClient {
         rated: bool,
         fen: &str,
         owner_instance: &str,
+        clocks: ActiveGameClocks,
     ) -> bool {
         let key = format!("active_games:{game_id}");
         let won: i64 = self
@@ -1122,6 +1272,9 @@ impl RedisClient {
                     if rated { "1" } else { "0" }.to_string(),
                     fen.to_string(),
                     owner_instance.to_string(),
+                    clocks.white_ms_left.to_string(),
+                    clocks.black_ms_left.to_string(),
+                    clocks.sent_at_ms.to_string(),
                     ACTIVE_GAME_TTL_SECS.to_string(),
                 ],
             )
@@ -1136,14 +1289,34 @@ impl RedisClient {
     /// Cheaper partial update for the per-move case — only `fen` changes.
     /// Also refreshes the TTL, so active play is itself a heartbeat signal
     /// independent of the periodic `heartbeat_task` tick.
-    pub async fn active_game_update_fen(&self, game_id: Uuid, fen: &str) {
+    pub async fn active_game_update_position(
+        &self,
+        game_id: Uuid,
+        fen: &str,
+        clocks: ActiveGameClocks,
+    ) {
         let key = format!("active_games:{game_id}");
-        if let Err(e) = self.pool.hset::<(), _, _>(&key, vec![("fen", fen.to_string())]).await {
-            tracing::warn!(?e, %game_id, "active_game_update_fen failed");
-            return;
-        }
-        if let Err(e) = self.pool.expire::<(), _>(&key, ACTIVE_GAME_TTL_SECS, None).await {
-            tracing::warn!(?e, %game_id, "active_game_update_fen: refreshing TTL failed");
+        let result: Result<i64, _> = self
+            .pool
+            .evalsha(
+                &self.update_fen_hash,
+                vec![key],
+                vec![
+                    fen.to_string(),
+                    clocks.white_ms_left.to_string(),
+                    clocks.black_ms_left.to_string(),
+                    clocks.sent_at_ms.to_string(),
+                    ACTIVE_GAME_TTL_SECS.to_string(),
+                ],
+            )
+            .await;
+        match result {
+            // Record gone — the per-room heartbeat recreates it in full
+            // within one interval, which this call can't do (it has only the
+            // fen). See update_fen_game.lua.
+            Ok(0) => tracing::debug!(%game_id, "active_game_update_position: record missing"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(?e, %game_id, "active_game_update_position failed"),
         }
     }
 
@@ -1169,6 +1342,7 @@ impl RedisClient {
         category: &str,
         rated: bool,
         fen: &str,
+        clocks: ActiveGameClocks,
     ) {
         let key = format!("active_games:{game_id}");
         let result: Result<i64, _> = self
@@ -1183,6 +1357,9 @@ impl RedisClient {
                     if rated { "1" } else { "0" }.to_string(),
                     fen.to_string(),
                     instance_id(),
+                    clocks.white_ms_left.to_string(),
+                    clocks.black_ms_left.to_string(),
+                    clocks.sent_at_ms.to_string(),
                     ACTIVE_GAME_TTL_SECS.to_string(),
                 ],
             )
@@ -1217,7 +1394,7 @@ impl RedisClient {
         loop {
             let (next_cursor, keys): (String, Vec<String>) = match self
                 .pool
-                .scan_page(cursor, "active_games:*", Some(100), None)
+                .scan_page(cursor.clone(), "active_games:*", Some(100), None)
                 .await
             {
                 Ok(v) => v,
@@ -1228,6 +1405,13 @@ impl RedisClient {
             };
             ids.extend(keys);
             if next_cursor == "0" {
+                break;
+            }
+            // A server that returns the cursor it was handed would spin this
+            // loop forever, holding the connection and growing `ids` without
+            // bound. Treat a non-advancing cursor as the end of the scan.
+            if next_cursor == cursor {
+                tracing::warn!(%cursor, "active_games scan cursor did not advance, stopping");
                 break;
             }
             cursor = next_cursor;
@@ -1250,7 +1434,25 @@ impl RedisClient {
             ) else {
                 continue;
             };
-            result.push(ActiveGameEntry { game_id, white_id, black_id, category, rated, fen });
+            let clocks = match (
+                fields.get("white_ms").and_then(|v| v.parse::<i64>().ok()),
+                fields.get("black_ms").and_then(|v| v.parse::<i64>().ok()),
+                fields.get("clock_at").and_then(|v| v.parse::<i64>().ok()),
+            ) {
+                (Some(white_ms_left), Some(black_ms_left), Some(sent_at_ms)) => {
+                    Some(ActiveGameClocks { white_ms_left, black_ms_left, sent_at_ms })
+                }
+                _ => None,
+            };
+            result.push(ActiveGameEntry {
+                game_id,
+                white_id,
+                black_id,
+                category,
+                rated,
+                fen,
+                clocks,
+            });
         }
         result
     }
@@ -1282,6 +1484,20 @@ pub struct ActiveGameEntry {
     pub category: String,
     pub rated: bool,
     pub fen: String,
+    /// Clock snapshot mirrored by the owning instance, and the server epoch
+    /// ms it was taken at. `None` on a record written before clocks were
+    /// mirrored, or one whose fields didn't parse — the watch grid just
+    /// renders that tile without clocks, as it did for every remote game
+    /// before this existed.
+    pub clocks: Option<ActiveGameClocks>,
+}
+
+/// See `ActiveGameEntry::clocks`.
+#[derive(Debug, Clone, Copy)]
+pub struct ActiveGameClocks {
+    pub white_ms_left: i64,
+    pub black_ms_left: i64,
+    pub sent_at_ms: i64,
 }
 
 #[cfg(test)]
@@ -1303,6 +1519,11 @@ mod tests {
 
     async fn make_redis_client() -> RedisClient {
         make_redis_client_with_inboxes().await.0
+    }
+
+    /// A throwaway clock snapshot for tests that don't assert on clocks.
+    fn test_clocks() -> ActiveGameClocks {
+        ActiveGameClocks { white_ms_left: 300_000, black_ms_left: 300_000, sent_at_ms: 1_700_000_000_000 }
     }
 
     /// Unique bucket per test so parallel tests don't interfere.
@@ -1728,7 +1949,7 @@ mod tests {
         let game_id = Uuid::new_v4();
         let white = Uuid::new_v4();
         let black = Uuid::new_v4();
-        client.active_game_upsert(game_id, white, black, "blitz", true, "startpos", "test-instance").await;
+        client.active_game_upsert(game_id, white, black, "blitz", true, "startpos", "test-instance", test_clocks()).await;
 
         let found = client.active_games_excluding(&HashSet::new()).await;
         let entry = found.iter().find(|e| e.game_id == game_id).expect("game should be indexed");
@@ -1737,7 +1958,7 @@ mod tests {
         assert_eq!(entry.fen, "startpos");
         assert_eq!(client.active_game_owner(game_id).await.as_deref(), Some("test-instance"));
 
-        client.active_game_update_fen(game_id, "moved").await;
+        client.active_game_update_position(game_id, "moved", test_clocks()).await;
         let found = client.active_games_excluding(&HashSet::new()).await;
         let entry = found.iter().find(|e| e.game_id == game_id).unwrap();
         assert_eq!(entry.fen, "moved");
@@ -1754,7 +1975,7 @@ mod tests {
         let game_id = Uuid::new_v4();
         let white = Uuid::new_v4();
         let black = Uuid::new_v4();
-        client.active_game_upsert(game_id, white, black, "blitz", true, "startpos", "inst-a").await;
+        client.active_game_upsert(game_id, white, black, "blitz", true, "startpos", "inst-a", test_clocks()).await;
 
         let key = format!("active_games:{game_id}");
         let ttl: i64 = client.pool.ttl(&key).await.unwrap();
@@ -1764,7 +1985,7 @@ mod tests {
         // this is the exact mechanism a healthy owning instance relies on to
         // keep a slow-clock game (long gaps between moves) from looking stale.
         let _: () = client.pool.expire(&key, 2, None).await.unwrap();
-        client.heartbeat_active_game(game_id, white, black, "blitz", true, "startpos").await;
+        client.heartbeat_active_game(game_id, white, black, "blitz", true, "startpos", test_clocks()).await;
         let ttl_after: i64 = client.pool.ttl(&key).await.unwrap();
         assert!(ttl_after > 2, "heartbeat must refresh the TTL, got {ttl_after}");
         // A plain refresh (key still present) must not touch its fields.
@@ -1791,7 +2012,7 @@ mod tests {
         // Simulates the key vanishing out from under a still-alive room —
         // no upsert/claim call precedes this, exactly as if the game was
         // never re-registered after losing its record.
-        client.heartbeat_active_game(game_id, white, black, "rapid", false, "some-fen").await;
+        client.heartbeat_active_game(game_id, white, black, "rapid", false, "some-fen", test_clocks()).await;
 
         let ttl: i64 = client.pool.ttl(&key).await.unwrap();
         assert!(ttl > 0, "heartbeat must recreate a missing key, got ttl={ttl}");
@@ -1990,10 +2211,10 @@ mod tests {
         let black = Uuid::new_v4();
 
         let first = client
-            .claim_active_game(game_id, white, black, "blitz", true, "fen-a", "inst-a")
+            .claim_active_game(game_id, white, black, "blitz", true, "fen-a", "inst-a", test_clocks())
             .await;
         let second = client
-            .claim_active_game(game_id, white, black, "blitz", true, "fen-b", "inst-b")
+            .claim_active_game(game_id, white, black, "blitz", true, "fen-b", "inst-b", test_clocks())
             .await;
         assert!(first, "first claim on an ownerless key must win");
         assert!(!second, "second claim must lose once the first has claimed it");
@@ -2007,11 +2228,11 @@ mod tests {
         let client = make_redis_client().await;
         let game_id = Uuid::new_v4();
         client
-            .active_game_upsert(game_id, Uuid::new_v4(), Uuid::new_v4(), "blitz", true, "startpos", "inst-a")
+            .active_game_upsert(game_id, Uuid::new_v4(), Uuid::new_v4(), "blitz", true, "startpos", "inst-a", test_clocks())
             .await;
 
         let claimed = client
-            .claim_active_game(game_id, Uuid::new_v4(), Uuid::new_v4(), "blitz", true, "fen", "inst-b")
+            .claim_active_game(game_id, Uuid::new_v4(), Uuid::new_v4(), "blitz", true, "fen", "inst-b", test_clocks())
             .await;
         assert!(!claimed, "must not claim a game with a live owner");
         assert_eq!(client.active_game_owner(game_id).await.as_deref(), Some("inst-a"));

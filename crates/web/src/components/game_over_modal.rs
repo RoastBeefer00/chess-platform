@@ -1,9 +1,11 @@
-use leptos::{html::Div, prelude::*};
+use leptos::prelude::*;
 use shakmaty::Outcome;
 use shared::{messages::GameOverReason, GameClientMessage, Side};
 use uuid::Uuid;
 
-use crate::components::{AnalyzeLink, NewGameButton, RematchControls, RematchState};
+use crate::components::{
+    AnalyzeLink, GuestUpsell, ModalShell, NewGameButton, RematchControls, RematchState,
+};
 
 #[component]
 pub fn GameOverModal(
@@ -56,37 +58,31 @@ pub fn GameOverModal(
         None => "Game over",
     };
 
-    let card_ref = NodeRef::<Div>::new();
-
-    #[cfg(feature = "hydrate")]
-    {
-        let stop = leptos_use::on_click_outside(card_ref, move |_| on_close.run(()));
-        on_cleanup(stop);
-    }
-
     view! {
-        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div
-                node_ref=card_ref
-                class="relative w-full max-w-sm mx-4 rounded-lg bg-zinc-900 border border-zinc-800 shadow-xl p-6 text-center"
+        <ModalShell
+            labelled_by="game-over-title"
+            on_close=on_close
+            card_class="max-w-sm p-6 text-center"
+        >
+            <button
+                on:click=move |_| on_close.run(())
+                class="absolute top-2 right-2 w-8 h-8 flex items-center justify-center text-zinc-400 hover:text-white rounded-control hover:bg-zinc-800 transition-colors cursor-pointer whitespace-nowrap"
+                aria-label="Close"
             >
-                <button
-                    on:click=move |_| on_close.run(())
-                    class="absolute top-2 right-2 w-8 h-8 flex items-center justify-center text-zinc-400 hover:text-white rounded-md hover:bg-zinc-800 transition-colors cursor-pointer whitespace-nowrap"
-                    aria-label="Close"
-                >
-                    "✕"
-                </button>
-                <h2 class="text-2xl font-semibold tracking-tight text-white mb-2">
-                    {result_text}
-                </h2>
-                <p class="text-zinc-400 text-sm mb-6">{subtitle}</p>
-                <div class="flex flex-wrap items-center justify-center gap-3">
-                    <RematchControls rematch_state=rematch_state send=send />
-                    <NewGameButton on_new_game=on_new_game tc_label=tc_label />
-                    <AnalyzeLink game_id=game_id />
-                </div>
+                "✕"
+            </button>
+            <h2 id="game-over-title" class="text-2xl font-semibold tracking-tight text-white mb-2">
+                {result_text}
+            </h2>
+            <p class="text-zinc-400 text-sm mb-6">{subtitle}</p>
+            <div class="flex flex-wrap items-center justify-center gap-3">
+                <RematchControls rematch_state=rematch_state send=send />
+                <NewGameButton on_new_game=on_new_game tc_label=tc_label />
+                <AnalyzeLink game_id=game_id />
             </div>
-        </div>
+            // Nothing for a signed-in user; for a guest, the moment right
+            // after a game is when signing up is worth suggesting.
+            <GuestUpsell class="mt-4" />
+        </ModalShell>
     }
 }

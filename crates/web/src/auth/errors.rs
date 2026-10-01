@@ -10,6 +10,14 @@ pub enum AuthError {
     OidcConfig(#[from] openidconnect::ConfigurationError),
     #[error("Username already taken: {0}")]
     UsernameTaken(String),
+    #[error("This account already has a username")]
+    UsernameAlreadySet,
+    #[error("{0}")]
+    InvalidUsername(&'static str),
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("No such user")]
+    UserNotFound,
+    #[error("Too many pending friend requests — wait for some to be answered")]
+    TooManyPendingRequests,
 }

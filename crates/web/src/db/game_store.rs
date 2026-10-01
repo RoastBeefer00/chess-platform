@@ -74,6 +74,20 @@ fn clocks_from_string_strict(clocks: Option<&str>, move_count: usize) -> Result<
     Ok(pairs)
 }
 
+/// Result of `GameStore::get_finished_outcome`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GameOutcomeLookup {
+    /// No row with that id — a bogus/typo'd game id.
+    Unknown,
+    /// The row exists but is still `waiting`/`active`; nothing to replay.
+    StillRunning,
+    /// The game ended. `winner` is `None` for a draw or an abort.
+    Ended {
+        winner: Option<Side>,
+        reason: GameOverReason,
+    },
+}
+
 /// Everything needed to rebuild a `GameRoom` for a still-`active` game — see
 /// `AppState::adopt_game`.
 #[derive(Debug)]
@@ -392,58 +406,65 @@ impl GameStore {
         Ok(result.rows_affected())
     }
 
-    /// A game's bare `status` column, for a reconnect attempt that finds no
-    /// live `GameRoom` (e.g. the reaper aborted it after its owning
-    /// instance went quiet) to distinguish "this game ended" from "this id
-    /// never existed" — see the `game_websocket` join handler.
-    #[tracing::instrument(skip(self), fields(%game_id))]
-    pub async fn get_game_status(&self, game_id: Uuid) -> Result<Option<String>, AuthError> {
-        Ok(sqlx::query_scalar!("SELECT status FROM games WHERE id = $1", game_id)
-            .fetch_optional(&self.pool)
-            .await?)
-    }
-
-    /// A finished/aborted game's recorded outcome, decoded back into
-    /// `(winner, reason)` — the inverse of `finalize_game`'s `result`/
-    /// `termination` string encoding. `None` if the row doesn't exist or
-    /// isn't finished/aborted. Used to resync a live room's in-memory state
-    /// against a DB row that's already recorded a real outcome the room
-    /// itself never decided (see `AppState::reconcile_local_rooms_against_db`
-    /// — a manual data fix, or a peer's reaper acting on a row this
-    /// instance still thinks it owns).
+    /// How a game ended, for a reconnect that finds no live `GameRoom` —
+    /// either because the reaper aborted it, or because the room was evicted
+    /// after finishing (see `AppState::evict_finished_rooms`). Lets the
+    /// `game_websocket` join handler replay a real `GameOver` instead of an
+    /// undifferentiated "game not found" indistinguishable from a typo'd URL.
+    ///
+    /// Also used by `AppState::reconcile_local_rooms_against_db` to resync a
+    /// live room against a row that already recorded an outcome the room
+    /// never decided — a manual data fix, or a peer's reaper acting on a row
+    /// this instance still thinks it owns. That caller needs to tell "no such
+    /// row" from "still running" too, which is why this returns a three-way
+    /// enum rather than an `Option`.
     #[tracing::instrument(skip(self), fields(%game_id))]
     pub async fn get_finished_outcome(
         &self,
         game_id: Uuid,
-    ) -> Result<Option<(Option<Side>, GameOverReason)>, AuthError> {
-        let row = sqlx::query!(
-            "SELECT result, termination FROM games WHERE id = $1 AND status IN ('finished', 'aborted')",
+    ) -> Result<GameOutcomeLookup, AuthError> {
+        let Some(row) = sqlx::query!(
+            "SELECT status, result, termination FROM games WHERE id = $1",
             game_id
         )
         .fetch_optional(&self.pool)
-        .await?;
-
-        let Some(row) = row else { return Ok(None) };
-        let Some(termination) = row.termination else { return Ok(None) };
-        let reason = match termination.as_str() {
-            "checkmate" => GameOverReason::Checkmate,
-            "resignation" => GameOverReason::Resignation,
-            "timeout" => GameOverReason::Timeout,
-            "abandonment" => GameOverReason::Abort,
-            "stalemate" => GameOverReason::Stalemate,
-            "insufficient_material" => GameOverReason::InsufficientMaterial,
-            "repetition" => GameOverReason::Repetition,
-            "fifty_move" => GameOverReason::FiftyMove,
-            "draw_agreement" => GameOverReason::DrawAgreement,
-            _ => return Ok(None),
+        .await?
+        else {
+            return Ok(GameOutcomeLookup::Unknown);
         };
+
+        if row.status != "finished" && row.status != "aborted" {
+            return Ok(GameOutcomeLookup::StillRunning);
+        }
+
         let winner = match row.result.as_deref() {
             Some("white") => Some(Side::White),
             Some("black") => Some(Side::Black),
             _ => None,
         };
-        Ok(Some((winner, reason)))
+        // Inverse of the `termination_str` mapping in `finalize_game`. An
+        // unrecognised or missing value falls back to `Abort`, which is what
+        // an `aborted` row carries anyway and the least misleading answer for
+        // a row written by some older schema.
+        let reason = match row.termination.as_deref() {
+            Some("checkmate") => GameOverReason::Checkmate,
+            Some("resignation") => GameOverReason::Resignation,
+            Some("timeout") => GameOverReason::Timeout,
+            Some("stalemate") => GameOverReason::Stalemate,
+            Some("insufficient_material") => GameOverReason::InsufficientMaterial,
+            Some("repetition") => GameOverReason::Repetition,
+            Some("fifty_move") => GameOverReason::FiftyMove,
+            Some("draw_agreement") => GameOverReason::DrawAgreement,
+            Some("abandonment") => GameOverReason::Abort,
+            // Unrecognised or NULL: the row says the game ended, so the
+            // least-wrong answer is Abort. Deliberately not `None`-like —
+            // both callers are better off correcting to *something* than
+            // leaving a finished game behaving as live.
+            _ => GameOverReason::Abort,
+        };
+        Ok(GameOutcomeLookup::Ended { winner, reason })
     }
+
 
     /// Persists move/clock history for a still-in-progress game. Called
     /// after every move (fire-and-forget, see `spawn_progress_persist`) so a
@@ -849,6 +870,113 @@ mod tests {
         }
     }
 
+    // ── get_finished_outcome ─────────────────────────────────────────────
+    //
+    // Backs the reconnect-after-eviction path: once a finished room has been
+    // dropped from memory, the DB row is the only thing left that knows how
+    // the game ended.
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finished_outcome_unknown_for_bogus_id(pool: PgPool) {
+        let store = GameStore::new(pool);
+        assert_eq!(
+            store.get_finished_outcome(Uuid::new_v4()).await.unwrap(),
+            GameOutcomeLookup::Unknown
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finished_outcome_still_running_for_active_game(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+
+        assert_eq!(
+            store.get_finished_outcome(game_id).await.unwrap(),
+            GameOutcomeLookup::StillRunning
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finished_outcome_round_trips_a_decisive_result(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+        store
+            .finalize_game(make_plan(
+                game_id,
+                white_id,
+                black_id,
+                true,
+                KnownOutcome::Decisive { winner: shakmaty::Color::Black },
+                GameOverReason::Timeout,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.get_finished_outcome(game_id).await.unwrap(),
+            GameOutcomeLookup::Ended {
+                winner: Some(Side::Black),
+                reason: GameOverReason::Timeout,
+            }
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finished_outcome_round_trips_a_draw(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, false).await;
+        store
+            .finalize_game(make_plan(
+                game_id,
+                white_id,
+                black_id,
+                false,
+                KnownOutcome::Draw,
+                GameOverReason::Stalemate,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.get_finished_outcome(game_id).await.unwrap(),
+            GameOutcomeLookup::Ended { winner: None, reason: GameOverReason::Stalemate }
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finished_outcome_reports_an_aborted_game(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let white_id = insert_user(&pool).await;
+        let black_id = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white_id, black_id, true).await;
+        store
+            .abort_game(make_plan(
+                game_id,
+                white_id,
+                black_id,
+                true,
+                KnownOutcome::Draw,
+                GameOverReason::Abort,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.get_finished_outcome(game_id).await.unwrap(),
+            GameOutcomeLookup::Ended { winner: None, reason: GameOverReason::Abort }
+        );
+    }
+
     #[sqlx::test(migrations = "../../migrations")]
     async fn finalize_rated_white_wins_updates_ratings(pool: PgPool) {
         let store = GameStore::new(pool.clone());
@@ -1072,9 +1200,13 @@ mod tests {
         );
         store.finalize_game(plan).await.unwrap();
 
-        let (winner, reason) = store.get_finished_outcome(game_id).await.unwrap().expect("row should decode");
-        assert_eq!(winner, Some(Side::Black));
-        assert_eq!(reason, GameOverReason::Resignation);
+        assert_eq!(
+            store.get_finished_outcome(game_id).await.unwrap(),
+            GameOutcomeLookup::Ended {
+                winner: Some(Side::Black),
+                reason: GameOverReason::Resignation,
+            }
+        );
     }
 
     #[sqlx::test(migrations = "../../migrations")]
@@ -1087,9 +1219,10 @@ mod tests {
         let plan = make_plan(game_id, white_id, black_id, true, KnownOutcome::Draw, GameOverReason::Abort);
         store.abort_game(plan).await.unwrap();
 
-        let (winner, reason) = store.get_finished_outcome(game_id).await.unwrap().expect("row should decode");
-        assert_eq!(winner, None);
-        assert_eq!(reason, GameOverReason::Abort);
+        assert_eq!(
+            store.get_finished_outcome(game_id).await.unwrap(),
+            GameOutcomeLookup::Ended { winner: None, reason: GameOverReason::Abort }
+        );
     }
 
     #[sqlx::test(migrations = "../../migrations")]
@@ -1100,7 +1233,10 @@ mod tests {
         let game_id = Uuid::new_v4();
         insert_game_row(&pool, game_id, white_id, black_id, true).await; // still 'active'
 
-        assert!(store.get_finished_outcome(game_id).await.unwrap().is_none());
+        assert_eq!(
+            store.get_finished_outcome(game_id).await.unwrap(),
+            GameOutcomeLookup::StillRunning
+        );
     }
 
     #[sqlx::test(migrations = "../../migrations")]

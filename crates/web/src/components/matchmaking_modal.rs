@@ -1,6 +1,8 @@
 use leptos::prelude::*;
 use shared::{RatingMode, TimeControl, TimeMode};
 
+use crate::components::ModalShell;
+
 fn format_time_control(tc: &TimeControl) -> String {
     let initial_sec = tc.initial_time / 1000;
     let inc_sec = match tc.mode {
@@ -102,30 +104,32 @@ pub fn MatchmakingModal(
     }
 
     view! {
-        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div class="w-full max-w-sm mx-4 rounded-lg bg-zinc-900 border border-zinc-800 shadow-xl p-8 text-center">
+        <ModalShell
+            labelled_by="matchmaking-title"
+            on_close=on_close
+            card_class="max-w-sm p-8 text-center"
+        >
                 <div class="flex justify-center mb-5">
                     <div class="w-14 h-14 border-4 border-zinc-700 border-t-white rounded-full animate-spin"></div>
                 </div>
-                <h2 class="text-xl font-semibold tracking-tight text-white mb-1">
+                <h2 id="matchmaking-title" class="text-xl font-semibold tracking-tight text-white mb-1">
                     "Searching for opponent"
                 </h2>
                 <div class="flex items-center justify-center gap-2 mb-1">
                     <span class="text-2xl font-bold tracking-tight text-white">{tc_label}</span>
-                    <span class="text-xs font-medium uppercase tracking-wider text-zinc-500">{category}</span>
-                    <span class="text-xs font-medium uppercase tracking-wider text-zinc-500">"·"</span>
-                    <span class="text-xs font-medium uppercase tracking-wider text-zinc-500">{rated_label}</span>
+                    <span class="eyebrow text-zinc-500">{category}</span>
+                    <span class="eyebrow text-zinc-500">"·"</span>
+                    <span class="eyebrow text-zinc-500">{rated_label}</span>
                 </div>
                 <p class="text-zinc-400 text-sm mb-6">
                     {move || format!("{}s", elapsed.get())}
                 </p>
                 <button
                     on:click=move |_| on_close.run(())
-                    class="px-5 py-2.5 text-sm font-medium text-zinc-300 border border-zinc-700 rounded-md hover:border-zinc-500 hover:text-white transition-colors"
+                    class="px-5 py-2.5 text-sm font-medium text-zinc-300 border border-zinc-700 rounded-control hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
                 >
                     "Cancel"
                 </button>
-            </div>
-        </div>
+        </ModalShell>
     }
 }

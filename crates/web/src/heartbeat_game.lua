@@ -5,7 +5,10 @@
 -- ARGV[4]  = rated ("1"/"0")
 -- ARGV[5]  = fen (used only if the key needs recreating — see below)
 -- ARGV[6]  = owner_instance (this instance)
--- ARGV[7]  = TTL in seconds
+-- ARGV[7]  = white_ms_left
+-- ARGV[8]  = black_ms_left
+-- ARGV[9]  = clock_sent_at_ms (server UNIX epoch ms the clocks are true as of)
+-- ARGV[10] = TTL in seconds
 --
 -- Self-healing heartbeat for a live game's ownership record. A plain
 -- EXPIRE (the previous implementation) can only extend a key that's still
@@ -26,7 +29,7 @@
 local key = KEYS[1]
 
 if redis.call('EXISTS', key) == 1 then
-  redis.call('EXPIRE', key, tonumber(ARGV[7]))
+  redis.call('EXPIRE', key, tonumber(ARGV[10]))
   return 1
 end
 
@@ -36,7 +39,10 @@ redis.call('HSET', key,
   'category', ARGV[3],
   'rated', ARGV[4],
   'fen', ARGV[5],
-  'owner_instance', ARGV[6]
+  'owner_instance', ARGV[6],
+  'white_ms', ARGV[7],
+  'black_ms', ARGV[8],
+  'clock_at', ARGV[9]
 )
-redis.call('EXPIRE', key, tonumber(ARGV[7]))
+redis.call('EXPIRE', key, tonumber(ARGV[10]))
 return 2

@@ -245,7 +245,7 @@ pub fn ChessBoard(
     // outer wrapper resolves to.
     let outer_class = format!(
         "flex items-center justify-center {}",
-        size_class.unwrap_or("w-[min(100vw,calc(100dvh-11.5rem))] aspect-square")
+        size_class.unwrap_or("board-frame-bare aspect-square")
     );
     let selected_square = RwSignal::new(None::<shakmaty::Square>);
     let pending_promotion = RwSignal::new(None::<PendingPromotion>);
@@ -417,7 +417,14 @@ pub fn ChessBoard(
         // to `MouseEvent` instead (same `client_x`/`client_y` we actually
         // use; every `PointerEvent` genuinely is one in the DOM) goes
         // through different web-sys glue and doesn't hit it.
-        window_event_listener_untyped("pointermove", move |e: web_sys::Event| {
+        // Both handles are kept and removed on disposal. They used to be
+        // dropped on the floor, which leaves the listener registered for the
+        // life of the page: after a `ChessBoard` unmounted, its handlers kept
+        // firing on every window pointer event and touching signals belonging
+        // to the disposed component. That is the "board must mount exactly
+        // once" constraint `pages::puzzles` and `AnalysisBoard` both work
+        // around — with this, unmounting a board is clean.
+        let pointermove_handle = window_event_listener_untyped("pointermove", move |e: web_sys::Event| {
             let e: web_sys::MouseEvent = e.unchecked_into();
             drag_state.update(|d| {
                 if let Some(d) = d {
@@ -435,7 +442,7 @@ pub fn ChessBoard(
             }
         });
 
-        window_event_listener_untyped("pointerup", move |e: web_sys::Event| {
+        let pointerup_handle = window_event_listener_untyped("pointerup", move |e: web_sys::Event| {
             let e: web_sys::MouseEvent = e.unchecked_into();
 
             // Complete a right-click arrow drag, if one was in progress —
@@ -499,6 +506,11 @@ pub fn ChessBoard(
                 selected_square.set(None);
                 on_premove.run((from_sq, dropped_square));
             }
+        });
+
+        on_cleanup(move || {
+            pointermove_handle.remove();
+            pointerup_handle.remove();
         });
     }
 

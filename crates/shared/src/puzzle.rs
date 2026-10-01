@@ -24,3 +24,16 @@ pub struct PuzzleSummary {
     /// filenames.
     pub themes: String,
 }
+
+/// A user's puzzle progress — see `PuzzleStore::record_attempt`.
+///
+/// `attempted` counts distinct puzzles resolved, not tries: a puzzle only
+/// ever records its first outcome — a wrong move or a hint reports a failure
+/// straight away — so `solved / attempted` is a real accuracy figure rather
+/// than one inflated by retrying until it works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PuzzleStats {
+    pub rating: i32,
+    pub solved: u32,
+    pub attempted: u32,
+}

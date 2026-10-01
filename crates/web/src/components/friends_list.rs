@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use shared::{FriendRow, FriendSummary, RatingMode, TimeControl, TimeMode};
 
+use crate::components::ModalShell;
 use crate::friends::{
     use_friends_presence, CancelFriendRequest, OutgoingChallenge, RespondFriendRequest, SendChallenge,
     Unfriend,
@@ -38,23 +39,20 @@ pub fn ChallengeModal(friend: FriendSummary, on_close: Callback<()>) -> impl Int
 
     let friend_id = friend.id;
     view! {
-        <div
-            class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-            on:click=move |_| on_close.run(())
+        <ModalShell
+            labelled_by="challenge-title"
+            on_close=on_close
+            card_class="flex flex-col gap-4 max-w-xs p-6"
         >
-            <div
-                class="flex flex-col gap-4 rounded-2xl bg-zinc-900 border border-zinc-800 p-6 w-full max-w-xs mx-4"
-                on:click=move |ev| ev.stop_propagation()
-            >
-                <h2 class="text-lg font-bold text-white">
+                <h2 id="challenge-title" class="text-lg font-bold text-white">
                     "Challenge " {display_name(&friend)}
                 </h2>
 
-                <div class="flex items-center rounded-lg bg-zinc-950 border border-zinc-800/60 p-0.5 self-start">
+                <div class="flex items-center rounded-control bg-zinc-950 border border-zinc-800/60 p-0.5 self-start">
                     <button
                         type="button"
                         on:click=move |_| rating_mode.set(RatingMode::Rated)
-                        class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide rounded-md transition-colors cursor-pointer"
+                        class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide rounded-control transition-colors cursor-pointer"
                         class:bg-white=move || rating_mode.get() == RatingMode::Rated
                         class:text-zinc-950=move || rating_mode.get() == RatingMode::Rated
                         class:text-zinc-400=move || rating_mode.get() != RatingMode::Rated
@@ -64,7 +62,7 @@ pub fn ChallengeModal(friend: FriendSummary, on_close: Callback<()>) -> impl Int
                     <button
                         type="button"
                         on:click=move |_| rating_mode.set(RatingMode::Casual)
-                        class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide rounded-md transition-colors cursor-pointer"
+                        class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide rounded-control transition-colors cursor-pointer"
                         class:bg-white=move || rating_mode.get() == RatingMode::Casual
                         class:text-zinc-950=move || rating_mode.get() == RatingMode::Casual
                         class:text-zinc-400=move || rating_mode.get() != RatingMode::Casual
@@ -85,7 +83,7 @@ pub fn ChallengeModal(friend: FriendSummary, on_close: Callback<()>) -> impl Int
                                         rating_mode: rating_mode.get(),
                                     });
                                 }
-                                class="px-4 py-3 rounded-xl bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 transition-colors cursor-pointer text-white font-semibold"
+                                class="px-4 py-3 rounded-card bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 transition-colors cursor-pointer text-white font-semibold"
                             >
                                 {label}
                             </button>
@@ -104,8 +102,7 @@ pub fn ChallengeModal(friend: FriendSummary, on_close: Callback<()>) -> impl Int
                 >
                     "Cancel"
                 </button>
-            </div>
-        </div>
+        </ModalShell>
     }
 }
 
@@ -148,7 +145,7 @@ fn FriendRowView(row: FriendRow, is_own: bool) -> impl IntoView {
                     class:bg-zinc-700=move || !online.get()
                 />
                 {friend.avatar_url.clone().map(|url| view! {
-                    <img src={url} class="w-8 h-8 rounded-full flex-shrink-0" />
+                    <img src={url} alt="" class="w-8 h-8 rounded-full flex-shrink-0" />
                 })}
                 {match href.clone() {
                     Some(href) => view! {
@@ -167,7 +164,7 @@ fn FriendRowView(row: FriendRow, is_own: bool) -> impl IntoView {
                         Some(game_id) => view! {
                             <a
                                 href={format!("/game/{game_id}")}
-                                class="px-3 py-1.5 text-xs font-semibold text-zinc-300 border border-zinc-700 rounded-md hover:border-zinc-500 hover:text-white transition-colors"
+                                class="px-3 py-1.5 text-xs font-semibold text-zinc-300 border border-zinc-700 rounded-control hover:border-zinc-500 hover:text-white transition-colors"
                             >
                                 "Watch"
                             </a>
@@ -177,7 +174,7 @@ fn FriendRowView(row: FriendRow, is_own: bool) -> impl IntoView {
                                 type="button"
                                 disabled=move || !online.get()
                                 on:click=move |_| challenging.set(true)
-                                class="px-3 py-1.5 text-xs font-semibold rounded-md transition-colors"
+                                class="px-3 py-1.5 text-xs font-semibold rounded-control transition-colors"
                                 class:bg-white=online
                                 class:text-zinc-950=online
                                 class:cursor-pointer=online
@@ -229,14 +226,14 @@ fn PendingRequestRow(user: FriendSummary) -> impl IntoView {
                 <button
                     type="button"
                     on:click=move |_| { respond_action.dispatch(RespondFriendRequest { requester_id, accept: true }); }
-                    class="px-3 py-1.5 text-xs font-semibold bg-emerald-600 text-white rounded-md hover:bg-emerald-500 transition-colors cursor-pointer"
+                    class="px-3 py-1.5 text-xs font-semibold bg-emerald-600 text-white rounded-control hover:bg-emerald-500 transition-colors cursor-pointer"
                 >
                     "Accept"
                 </button>
                 <button
                     type="button"
                     on:click=move |_| { respond_action.dispatch(RespondFriendRequest { requester_id, accept: false }); }
-                    class="px-3 py-1.5 text-xs font-medium text-zinc-300 border border-zinc-700 rounded-md hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
+                    class="px-3 py-1.5 text-xs font-medium text-zinc-300 border border-zinc-700 rounded-control hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
                 >
                     "Decline"
                 </button>
@@ -261,11 +258,11 @@ fn OutgoingRequestRow(user: FriendSummary) -> impl IntoView {
         <div class="flex items-center justify-between gap-3 px-4 py-3">
             <span class="text-sm text-zinc-400 truncate">{display_name(&user)}</span>
             <div class="flex items-center gap-2 flex-shrink-0">
-                <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-600">"Pending"</span>
+                <span class="eyebrow-sm text-zinc-600">"Pending"</span>
                 <button
                     type="button"
                     on:click=move |_| { cancel_action.dispatch(CancelFriendRequest { target_id }); }
-                    class="px-2 py-1 text-[10px] font-medium text-zinc-500 border border-zinc-700 rounded-md hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
+                    class="px-2 py-1 text-[10px] font-medium text-zinc-500 border border-zinc-700 rounded-control hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
                 >
                     "Cancel"
                 </button>
@@ -293,10 +290,10 @@ pub fn FriendsList(
         <div class="flex flex-col gap-6">
             <Show when=move || has_incoming>
                 <div class="flex flex-col gap-2">
-                    <h2 class="text-sm font-semibold uppercase tracking-wide text-zinc-500 px-1">
+                    <h2 class="eyebrow text-zinc-500 px-1">
                         "Friend requests"
                     </h2>
-                    <div class="flex flex-col divide-y divide-zinc-800 rounded-2xl bg-zinc-900 border border-zinc-800 overflow-hidden">
+                    <div class="flex flex-col divide-y divide-zinc-800 surface-card overflow-hidden">
                         {incoming.iter().cloned().map(|u| view! { <PendingRequestRow user=u/> }).collect_view()}
                     </div>
                 </div>
@@ -307,7 +304,7 @@ pub fn FriendsList(
                     <h2 class="text-sm font-semibold uppercase tracking-wide text-zinc-500 px-1">
                         "Sent requests"
                     </h2>
-                    <div class="flex flex-col divide-y divide-zinc-800 rounded-2xl bg-zinc-900 border border-zinc-800 overflow-hidden">
+                    <div class="flex flex-col divide-y divide-zinc-800 surface-card overflow-hidden">
                         {outgoing.iter().cloned().map(|u| view! { <OutgoingRequestRow user=u/> }).collect_view()}
                     </div>
                 </div>
@@ -322,7 +319,7 @@ pub fn FriendsList(
                     view! { <p class="text-zinc-500 text-sm italic px-1">{empty_label}</p> }.into_any()
                 } else {
                     view! {
-                        <div class="flex flex-col divide-y divide-zinc-800 rounded-2xl bg-zinc-900 border border-zinc-800 overflow-hidden">
+                        <div class="flex flex-col divide-y divide-zinc-800 surface-card overflow-hidden">
                             {friends.iter().cloned().map(|row| view! { <FriendRowView row=row is_own=is_own/> }).collect_view()}
                         </div>
                     }.into_any()

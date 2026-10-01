@@ -132,7 +132,7 @@ pub fn EloCard(category: Category, #[prop(optional)] username: Option<String>) -
 
     let fallback = move || {
         view! {
-            <div class="flex flex-col gap-3 p-5 rounded-2xl bg-zinc-900 border border-zinc-800 min-w-[128px]">
+            <div class="flex flex-col gap-3 p-5 surface-card min-w-[128px]">
                 <div class="w-4 h-4 rounded skeleton-shimmer"/>
                 <div class="flex flex-col gap-2">
                     <div class="w-16 h-7 rounded skeleton-shimmer"/>
@@ -145,7 +145,7 @@ pub fn EloCard(category: Category, #[prop(optional)] username: Option<String>) -
 
     view! {
         <Transition fallback=fallback>
-            <div class="flex flex-col gap-3 p-5 rounded-2xl bg-zinc-900 border border-zinc-800
+            <div class="flex flex-col gap-3 p-5 surface-card
                         hover:border-zinc-700 hover:-translate-y-px active:translate-y-0
                         transition-all duration-200 min-w-[128px] cursor-default
                         shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -169,7 +169,7 @@ pub fn EloCard(category: Category, #[prop(optional)] username: Option<String>) -
                             _ => "\u{2014}".to_string(),
                         }}
                     </span>
-                    <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                    <span class="eyebrow-sm text-zinc-500">
                         {category.to_string().to_case(Case::Title)}
                     </span>
                 </div>

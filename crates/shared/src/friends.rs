@@ -33,6 +33,15 @@ pub struct FriendRow {
     pub in_game: Option<FriendActiveGame>,
 }
 
+/// The signed-in user's own social graph, for the standalone `/friends`
+/// page — see `get_friends_overview`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FriendsOverview {
+    pub friends: Vec<FriendRow>,
+    pub incoming_requests: Vec<FriendSummary>,
+    pub outgoing_requests: Vec<FriendSummary>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FriendRelation {
     None,

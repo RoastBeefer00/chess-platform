@@ -52,16 +52,47 @@ fn WatchTile(game: WatchGameSummary, tile: Signal<TileState>) -> impl IntoView {
     let sent_at_ms = Signal::derive(move || tile.get().sent_at_ms);
     let no_offset = Signal::derive(|| 0_i64);
     let no_abort = Signal::derive(|| None::<i64>);
-    let white_active =
-        Signal::derive(move || tile.get().position.turn() == Color::White);
-    let black_active =
-        Signal::derive(move || tile.get().position.turn() == Color::Black);
+    let turn = Signal::derive(move || tile.with(|t| t.position.turn()));
+    let white_active = Signal::derive(move || turn.get() == Color::White);
+    let black_active = Signal::derive(move || turn.get() == Color::Black);
+
+    // Built once, not inside the view closure. These previously read as
+    // `Signal::derive(move || ms)` over a plain `i64` captured from
+    // `tile.get()`, which meant a brand-new constant signal — and its node in
+    // the reactive graph — on every tile update, for every visible tile, every
+    // few seconds.
+    let white_ms = Signal::derive(move || tile.with(|t| t.white_ms_left.unwrap_or(0)));
+    let black_ms = Signal::derive(move || tile.with(|t| t.black_ms_left.unwrap_or(0)));
+    let has_white_clock = Signal::derive(move || tile.with(|t| t.white_ms_left.is_some()));
+    let has_black_clock = Signal::derive(move || tile.with(|t| t.black_ms_left.is_some()));
+
+    // Which side is to move, so the active player can be marked. A tile is
+    // a tiny board at grid size — without this there is no way to tell whose
+    // clock is running except by watching the digits tick.
+    let white_to_move = Signal::derive(move || turn.get() == Color::White);
 
     view! {
         <a
             href={href}
-            class="flex flex-col gap-3 rounded-xl bg-zinc-900 border border-zinc-800/60 p-4 hover:border-zinc-700 transition-colors"
+            class="group flex flex-col surface-card overflow-hidden hover:border-zinc-700 transition-colors"
         >
+            // ── Header: who is playing, and at what ───────────────────────
+            // Moved above the board and given real hierarchy. Previously the
+            // tile was almost entirely board, with one cramped row of names
+            // underneath — you could see a position but not who was in it.
+            <div class="flex items-center justify-between gap-2 px-3 pt-3 pb-2">
+                <span class="eyebrow-sm text-zinc-500 truncate">
+                    {category}
+                </span>
+                <span
+                    class="eyebrow-sm flex-shrink-0"
+                    class:text-zinc-500=!game.rated
+                    class:accent-text=game.rated
+                >
+                    {rated_label}
+                </span>
+            </div>
+
             <ChessBoard
                 position={position}
                 perspective={Signal::derive(|| BoardPerspective::White)}
@@ -72,51 +103,95 @@ fn WatchTile(game: WatchGameSummary, tile: Signal<TileState>) -> impl IntoView {
                 is_my_turn={is_my_turn}
                 size_class="w-full aspect-square"
             />
-            <div class="flex items-center justify-between text-xs gap-2">
-                <div class="flex flex-col gap-1.5 min-w-0">
-                    <span class="text-zinc-300 truncate">
-                        {player_name(&game.white)} " " {game.white.rating}
-                    </span>
-                    <span class="text-zinc-500 truncate">
-                        {player_name(&game.black)} " " {game.black.rating}
-                    </span>
-                </div>
-                <div class="flex flex-col gap-1.5 flex-shrink-0">
-                    {move || tile.get().white_ms_left.map(|ms| {
-                        let ms_signal = Signal::derive(move || ms);
-                        view! {
-                            <Clock
-                                snapshot_ms={ms_signal}
-                                snapshot_sent_at_ms={sent_at_ms}
-                                is_active={white_active}
-                                offset_ms={no_offset}
-                                abort_deadline_ms={no_abort}
-                            />
-                        }
-                    })}
-                    {move || tile.get().black_ms_left.map(|ms| {
-                        let ms_signal = Signal::derive(move || ms);
-                        view! {
-                            <Clock
-                                snapshot_ms={ms_signal}
-                                snapshot_sent_at_ms={sent_at_ms}
-                                is_active={black_active}
-                                offset_ms={no_offset}
-                                abort_deadline_ms={no_abort}
-                            />
-                        }
-                    })}
-                </div>
-                <div class="flex flex-col items-end gap-0.5 flex-shrink-0">
-                    <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                        {category}
-                    </span>
-                    <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
-                        {rated_label}
-                    </span>
-                </div>
+
+            // ── Players ───────────────────────────────────────────────────
+            // One row per player, each with a colour chip, name, rating and
+            // clock — and the side to move highlighted.
+            <div class="flex flex-col divide-y divide-zinc-800/70">
+                <PlayerRow
+                    name=player_name(&game.white)
+                    rating=game.white.rating
+                    is_white=true
+                    active=white_active
+                    to_move=white_to_move
+                    ms=white_ms
+                    has_clock=has_white_clock
+                    sent_at_ms=sent_at_ms
+                    no_offset=no_offset
+                    no_abort=no_abort
+                />
+                <PlayerRow
+                    name=player_name(&game.black)
+                    rating=game.black.rating
+                    is_white=false
+                    active=black_active
+                    to_move=Signal::derive(move || !white_to_move.get())
+                    ms=black_ms
+                    has_clock=has_black_clock
+                    sent_at_ms=sent_at_ms
+                    no_offset=no_offset
+                    no_abort=no_abort
+                />
             </div>
         </a>
+    }
+}
+
+/// One player's line on a watch tile.
+#[component]
+#[allow(clippy::too_many_arguments)]
+fn PlayerRow(
+    name: String,
+    rating: i32,
+    is_white: bool,
+    active: Signal<bool>,
+    /// Whether it is this player's turn — drives the emphasis, so a glance at
+    /// the tile says who is thinking.
+    to_move: Signal<bool>,
+    ms: Signal<i64>,
+    has_clock: Signal<bool>,
+    sent_at_ms: Signal<i64>,
+    no_offset: Signal<i64>,
+    no_abort: Signal<Option<i64>>,
+) -> impl IntoView {
+    view! {
+        <div
+            class="flex items-center justify-between gap-2 px-3 py-2 transition-colors"
+            class:bg-zinc-800=move || to_move.get()
+        >
+            <div class="flex items-center gap-2 min-w-0">
+                // Colour chip, using the live board tokens so it matches
+                // whatever board theme the viewer has chosen.
+                <span
+                    class="w-2.5 h-2.5 rounded-sm flex-shrink-0 border border-zinc-700"
+                    class:sq-light=is_white
+                    class:sq-dark=!is_white
+                />
+                <span
+                    class="text-xs truncate"
+                    class:text-white=move || to_move.get()
+                    class:font-semibold=move || to_move.get()
+                    class:text-zinc-400=move || !to_move.get()
+                >
+                    {name}
+                </span>
+                <span class="text-[10px] text-zinc-500 flex-shrink-0">{rating}</span>
+            </div>
+            <div class="flex-shrink-0 text-xs">
+                <Show
+                    when=move || has_clock.get()
+                    fallback=|| view! { <span class="text-zinc-600">"\u{2014}"</span> }
+                >
+                    <Clock
+                        snapshot_ms={ms}
+                        snapshot_sent_at_ms={sent_at_ms}
+                        is_active={active}
+                        offset_ms={no_offset}
+                        abort_deadline_ms={no_abort}
+                    />
+                </Show>
+            </div>
+        </div>
     }
 }
 
@@ -225,21 +300,31 @@ pub fn WatchGrid() -> impl IntoView {
         });
     }
 
-    // Bound as a named closure rather than inlined into the `when=` attribute
-    // below: an unparenthesized `>` there is ambiguous with the RSX tag-close
-    // `>` for the `view!` macro's parser, and removing the disambiguating
-    // parens (as `unused_parens` otherwise suggests) breaks the parse.
-    let has_more_than_shown = move || total_active.get() > WATCH_GRID_LIMIT;
-
     view! {
-        <div class="max-w-5xl mx-auto px-6 py-8">
-            <div class="flex items-center justify-between mb-6">
-                <h1 class="text-3xl font-bold tracking-tighter text-white">"Watch"</h1>
-                <Show when=has_more_than_shown>
-                    <span class="text-xs text-zinc-500">
-                        {move || format!("Showing {} of {} active games", games.get().len(), total_active.get())}
-                    </span>
-                </Show>
+        <div class="max-w-6xl mx-auto px-6 py-8">
+            <div class="flex items-end justify-between gap-4 mb-6">
+                <div class="flex flex-col gap-1">
+                    <h1 class="display-1 text-white">"Watch"</h1>
+                    // Always shown once loaded, not only when the roster is
+                    // truncated — "12 games in progress" is useful context on
+                    // its own, and the old conditional meant the header
+                    // silently changed shape as the count crossed the cap.
+                    <Show when=move || has_loaded.get()>
+                        <span class="text-xs text-zinc-500">
+                            {move || {
+                                let shown = games.get().len();
+                                let total = total_active.get();
+                                if total > WATCH_GRID_LIMIT {
+                                    format!("Showing the top {shown} of {total} games in progress")
+                                } else if total == 1 {
+                                    "1 game in progress".to_string()
+                                } else {
+                                    format!("{total} games in progress")
+                                }
+                            }}
+                        </span>
+                    </Show>
+                </div>
             </div>
             <Show
                 when=move || has_loaded.get()
@@ -256,7 +341,7 @@ pub fn WatchGrid() -> impl IntoView {
                         <p class="text-zinc-500 text-sm italic px-1">"No games in progress right now"</p>
                     }
                 >
-                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
                         <For
                             each=move || games.get()
                             key=|g| g.game_id

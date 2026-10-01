@@ -60,7 +60,7 @@ fn PlayerHalf(player: RecentGamePlayer, is_me: bool) -> impl IntoView {
     view! {
         <div class="flex flex-row items-center gap-2 min-w-0">
             {player.avatar_url.clone().map(|url| view! {
-                <img src={url} class="w-6 h-6 rounded-full flex-shrink-0" />
+                <img src={url} alt="" class="w-6 h-6 rounded-full flex-shrink-0" />
             })}
             <span
                 class="truncate min-w-0"
@@ -91,7 +91,7 @@ fn RecentGameRow(game: RecentGame) -> impl IntoView {
             </div>
             <div class="flex flex-col items-end gap-1 flex-shrink-0">
                 <span class={format!("text-sm font-semibold {color_class}")}>{label}</span>
-                <span class="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                <span class="eyebrow-sm text-zinc-500">
                     {if game.rated { "Rated" } else { "Casual" }}
                 </span>
             </div>
@@ -134,7 +134,7 @@ pub fn RecentGames(#[prop(optional)] username: Option<String>) -> impl IntoView 
         view! {
             <div class="flex flex-col gap-2">
                 {(0..3).map(|_| view! {
-                    <div class="h-14 rounded-xl skeleton-shimmer"/>
+                    <div class="h-14 rounded-card skeleton-shimmer"/>
                 }).collect_view()}
             </div>
         }
@@ -142,7 +142,7 @@ pub fn RecentGames(#[prop(optional)] username: Option<String>) -> impl IntoView 
 
     view! {
         <div>
-            <h2 class="text-xl font-bold tracking-tighter text-white mb-4">"Recent games"</h2>
+            <h2 class="eyebrow text-zinc-500 mb-3">"Recent games"</h2>
             <Transition fallback=fallback>
                 {move || {
                     let rows = games.get().and_then(|r| r.ok()).unwrap_or_default();
@@ -152,7 +152,7 @@ pub fn RecentGames(#[prop(optional)] username: Option<String>) -> impl IntoView 
                         }.into_any()
                     } else {
                         view! {
-                            <div class="flex flex-col divide-y divide-zinc-800 rounded-2xl bg-zinc-900 border border-zinc-800 overflow-hidden">
+                            <div class="flex flex-col divide-y divide-zinc-800 surface-card overflow-hidden">
                                 {rows.into_iter().map(|game| view! { <RecentGameRow game={game} /> }).collect_view()}
                             </div>
                         }.into_any()

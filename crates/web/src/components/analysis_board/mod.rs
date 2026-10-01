@@ -349,9 +349,9 @@ pub fn AnalysisBoard(
         // phone, so this needs to scroll rather than clip both ends around
         // a hard-centered, fixed-height box. `px-2` gives the eval bar a
         // real gutter instead of sitting flush on the screen edge.
-        <div class="flex flex-col items-center w-full px-2 py-2 min-h-[calc(100dvh-3.5rem)] justify-start md:justify-center">
+        <div class="flex flex-col items-center w-full px-2 py-2 min-h-below-nav justify-start md:justify-center">
             <Show when=move || load_error.get().is_some()>
-                <div class="w-full max-w-[calc(100dvh-15rem)] md:max-w-[calc(100dvh-12.5rem)] mb-2 px-3 py-2 rounded-lg bg-amber-950/40 border border-amber-800/50 text-amber-200 text-xs">
+                <div class="w-full board-frame-max mb-2 px-3 py-2 rounded-control bg-amber-950/40 border border-amber-800/50 text-amber-200 text-xs">
                     "Couldn't load this game for analysis — it may still be in progress."
                 </div>
             </Show>
@@ -361,7 +361,7 @@ pub fn AnalysisBoard(
             // it's measured against the container's *actual* layout width,
             // so it already accounts for the `px-2` gutter and any vertical
             // scrollbar without needing to guess their size.
-            <div class="relative w-full max-w-[calc(100dvh-15rem)] md:max-w-[calc(100dvh-12.5rem)]">
+            <div class="relative w-full board-frame-max">
                 // Mobile: horizontal eval bar + top-2 candidates, above
                 // *everything* else — including the captured-pieces row,
                 // which stays adjacent to the board itself (its natural
@@ -477,10 +477,10 @@ pub fn AnalysisBoard(
                 // (top/bottom-row-inclusive) height, landing flush with the
                 // board's actual top/bottom edges since those rows are
                 // symmetric.
-                <div class="hidden md:flex absolute top-1/2 -translate-y-1/2 left-full ml-4 w-64 md:h-[calc(100dvh-12.5rem)] flex-col gap-3">
+                <div class="hidden md:flex absolute top-1/2 -translate-y-1/2 left-full ml-4 w-64 h-board-md flex-col gap-3">
                     <OpeningName opening=opening />
                     <CandidateMoves lines=lines engine_on=engine_on />
-                    <div class="flex-1 min-h-0 flex flex-col rounded-md bg-zinc-900/60 border border-zinc-800 p-2">
+                    <div class="flex-1 min-h-0 flex flex-col surface-card p-2">
                         <AnalysisMovesPanel tree=tree cursor=cursor />
                     </div>
                     <AnalysisControls tree=tree cursor=cursor flipped=flipped last_move=last_move position=position engine_on=engine_on game_players=game_players />
@@ -502,7 +502,7 @@ fn AnalysisPlayerChip(player: RecentGamePlayer) -> impl IntoView {
     view! {
         <div class="flex flex-row items-center gap-2 py-2 min-w-0">
             {player.avatar_url.map(|url| view! {
-                <img src={url} class="w-6 h-6 rounded-full flex-shrink-0" />
+                <img src={url} alt="" class="w-6 h-6 rounded-full flex-shrink-0" />
             })}
             <span class="text-sm font-medium truncate min-w-0">
                 {player.username.unwrap_or_else(|| "Anonymous".to_string())}
@@ -520,7 +520,7 @@ fn AnalysisPlayerChip(player: RecentGamePlayer) -> impl IntoView {
 fn OpeningName(opening: Signal<Option<(String, String)>>) -> impl IntoView {
     view! {
         <Show when=move || opening.get().is_some()>
-            <div class="rounded-md bg-zinc-900/60 border border-zinc-800 p-2 text-xs font-mono text-zinc-300">
+            <div class="surface-card p-2 text-xs font-mono text-zinc-300">
                 {move || opening.get().map(|(eco, name)| format!("{eco} · {name}"))}
             </div>
         </Show>
@@ -542,7 +542,7 @@ fn CandidateMoves(
 ) -> impl IntoView {
     view! {
         <Show when=move || engine_on.get()>
-            <div class="rounded-md bg-zinc-900/60 border border-zinc-800 p-2 text-xs font-mono flex flex-col gap-2">
+            <div class="surface-card p-2 text-xs font-mono flex flex-col gap-2">
                 {move || {
                     let lines = lines.get();
                     if lines.iter().all(Option::is_none) {
@@ -610,7 +610,7 @@ fn EvalBar(
     if horizontal {
         view! {
             <Show when=move || engine_on.get()>
-                <div class="relative w-full h-4 rounded-md overflow-hidden bg-zinc-900 border border-zinc-800">
+                <div class="relative w-full h-4 rounded-control overflow-hidden bg-zinc-900 border border-zinc-800">
                     <div class="absolute inset-0 bg-zinc-950"></div>
                     <div
                         class="absolute inset-y-0 bg-white transition-[width] duration-500 ease-out"
@@ -651,7 +651,7 @@ fn EvalBar(
                 // bar/board row, leaving *this* inner sizing invisible to
                 // `items-stretch` the same way it broke `ChessBoard` before
                 // `size_class` moved onto its own true outer element.
-                <div class="hidden md:block relative w-7 md:w-9 flex-shrink-0 rounded-md overflow-hidden bg-zinc-900 border border-zinc-800">
+                <div class="hidden md:block relative w-7 md:w-9 flex-shrink-0 rounded-control overflow-hidden bg-zinc-900 border border-zinc-800">
                     <div class="absolute inset-0 bg-zinc-950"></div>
                     <div
                         class="absolute inset-x-0 bg-white transition-[height] duration-500 ease-out"
