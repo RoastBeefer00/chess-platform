@@ -8,7 +8,7 @@ pub struct GameConfig {
     pub rated: RatingMode,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, EnumIter)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize, EnumIter)]
 pub enum Category {
     Bullet,
     Blitz,
@@ -26,6 +26,24 @@ pub enum Variant {
 pub struct TimeControl {
     pub initial_time: i64,
     pub mode: TimeMode,
+}
+
+impl Category {
+    /// Parses the lowercase string stored in `games.mode` / `ratings.mode`
+    /// back into a `Category`. `None` for a mode that isn't one of these
+    /// four — `ratings` also carries '960' and 'puzzle' rows, which are real
+    /// pools but not game categories.
+    ///
+    /// The inverse of the `Display` impl below.
+    pub fn from_mode(mode: &str) -> Option<Self> {
+        match mode {
+            "bullet" => Some(Category::Bullet),
+            "blitz" => Some(Category::Blitz),
+            "rapid" => Some(Category::Rapid),
+            "classical" => Some(Category::Classical),
+            _ => None,
+        }
+    }
 }
 
 impl TimeControl {

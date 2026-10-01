@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO ratings (user_id, mode, rating) VALUES ($1, $2, 1500)\n                 ON CONFLICT (user_id, mode) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "45a476d8befeac6842c8728bc1e78c0b2e2a2bb7d4c367b45f16f7a84a310825"
+}

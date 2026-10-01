@@ -95,7 +95,15 @@ pub fn App() -> impl IntoView {
                     <Route path=StaticSegment("/") view={Lazy::<HomePage>::new()}/>
                     <Route path=StaticSegment("/analysis") view={Lazy::<AnalysisPage>::new()}/>
                     <Route path=StaticSegment("/puzzles") view={Lazy::<PuzzlesPage>::new()}/>
-                    <ParentRoute path=StaticSegment("/") view=RequireAuth>
+                    // `StaticSegment("")`, not `"/"`: this is a layout route that contributes
+                    // no path segment of its own. With `"/"` the generated server-side
+                    // paths came out as `//watch`, `//friends`, `//u/{username}` and so
+                    // on, which Axum never matched — every protected route fell through
+                    // to `file_and_error_handler`, which set 404 and did a filesystem
+                    // lookup before rendering. The pages looked correct because Leptos's
+                    // own router matched the real path client-side, so the only visible
+                    // symptom was an HTTP 404 on a page that rendered fine.
+                    <ParentRoute path=StaticSegment("") view=RequireAuth>
                         <Route path=(StaticSegment("game"), ParamSegment("game_id")) view={Lazy::<PlayPage>::new()}/>
                         <Route path=StaticSegment("watch") view={Lazy::<WatchPage>::new()}/>
                         <Route path=StaticSegment("friends") view={Lazy::<FriendsPage>::new()}/>

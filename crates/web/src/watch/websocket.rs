@@ -12,23 +12,6 @@ pub const WATCH_GRID_LIMIT: usize = 24;
 #[cfg(feature = "ssr")]
 const WATCH_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Parses the lowercase category string stored in the cross-instance
-/// `active_games:{id}` Redis hash (see `RedisClient::active_game_upsert`)
-/// back into `Category`. `Category` has a `Display` impl for the other
-/// direction but no `FromStr` — this is the one place that needs the
-/// reverse, so it stays local rather than growing the shared crate's public
-/// surface for a single call site.
-#[cfg(feature = "ssr")]
-fn parse_category(s: &str) -> Option<shared::Category> {
-    match s {
-        "bullet" => Some(shared::Category::Bullet),
-        "blitz" => Some(shared::Category::Blitz),
-        "rapid" => Some(shared::Category::Rapid),
-        "classical" => Some(shared::Category::Classical),
-        _ => None,
-    }
-}
-
 #[server(protocol = Websocket<JsonEncoding, JsonEncoding>)]
 pub async fn watch_websocket(
     input: BoxedStream<WatchClientMessage, ServerFnError>,
@@ -180,7 +163,7 @@ pub async fn watch_websocket(
                     }
 
                     for entry in state.redis_client.active_games_excluding(&local_ids).await {
-                        let Some(category) = parse_category(&entry.category) else { continue };
+                        let Some(category) = Category::from_mode(&entry.category) else { continue };
                         candidates.push(WatchCandidate {
                             game_id: entry.game_id,
                             room: None,

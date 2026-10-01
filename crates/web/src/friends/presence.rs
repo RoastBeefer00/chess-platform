@@ -62,6 +62,13 @@ pub struct FriendsPresence {
     pub incoming_request: RwSignal<Option<IncomingFriendRequest>>,
 }
 
+/// How many consecutive failed connections before the presence socket stops
+/// trying for this page load. With the backoff below that is roughly twenty
+/// minutes of attempts, so a server restart is ridden out but a permanent
+/// refusal cannot become an endless source of load.
+#[cfg(feature = "hydrate")]
+const MAX_CONSECUTIVE_FAILURES: u32 = 20;
+
 pub fn use_friends_presence() -> FriendsPresence {
     use_context::<FriendsPresence>().expect("provide_friends_presence must be called at the App root")
 }
@@ -104,28 +111,71 @@ pub fn provide_friends_presence() {
             if started.get_value() {
                 return;
             }
-            let Some(Ok(Some(_))) = use_current_user().get() else { return };
+            let Some(Ok(Some(user))) = use_current_user().get() else { return };
+            // Mirror `friends_websocket`'s own gate: it rejects guests and
+            // users who haven't picked a username, and that rejection is
+            // permanent, not transient. Opening the socket for them meant a
+            // refused connection every few seconds for the lifetime of the
+            // tab — and because the rejection happens inside the server fn,
+            // *after* the session layer has loaded the user, every attempt
+            // cost a database round trip. One idle guest tab measured 9
+            // queries and 9 HTTP 500s per 20 seconds, doing nothing.
+            //
+            // Not a security check (the server's gate is that); this just
+            // stops the client asking a question it already knows the
+            // answer to.
+            if user.is_guest || user.username.is_none() {
+                return;
+            }
             started.set_value(true);
 
             spawn_local(async move {
                 let mut backoff_ms = 500u32;
+                // Belt and braces for the gate above: if the server ever
+                // refuses for a reason the client can't anticipate, the
+                // retries stop instead of running for the life of the tab.
+                // A connection that produced no messages counts as failed —
+                // the server sends `OnlineSnapshot` immediately on success,
+                // so a healthy one always yields at least one.
+                let mut consecutive_failures = 0u32;
                 loop {
                     let (mut tx, rx) = mpsc::channel::<FriendsClientMessage>(1);
                     let _ = tx.try_send(FriendsClientMessage::Connect);
 
                     match friends_websocket(rx.map(Ok).into()).await {
                         Ok(mut messages) => {
-                            backoff_ms = 500;
+                            let mut received_any = false;
                             while let Some(msg) = messages.next().await {
+                                received_any = true;
                                 let Ok(msg) = msg else { continue };
                                 handle_message(&presence, msg);
                             }
+                            if received_any {
+                                backoff_ms = 500;
+                                consecutive_failures = 0;
+                            } else {
+                                consecutive_failures += 1;
+                            }
                         }
-                        Err(e) => leptos::logging::warn!("friends websocket error: {e}"),
+                        Err(e) => {
+                            consecutive_failures += 1;
+                            leptos::logging::warn!("friends websocket error: {e}");
+                        }
+                    }
+
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                        leptos::logging::warn!(
+                            "friends websocket: giving up after {consecutive_failures} \
+                             consecutive failures; presence will resume on next page load"
+                        );
+                        return;
                     }
 
                     TimeoutFuture::new(backoff_ms).await;
-                    backoff_ms = (backoff_ms * 2).min(5000);
+                    // Caps at a minute, not five seconds: a server that is
+                    // down stays down for longer than five seconds, and
+                    // every attempt costs a query.
+                    backoff_ms = (backoff_ms * 2).min(60_000);
                 }
             });
         });

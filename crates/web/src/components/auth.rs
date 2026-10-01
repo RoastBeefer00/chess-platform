@@ -20,12 +20,11 @@ pub struct UserSummary {
 #[server]
 pub async fn current_user() -> Result<Option<UserSummary>, ServerFnError> {
     use crate::auth::AuthBackend;
-    use crate::state::AppState;
     use axum_login::AuthSession;
+    // `settings` rides along on the user row the session layer has already
+    // loaded, so this server fn issues no query of its own.
     let auth = leptos_axum::extract::<AuthSession<AuthBackend>>().await?;
     let Some(u) = auth.user else { return Ok(None) };
-    let state = expect_context::<AppState>();
-    let settings = state.user_store.get_settings(u.id).await?;
     Ok(Some(UserSummary {
         id: u.id,
         email: u.email,
@@ -34,7 +33,7 @@ pub async fn current_user() -> Result<Option<UserSummary>, ServerFnError> {
         bio: u.bio,
         country: u.country,
         is_guest: u.is_guest,
-        settings,
+        settings: u.settings.0,
     }))
 }
 
@@ -88,50 +87,47 @@ pub fn RequireAuth() -> impl IntoView {
     let user = use_current_user();
     let location = leptos_router::hooks::use_location();
 
-    // `<Show>`'s `when` is read directly off the resource *inside*
-    // `<Transition>`'s children (required — reading a resource via a `Memo`
-    // built outside a Suspense/Transition boundary, even one whose value
-    // feeds a view rendered inside one, logs a "reading a resource outside
-    // Suspense/Transition" warning and forgoes SSR's wait-for-resolution).
-    // `<Show>` has its own internal dedup on `when`'s boolean output, so
-    // repeated resolutions that don't change the boolean (a settings save
-    // bumping `AuthTrigger`, refetching `current_user`, while still signed
-    // in as the same user) don't reconstruct `<Outlet/>` — which tears down
-    // and re-fetches every resource on the entire routed page from scratch
-    // (this is what made the profile page intermittently go blank/empty
-    // right after toggling a setting). The other branches (redirects, the
-    // create-username form) have no comparable state worth protecting, so
-    // they're left as a plain match in the `fallback`.
-    let onboarded = move || matches!(&user.get(), Some(Ok(Some(u))) if u.username.is_some());
-
-    // `Transition` instead of `Suspense`: keep the previously rendered DOM
-    // mounted while inner resources refetch. Otherwise any resource read
-    // inside the Outlet (e.g. the username-availability check on the
-    // create-username page) would unmount this whole subtree on every fetch
-    // — losing focus on inputs, scroll position, etc.
+    // `<Outlet/>` is a *sibling* of the gate below, not its child.
+    //
+    // It used to be `<Show>`'s children inside this `<Transition>`, which
+    // looked right — the protected page simply isn't built until the user is
+    // known. But everything inside a `<Transition>` is rebuilt once per pass
+    // of out-of-order streaming, three passes per SSR render, and rebuilding
+    // the outlet re-creates every `Resource` on the routed page. Each of the
+    // profile page's queries therefore ran three times for one page view
+    // (25 queries per load; 9 once the outlet stopped being rebuilt).
+    //
+    // What made that safe to change is that this gate was never the actual
+    // authorization boundary — every server fn behind it does its own check,
+    // and the two that didn't (`get_all_ratings` and `get_recent_games`,
+    // given an explicit username) were fixed alongside this. The gate's job
+    // is to redirect, not to withhold data, so rendering the page in the
+    // moments before a redirect lands leaks nothing: the server fns refuse,
+    // and `<Redirect>` sets the response's `Location` before the body is
+    // ever shown.
+    //
+    // `Transition` rather than `Suspense` so the redirect branch doesn't
+    // unmount and remount as inner resources refetch — a resource read
+    // inside the outlet (the username-availability check on the
+    // create-username page) would otherwise blow this subtree away on every
+    // fetch, losing input focus and scroll position.
     view! {
         <Transition>
-            <Show
-                when=onboarded
-                fallback=move || match user.get() {
-                    // Still genuinely pending (first load) — render nothing
-                    // rather than redirecting; `<Transition>` covers this in
-                    // practice since SSR always waits for resolution.
-                    None => ().into_any(),
-                    // Signed in, but hasn't picked a username yet.
-                    Some(Ok(Some(_))) => if location.pathname.get() == "/create-username" {
-                        // Already on the username page — render it
-                        // (otherwise we'd redirect to ourselves forever).
-                        view! { <Outlet/> }.into_any()
-                    } else {
-                        // Force them through onboarding.
-                        view! { <Redirect path="/create-username"/> }.into_any()
-                    },
-                    _ => view! { <Redirect path="/login"/> }.into_any(),
+            {move || match user.get() {
+                // Still pending on first load: no verdict yet, so no
+                // redirect. SSR waits for resolution before rendering.
+                None => ().into_any(),
+                // Signed in and onboarded — the outlet below is all they need.
+                Some(Ok(Some(u))) if u.username.is_some() => ().into_any(),
+                // Signed in, no username yet. Already on the onboarding page
+                // means rendering it, not redirecting to ourselves forever.
+                Some(Ok(Some(_))) if location.pathname.get() == "/create-username" => {
+                    ().into_any()
                 }
-            >
-                <Outlet/>
-            </Show>
+                Some(Ok(Some(_))) => view! { <Redirect path="/create-username"/> }.into_any(),
+                _ => view! { <Redirect path="/login"/> }.into_any(),
+            }}
         </Transition>
+        <Outlet/>
     }
 }
