@@ -677,6 +677,13 @@ impl AppState {
         self.redis_client.friends_mark_online(user_id, &session).await
     }
 
+    /// Refreshes one session's last-seen marker. `true` when this put the
+    /// user back into the online set after a reader pruned them.
+    #[tracing::instrument(skip(self), fields(user_id = %user_id, %session))]
+    pub async fn touch_friends_presence(&self, user_id: Uuid, session: &str) -> bool {
+        self.redis_client.friends_touch_session(user_id, session).await
+    }
+
     /// Deregisters one tab. Returns `true` when this was the LAST tab for
     /// this user ACROSS ALL INSTANCES — the caller should then broadcast
     /// `PresenceUpdate { online: false }`. Removing an unknown or
@@ -751,6 +758,20 @@ pub(crate) fn now_epoch_ms() -> i64 {
 
 pub(crate) fn instance_id() -> String {
     std::env::var("FLY_MACHINE_ID").unwrap_or_else(|_| "local".to_string())
+}
+
+/// The per-user sorted set of live sessions. A new key name rather than the
+/// old `friends:sessions:` one, because the value type changed from a set to
+/// a sorted set — writing a zset over an existing set would be a WRONGTYPE
+/// error. `presence.lua` deletes the legacy key when a user reconnects.
+fn friends_sessions_key(user_id: Uuid) -> String {
+    format!("friends:sess:{user_id}")
+}
+
+/// Public wrapper so the websocket handler can name its own session when
+/// heartbeating it.
+pub(crate) fn friends_session_key_for(session_id: Uuid) -> String {
+    friends_session_key(session_id)
 }
 
 fn friends_session_key(session_id: Uuid) -> String {
@@ -872,6 +893,7 @@ pub struct RedisClient {
     pool: fred::clients::Pool,
     find_pair_hash: String,
     presence_hash: String,
+    presence_online_hash: String,
     claim_game_hash: String,
     heartbeat_game_hash: String,
     upsert_game_hash: String,
@@ -880,6 +902,7 @@ pub struct RedisClient {
 
 const FIND_PAIR_SCRIPT: &str = include_str!("matchmaking/find_pair.lua");
 const PRESENCE_SCRIPT: &str = include_str!("friends/presence.lua");
+const PRESENCE_ONLINE_SCRIPT: &str = include_str!("friends/presence_online.lua");
 const CLAIM_GAME_SCRIPT: &str = include_str!("claim_game.lua");
 const HEARTBEAT_GAME_SCRIPT: &str = include_str!("heartbeat_game.lua");
 const UPSERT_GAME_SCRIPT: &str = include_str!("upsert_game.lua");
@@ -894,6 +917,21 @@ const UPDATE_FEN_SCRIPT: &str = include_str!("update_fen_game.lua");
 const ACTIVE_GAME_TTL_SECS: i64 = 30;
 pub const ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS: u64 = 10;
 
+/// How long a friends-presence session may go unrefreshed before it is
+/// presumed dead. Same 3:1 timeout-to-heartbeat ratio as the game-ownership
+/// keys above, for the same reason: a healthy connection renews well inside
+/// the window, and a connection whose process died stops renewing at once.
+pub const FRIENDS_PRESENCE_TTL_SECS: i64 = 30;
+pub const FRIENDS_PRESENCE_HEARTBEAT_INTERVAL_SECS: u64 = 10;
+
+/// Seconds since the epoch, for scoring presence sessions.
+fn now_epoch_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 impl RedisClient {
     pub async fn new(
         pool: fred::clients::Pool,
@@ -903,6 +941,7 @@ impl RedisClient {
     ) -> Self {
         let find_pair_hash = Self::load_script(&pool, FIND_PAIR_SCRIPT).await;
         let presence_hash = Self::load_script(&pool, PRESENCE_SCRIPT).await;
+        let presence_online_hash = Self::load_script(&pool, PRESENCE_ONLINE_SCRIPT).await;
         let claim_game_hash = Self::load_script(&pool, CLAIM_GAME_SCRIPT).await;
         let heartbeat_game_hash = Self::load_script(&pool, HEARTBEAT_GAME_SCRIPT).await;
         let upsert_game_hash = Self::load_script(&pool, UPSERT_GAME_SCRIPT).await;
@@ -934,6 +973,7 @@ impl RedisClient {
             pool,
             find_pair_hash,
             presence_hash,
+            presence_online_hash,
             claim_game_hash,
             heartbeat_game_hash,
             upsert_game_hash,
@@ -1012,13 +1052,20 @@ impl RedisClient {
     // --- Friends presence ---
 
     async fn friends_presence_transition(&self, action: &str, user_id: Uuid, session: &str) -> bool {
-        let sessions_key = format!("friends:sessions:{user_id}");
+        let sessions_key = friends_sessions_key(user_id);
+        let legacy_key = format!("friends:sessions:{user_id}");
         let result: i64 = self
             .pool
             .evalsha(
                 &self.presence_hash,
-                vec!["friends:online", sessions_key.as_str()],
-                vec![action.to_string(), session.to_string(), user_id.to_string()],
+                vec!["friends:online", sessions_key.as_str(), legacy_key.as_str()],
+                vec![
+                    action.to_string(),
+                    session.to_string(),
+                    user_id.to_string(),
+                    now_epoch_secs().to_string(),
+                    FRIENDS_PRESENCE_TTL_SECS.to_string(),
+                ],
             )
             .await
             .unwrap_or_else(|e| {
@@ -1026,6 +1073,13 @@ impl RedisClient {
                 0
             });
         result == 1
+    }
+
+    /// Refreshes one session's last-seen score. Returns `true` when this
+    /// brought the user back into the online set after a reader had pruned
+    /// them — the caller announces that like any other transition.
+    pub async fn friends_touch_session(&self, user_id: Uuid, session: &str) -> bool {
+        self.friends_presence_transition("touch", user_id, session).await
     }
 
     /// Returns `true` iff this was `user_id`'s first tab across all instances.
@@ -1039,7 +1093,7 @@ impl RedisClient {
     }
 
     pub async fn friends_is_online(&self, user_id: Uuid) -> bool {
-        self.pool.sismember("friends:online", user_id.to_string()).await.unwrap_or(false)
+        !self.friends_online_among(&[user_id]).await.is_empty()
     }
 
     /// Fetches the whole online set once and intersects locally rather than
@@ -1049,9 +1103,24 @@ impl RedisClient {
         if user_ids.is_empty() {
             return HashSet::new();
         }
-        let members: Vec<String> = self.pool.smembers("friends:online").await.unwrap_or_default();
-        let online: HashSet<Uuid> = members.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect();
-        user_ids.iter().copied().filter(|id| online.contains(id)).collect()
+        let mut keys: Vec<String> = Vec::with_capacity(user_ids.len() + 1);
+        keys.push("friends:online".to_string());
+        keys.extend(user_ids.iter().map(|id| friends_sessions_key(*id)));
+
+        let mut args: Vec<String> = Vec::with_capacity(user_ids.len() + 2);
+        args.push(now_epoch_secs().to_string());
+        args.push(FRIENDS_PRESENCE_TTL_SECS.to_string());
+        args.extend(user_ids.iter().map(|id| id.to_string()));
+
+        let members: Vec<String> = self
+            .pool
+            .evalsha(&self.presence_online_hash, keys, args)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(?e, "friends online lookup failed");
+                Vec::new()
+            });
+        members.iter().filter_map(|s| Uuid::parse_str(s).ok()).collect()
     }
 
     /// Publishes to `friends:user:{user_id}` — delivered to every instance's
