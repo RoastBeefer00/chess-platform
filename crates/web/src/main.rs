@@ -383,7 +383,23 @@ async fn main() {
                base-uri 'self'; \
                form-action 'self'";
 
-    let mut app = Router::new()
+    // The auth layer goes on *only* these routes, before the static-file
+    // fallback is attached below.
+    //
+    // `Router::layer` wraps the routes registered up to that point and does
+    // not wrap anything added afterwards, which is what lets the fallback sit
+    // outside it. That matters because the fallback serves every static
+    // asset, and the auth layer loads the session and then issues a
+    // `get_user` query — so with it applied globally, every WASM chunk,
+    // stylesheet, font and image cost a Postgres round trip. Under `--split`
+    // that was measured at 59 queries for a single page load, against 4 for
+    // the page's own data.
+    //
+    // The OAuth routes are inside it deliberately: they call `auth.login()`
+    // and so need the session. The cost of the fallback being outside is
+    // that the SSR-rendered 404 page has no `AuthSession` to read, so its nav
+    // renders signed-out. That is the whole of the trade.
+    let authed = Router::new()
         .merge(oauth_routes)
         .leptos_routes_with_context(
             &app_state,
@@ -399,6 +415,12 @@ async fn main() {
                 move || shell(leptos_options.clone())
             },
         )
+        .layer(auth_layer);
+
+    // Everything below applies to the assets as well as the pages — the
+    // security headers and the cache-control layers especially, since
+    // `no_cache_pkg` and `long_cache_engine` exist for asset paths.
+    let mut app = authed
         .fallback(leptos_axum::file_and_error_handler::<AppState, _>(shell))
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CONTENT_SECURITY_POLICY,
@@ -425,8 +447,7 @@ async fn main() {
         .layer(long_cache_engine)
         .layer(api_rate_limit)
         .layer(game_route)
-        .layer(TraceLayer::new_for_http())
-        .layer(auth_layer);
+        .layer(TraceLayer::new_for_http());
 
     if is_prod {
         app = app.layer(SetResponseHeaderLayer::if_not_present(
