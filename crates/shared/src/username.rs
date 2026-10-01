@@ -12,7 +12,7 @@ pub const USERNAME_MAX_LEN: usize = 32;
 /// directly.
 ///
 /// ASCII-only is deliberate rather than lazy: usernames are compared
-/// case-insensitively for uniqueness (see the `users_username_lower_idx`
+/// case-insensitively for uniqueness (see the `users_username_lower_unique_idx`
 /// migration), and unicode case folding plus homoglyphs would make
 /// "distinct" names that render identically.
 pub fn validate_username(username: &str) -> Result<(), &'static str> {

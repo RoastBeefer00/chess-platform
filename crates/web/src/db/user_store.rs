@@ -15,8 +15,8 @@ impl UserStore {
         Self { pool }
     }
 
-    /// Case-insensitive, matching the `users_username_lower_idx` uniqueness
-    /// constraint — `Magnus` is not available if `magnus` exists.
+    /// Case-insensitive, matching the `users_username_lower_unique_idx`
+    /// uniqueness constraint — `Magnus` is not available if `magnus` exists.
     #[tracing::instrument(skip(self))]
     pub async fn is_username_available(&self, username: String) -> Result<bool, AuthError> {
         Ok(
@@ -125,7 +125,7 @@ impl UserStore {
     }
 
     /// Case-insensitive, so `/u/Magnus` and `/u/magnus` resolve to the same
-    /// profile. Index-backed by `users_username_lower_idx`.
+    /// profile. Index-backed by `users_username_lower_unique_idx`.
     #[tracing::instrument(skip(self))]
     pub async fn find_by_username(&self, username: &str) -> Result<Option<User>, AuthError> {
         Ok(sqlx::query_as!(
