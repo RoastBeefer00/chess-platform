@@ -1,0 +1,91 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT g.id, g.white_user_id, g.black_user_id, g.result, g.status, g.rated,\n                      g.white_rating_after, g.black_rating_after,\n                      wu.username AS white_username, wu.avatar_url AS white_avatar_url,\n                      bu.username AS black_username, bu.avatar_url AS black_avatar_url\n               FROM games g\n               JOIN users wu ON wu.id = g.white_user_id\n               JOIN users bu ON bu.id = g.black_user_id\n               WHERE (g.white_user_id = $1 OR g.black_user_id = $1)\n                 AND g.mode = $2\n                 AND g.status IN ('finished', 'aborted')\n               ORDER BY g.ended_at DESC\n               LIMIT $3 OFFSET $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "white_user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "black_user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "result",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "rated",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "white_rating_after",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "black_rating_after",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 8,
+        "name": "white_username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "white_avatar_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "black_username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "black_avatar_url",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "46d1e94efe00551c21a63e20024efac223794a7081899ba38b0bb0f69562b3fa"
+}

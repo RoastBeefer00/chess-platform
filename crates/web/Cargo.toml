@@ -10,6 +10,13 @@ crate-type = ["cdylib", "rlib"]
 leptos = { version = "0.8", features = [] }
 leptos_router = { version = "0.8.0" }
 leptos-use = { version = "0.18.3" }
+# Charts for the per-category stats page. Leptos-native and pure Rust, so
+# the series come straight from signals with no JS bridge; it builds on the
+# `leptos-use` above rather than pulling a second copy.
+leptos-chartistry = { version = "0.2.3" }
+# Chartistry plots its time axis from `chrono` types, so the stats page
+# converts to them at the edge. The rest of the codebase stays on `time`.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 leptos_axum = { version = "0.8.0", optional = true }
 leptos_meta = { version = "0.8.0" }
 axum = { version = "0.8", features = ["ws", "macros"], optional = true }
@@ -80,6 +87,7 @@ ssr = [
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",
+    "leptos-chartistry/ssr",
 ]
 csr = ["leptos/csr"]
 

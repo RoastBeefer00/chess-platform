@@ -66,6 +66,38 @@
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * Charts (leptos-chartistry).
+ *
+ * The library ships light-page defaults: monospace text, black fills, and a
+ * tooltip with a hard-coded white background — which on this surface
+ * rendered white text on white and was unreadable. Its text colours and
+ * fonts arrive as SVG presentation attributes, which CSS outranks, so those
+ * are plain overrides. The tooltip's background is an inline `style`, which
+ * CSS does not outrank, hence the `!important` there and only there.
+ * ------------------------------------------------------------------------ */
+._chartistry_tick_label,
+._chartistry_rotated_label {
+    font-family: inherit;
+    fill: var(--color-zinc-500);
+}
+._chartistry_line {
+    stroke-linecap: round;
+}
+._chartistry_tooltip {
+    background-color: var(--color-zinc-900) !important;
+    border: 1px solid var(--color-zinc-700) !important;
+    border-radius: 0.5rem;
+    color: var(--color-zinc-200);
+    font-family: inherit !important;
+    font-variant-numeric: tabular-nums;
+    box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+}
+._chartistry_tooltip h2 {
+    color: var(--color-zinc-400);
+    font-weight: 600;
+}
+
 @keyframes shimmer {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }

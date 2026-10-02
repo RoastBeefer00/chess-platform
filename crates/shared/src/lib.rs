@@ -5,6 +5,7 @@ pub mod messages;
 mod player;
 mod puzzle;
 mod settings;
+mod stats;
 mod username;
 
 pub use friends::*;
@@ -18,4 +19,5 @@ pub use messages::{
 pub use player::*;
 pub use puzzle::*;
 pub use settings::*;
+pub use stats::*;
 pub use username::*;

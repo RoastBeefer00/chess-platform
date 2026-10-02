@@ -19,7 +19,7 @@ use strum::IntoEnumIterator;
 #[server]
 pub async fn get_all_ratings(
     username: Option<String>,
-) -> Result<Ratings, ServerFnError> {
+) -> Result<RatingsFor, ServerFnError> {
     use crate::auth::AuthBackend;
     use crate::state::AppState;
     use axum_login::AuthSession;
@@ -34,23 +34,26 @@ pub async fn get_all_ratings(
         return Err(ServerFnError::new("not signed in"));
     };
     let app_state = expect_context::<AppState>();
-    let id = match username {
-        Some(name) => app_state
-            .user_store
-            .find_by_username(&name)
-            .await?
-            .ok_or_else(|| ServerFnError::new("user not found"))?
-            .id,
-        None => viewer_id,
+    let (id, name) = match username {
+        Some(name) => {
+            let u = app_state
+                .user_store
+                .find_by_username(&name)
+                .await?
+                .ok_or_else(|| ServerFnError::new("user not found"))?;
+            (u.id, u.username)
+        }
+        None => (viewer_id, auth.user.as_ref().and_then(|u| u.username.clone())),
     };
-    app_state
+    let ratings = app_state
         .rating_store
         .get_all_ratings_with_diff(&id)
         .await
         .map_err(|e| {
             tracing::error!(%id, error = %e, "get_all_ratings failed");
             ServerFnError::new(format!("Error getting ratings for user {id}: {e}"))
-        })
+        })?;
+    Ok(RatingsFor { username: name, ratings })
 }
 
 /// The signed-in user's own ratings, fetched once per page load.
@@ -65,8 +68,22 @@ pub async fn get_all_ratings(
 /// One row per category: the rating and its 14-day change.
 pub type Ratings = Vec<(Category, u32, i32)>;
 
+/// What `get_all_ratings` returns: the ratings, plus the username they belong
+/// to so each card can link to that user's stats page.
+///
+/// The username rides along rather than being fetched separately because the
+/// server fn has already resolved the user to read their ratings. Asking the
+/// client to pair this with a second resource is exactly the nested-resource
+/// shape that desynced SSR and hydration here before. `None` for an account
+/// that has not finished onboarding, which has no profile URL to link to.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct RatingsFor {
+    pub username: Option<String>,
+    pub ratings: Ratings,
+}
+
 #[derive(Copy, Clone)]
-pub struct MyRatingsResource(pub Resource<Result<Ratings, ServerFnError>>);
+pub struct MyRatingsResource(pub Resource<Result<RatingsFor, ServerFnError>>);
 
 /// Call once at the App root.
 pub fn provide_my_ratings() {
@@ -76,7 +93,7 @@ pub fn provide_my_ratings() {
     )));
 }
 
-pub fn use_my_ratings() -> Resource<Result<Ratings, ServerFnError>> {
+pub fn use_my_ratings() -> Resource<Result<RatingsFor, ServerFnError>> {
     use_context::<MyRatingsResource>()
         .expect("provide_my_ratings must be called at the App root")
         .0
@@ -176,14 +193,21 @@ pub fn EloCardRow(#[prop(optional, into)] username: Option<String>) -> impl Into
             </>
         }>
             {move || {
-                let found = ratings.get().and_then(|r| r.ok()).unwrap_or_default();
+                let found: RatingsFor = ratings.get().and_then(|r| r.ok()).unwrap_or_default();
+                let owner = found.username.clone();
                 Category::iter()
                     .map(|category| {
                         let value = found
+                            .ratings
                             .iter()
-                            .find(|(c, _, _)| c.to_string() == category.to_string())
+                            .find(|(c, _, _)| *c == category)
                             .map(|(_, rating, diff)| (*rating, *diff));
-                        view! { <EloCard category=category value=value/> }
+                        // Only linkable once we know whose ratings these are;
+                        // an account mid-onboarding has no profile URL.
+                        let href = owner
+                            .as_ref()
+                            .map(|u| format!("/stats/{u}/{category}"));
+                        view! { <EloCard category=category value=value href=href/> }
                     })
                     .collect_view()
             }}
@@ -211,16 +235,29 @@ fn EloCardSkeleton(category: Category) -> impl IntoView {
 /// A single rating card. Purely presentational — `EloCardRow` above does the
 /// fetching. `value` of `None` renders the em-dash placeholder, which is what
 /// a user with no rating in that category shows.
+/// `href` of `None` renders the card as a plain `div`. The card already had
+/// hover affordances — a border lift and a nudge upward — while being
+/// `cursor-default` and inert, so it looked pressable without being
+/// pressable. With a link it is both.
 #[component]
-pub fn EloCard(category: Category, value: Option<(u32, i32)>) -> impl IntoView {
+pub fn EloCard(
+    category: Category,
+    value: Option<(u32, i32)>,
+    // `optional_no_strip` rather than `optional`: the latter strips the
+    // `Option` and makes callers pass a bare `String`, but the caller here
+    // computes an `Option` (there is no link for an account without a
+    // username) and wants to hand it straight through.
+    #[prop(optional_no_strip)]
+    href: Option<String>,
+) -> impl IntoView {
     let rating = value.map(|(r, _)| r);
     let diff = value.map(|(_, d)| d);
-
-    view! {
-        <div class="flex flex-col gap-3 p-5 surface-card
-                    hover:border-zinc-700 hover:-translate-y-px active:translate-y-0
-                    transition-all duration-200 min-w-[128px] cursor-default
-                    shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+    let shell = "flex flex-col gap-3 p-5 surface-card \
+                 hover:border-zinc-700 hover:-translate-y-px active:translate-y-0 \
+                 transition-all duration-200 min-w-[128px] \
+                 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
+    let body = view! {
+        <>
             {category_icon(category)}
             <div class="flex flex-col gap-1">
                 <span class="text-3xl font-bold tracking-tighter text-white leading-none">
@@ -241,6 +278,14 @@ pub fn EloCard(category: Category, value: Option<(u32, i32)>) -> impl IntoView {
                     {category.to_string().to_case(Case::Title)}
                 </span>
             </div>
-        </div>
+        </>
+    };
+
+    match href {
+        Some(href) => view! {
+            <a href={href} class={format!("{shell} cursor-pointer")}>{body}</a>
+        }
+        .into_any(),
+        None => view! { <div class={format!("{shell} cursor-default")}>{body}</div> }.into_any(),
     }
 }

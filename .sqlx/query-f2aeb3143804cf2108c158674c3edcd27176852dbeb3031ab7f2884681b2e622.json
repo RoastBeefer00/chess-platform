@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                COUNT(*) FILTER (WHERE white_user_id = $1 AND result = 'white') AS \"ww!\",\n                COUNT(*) FILTER (WHERE white_user_id = $1 AND result = 'draw')  AS \"wd!\",\n                COUNT(*) FILTER (WHERE white_user_id = $1 AND result = 'black') AS \"wl!\",\n                COUNT(*) FILTER (WHERE black_user_id = $1 AND result = 'black') AS \"bw!\",\n                COUNT(*) FILTER (WHERE black_user_id = $1 AND result = 'draw')  AS \"bd!\",\n                COUNT(*) FILTER (WHERE black_user_id = $1 AND result = 'white') AS \"bl!\"\n            FROM games\n            WHERE (white_user_id = $1 OR black_user_id = $1)\n              AND mode = $2\n              AND status = 'finished'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ww!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "wd!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "wl!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "bw!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "bd!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "bl!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "f2aeb3143804cf2108c158674c3edcd27176852dbeb3031ab7f2884681b2e622"
+}

@@ -1,7 +1,7 @@
 use shakmaty::KnownOutcome;
 use shared::{
-    messages::GameOverReason, ActiveGame, AnalysisGameData, Category, FriendActiveGame, GameStatus,
-    RecentGame, RecentGamePlayer, RecentGameResult, Side,
+    messages::GameOverReason, ActiveGame, AnalysisGameData, Category, ColorRecord,
+    FriendActiveGame, GameStatus, RecentGame, RecentGamePlayer, RecentGameResult, Side,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -593,6 +593,116 @@ impl GameStore {
     /// `white_user_id = $1 OR black_user_id = $1`, which wouldn't use
     /// either index well.
     #[tracing::instrument(skip(self), fields(%user_id))]
+    /// Win/draw/loss counts for one user in one category, split by the
+    /// colour they played.
+    ///
+    /// One query with `FILTER` aggregates rather than two passes or
+    /// client-side counting: the whole point of the split is to compare the
+    /// two colours, so they have to be counted over the same set of rows.
+    /// Aborted games are excluded — they are not results, and counting them
+    /// as losses would quietly punish whoever's opponent walked away.
+    #[tracing::instrument(skip(self), fields(user_id = %user_id, %mode))]
+    pub async fn color_record(
+        &self,
+        user_id: Uuid,
+        mode: &str,
+    ) -> Result<(ColorRecord, ColorRecord), AuthError> {
+        let r = sqlx::query!(
+            r#"
+            SELECT
+                COUNT(*) FILTER (WHERE white_user_id = $1 AND result = 'white') AS "ww!",
+                COUNT(*) FILTER (WHERE white_user_id = $1 AND result = 'draw')  AS "wd!",
+                COUNT(*) FILTER (WHERE white_user_id = $1 AND result = 'black') AS "wl!",
+                COUNT(*) FILTER (WHERE black_user_id = $1 AND result = 'black') AS "bw!",
+                COUNT(*) FILTER (WHERE black_user_id = $1 AND result = 'draw')  AS "bd!",
+                COUNT(*) FILTER (WHERE black_user_id = $1 AND result = 'white') AS "bl!"
+            FROM games
+            WHERE (white_user_id = $1 OR black_user_id = $1)
+              AND mode = $2
+              AND status = 'finished'
+            "#,
+            user_id,
+            mode
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok((
+            ColorRecord { wins: r.ww, draws: r.wd, losses: r.wl },
+            ColorRecord { wins: r.bw, draws: r.bd, losses: r.bl },
+        ))
+    }
+
+    /// The user's games in one category, newest first, for the stats page.
+    ///
+    /// The same shape as `list_recent_games` so the existing `RecentGames`
+    /// row rendering can be reused unchanged, but filtered on `mode` and
+    /// paged — the stats page shows a category's whole history, which for an
+    /// active player is far more than the home page's ten.
+    #[tracing::instrument(skip(self), fields(user_id = %user_id, %mode, limit, offset))]
+    pub async fn list_games_in_category(
+        &self,
+        user_id: Uuid,
+        mode: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<RecentGame>, AuthError> {
+        let rows = sqlx::query!(
+            r#"SELECT g.id, g.white_user_id, g.black_user_id, g.result, g.status, g.rated,
+                      g.white_rating_after, g.black_rating_after,
+                      wu.username AS white_username, wu.avatar_url AS white_avatar_url,
+                      bu.username AS black_username, bu.avatar_url AS black_avatar_url
+               FROM games g
+               JOIN users wu ON wu.id = g.white_user_id
+               JOIN users bu ON bu.id = g.black_user_id
+               WHERE (g.white_user_id = $1 OR g.black_user_id = $1)
+                 AND g.mode = $2
+                 AND g.status IN ('finished', 'aborted')
+               ORDER BY g.ended_at DESC
+               LIMIT $3 OFFSET $4"#,
+            user_id,
+            mode,
+            limit,
+            offset,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let my_result = if r.status == "aborted" {
+                    RecentGameResult::Aborted
+                } else {
+                    match r.result.as_deref() {
+                        Some("draw") => RecentGameResult::Drawn,
+                        Some("white") if user_id == r.white_user_id => RecentGameResult::Won,
+                        Some("white") => RecentGameResult::Lost,
+                        Some("black") if user_id == r.black_user_id => RecentGameResult::Won,
+                        Some("black") => RecentGameResult::Lost,
+                        _ => RecentGameResult::Aborted,
+                    }
+                };
+                RecentGame {
+                    id: r.id,
+                    white: RecentGamePlayer {
+                        username: r.white_username,
+                        avatar_url: r.white_avatar_url,
+                        rating: r.white_rating_after,
+                    },
+                    black: RecentGamePlayer {
+                        username: r.black_username,
+                        avatar_url: r.black_avatar_url,
+                        rating: r.black_rating_after,
+                    },
+                    my_result,
+                    my_side: if user_id == r.white_user_id { Side::White } else { Side::Black },
+                    rated: r.rated,
+                }
+            })
+            .collect())
+    }
+
     pub async fn list_recent_games(
         &self,
         user_id: Uuid,
@@ -868,6 +978,123 @@ mod tests {
             outcome,
             reason,
         }
+    }
+
+    /// Inserts a finished game directly, bypassing the finalization path —
+    /// these tests care only about how rows are counted, not how they got
+    /// there.
+    async fn insert_result(
+        pool: &PgPool,
+        white_id: Uuid,
+        black_id: Uuid,
+        mode: &str,
+        result: Option<&str>,
+        status: &str,
+    ) {
+        sqlx::query!(
+            r#"INSERT INTO games (status, white_user_id, black_user_id, mode,
+                   time_initial_seconds, time_increment_seconds, rated, result, ended_at)
+               VALUES ($5, $1, $2, $3, 300, 0, true, $4, now())"#,
+            white_id,
+            black_id,
+            mode,
+            result,
+            status,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    // ── color_record ─────────────────────────────────────────────────────
+
+    /// The same `result` value means a win for one player and a loss for the
+    /// other, and which it is depends on the side the user was on. Getting
+    /// this backwards is the obvious failure, so both users are asserted
+    /// from the same rows.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn color_record_is_relative_to_the_side_played(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let a = insert_user(&pool).await;
+        let b = insert_user(&pool).await;
+
+        // a as White: one win, one loss, one draw.
+        insert_result(&pool, a, b, "blitz", Some("white"), "finished").await;
+        insert_result(&pool, a, b, "blitz", Some("black"), "finished").await;
+        insert_result(&pool, a, b, "blitz", Some("draw"), "finished").await;
+        // a as Black: two wins.
+        insert_result(&pool, b, a, "blitz", Some("black"), "finished").await;
+        insert_result(&pool, b, a, "blitz", Some("black"), "finished").await;
+
+        let (white, black) = store.color_record(a, "blitz").await.unwrap();
+        assert_eq!((white.wins, white.draws, white.losses), (1, 1, 1), "a as White");
+        assert_eq!((black.wins, black.draws, black.losses), (2, 0, 0), "a as Black");
+
+        let (bw, bb) = store.color_record(b, "blitz").await.unwrap();
+        assert_eq!((bw.wins, bw.draws, bw.losses), (0, 0, 2), "b as White");
+        assert_eq!((bb.wins, bb.draws, bb.losses), (1, 1, 1), "b as Black");
+    }
+
+    /// An aborted game is not a result. Counting it as a loss would punish
+    /// whoever's opponent walked away.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn color_record_ignores_aborted_games(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let a = insert_user(&pool).await;
+        let b = insert_user(&pool).await;
+
+        insert_result(&pool, a, b, "blitz", Some("white"), "finished").await;
+        insert_result(&pool, a, b, "blitz", None, "aborted").await;
+
+        let (white, black) = store.color_record(a, "blitz").await.unwrap();
+        assert_eq!(white.total(), 1, "only the finished game counts");
+        assert_eq!(white.wins, 1);
+        assert_eq!(black.total(), 0);
+    }
+
+    /// The whole point of the page is per-time-control stats, so a blitz game
+    /// must not show up in the bullet record.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn color_record_is_scoped_to_one_mode(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let a = insert_user(&pool).await;
+        let b = insert_user(&pool).await;
+
+        insert_result(&pool, a, b, "blitz", Some("white"), "finished").await;
+        insert_result(&pool, a, b, "bullet", Some("white"), "finished").await;
+        insert_result(&pool, a, b, "bullet", Some("white"), "finished").await;
+
+        assert_eq!(store.color_record(a, "blitz").await.unwrap().0.wins, 1);
+        assert_eq!(store.color_record(a, "bullet").await.unwrap().0.wins, 2);
+        assert_eq!(store.color_record(a, "rapid").await.unwrap().0.total(), 0);
+    }
+
+    // ── list_games_in_category ───────────────────────────────────────────
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn list_games_in_category_filters_and_pages(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let a = insert_user(&pool).await;
+        let b = insert_user(&pool).await;
+
+        for _ in 0..5 {
+            insert_result(&pool, a, b, "blitz", Some("white"), "finished").await;
+        }
+        insert_result(&pool, a, b, "bullet", Some("white"), "finished").await;
+
+        let first = store.list_games_in_category(a, "blitz", 2, 0).await.unwrap();
+        assert_eq!(first.len(), 2, "limit applies");
+
+        let second = store.list_games_in_category(a, "blitz", 2, 2).await.unwrap();
+        assert_eq!(second.len(), 2);
+        let overlap = first.iter().any(|g| second.iter().any(|h| h.id == g.id));
+        assert!(!overlap, "offset must not re-serve the first page");
+
+        let all = store.list_games_in_category(a, "blitz", 50, 0).await.unwrap();
+        assert_eq!(all.len(), 5, "the bullet game is excluded");
+
+        let bullet = store.list_games_in_category(a, "bullet", 50, 0).await.unwrap();
+        assert_eq!(bullet.len(), 1);
     }
 
     // ── get_finished_outcome ─────────────────────────────────────────────

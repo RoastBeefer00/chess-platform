@@ -28,6 +28,8 @@ pub mod rematch_controls;
 pub mod resume_game;
 pub mod settings;
 pub mod square;
+pub mod stats_charts;
+pub mod stats_view;
 pub mod user;
 pub mod watch_grid;
 
@@ -42,6 +44,8 @@ pub use clock::*;
 pub use connection_indicator::*;
 pub use draw_resign_controls::*;
 pub use elo_card::*;
+pub use stats_charts::*;
+pub use stats_view::*;
 pub use friend_search::*;
 pub use friends_list::*;
 pub use game_over_modal::*;

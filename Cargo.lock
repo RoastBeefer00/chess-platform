@@ -1940,6 +1940,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "leptos-chartistry"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "777b6bb2100427b4e5f6c64ec659a27c253b69f4a78ccd58f4bcc5d39c6dcffb"
+dependencies = [
+ "chrono",
+ "leptos",
+ "leptos-use",
+ "log",
+ "web-sys",
+]
+
+[[package]]
 name = "leptos-use"
 version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4955,6 +4968,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "axum-login",
+ "chrono",
  "console_error_panic_hook",
  "convert_case 0.11.0",
  "dotenvy",
@@ -4963,6 +4977,7 @@ dependencies = [
  "gloo-timers",
  "js-sys",
  "leptos",
+ "leptos-chartistry",
  "leptos-use",
  "leptos_axum",
  "leptos_meta",

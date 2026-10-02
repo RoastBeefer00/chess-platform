@@ -1,4 +1,4 @@
-use shared::Category;
+use shared::{Category, RatingPoint};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -43,6 +43,45 @@ impl RatingStore {
     /// The `ratings` table also holds '960' and 'puzzle' rows, which are real
     /// pools but not game categories; `Category::from_mode` returns `None`
     /// for those and they're skipped.
+    /// Every recorded rating for one user in one category, oldest first, for
+    /// the stats page's rating-over-time chart.
+    ///
+    /// `rating_history` only gains a row when a rated game ends, so this is
+    /// empty for a player who has a rating in this category but has never
+    /// played a rated game in it — the caller pairs it with the live value
+    /// from `ratings` rather than treating the last point as current.
+    ///
+    /// Index-backed by `rating_history_user_mode_time_idx`, which is on
+    /// `(user_id, mode, recorded_at DESC)`; the ascending order here is the
+    /// same index read backwards.
+    #[tracing::instrument(skip(self), fields(user_id = %id, ?category))]
+    pub async fn rating_history(
+        &self,
+        id: &Uuid,
+        category: Category,
+    ) -> Result<Vec<RatingPoint>, AuthError> {
+        let rows = sqlx::query!(
+            r#"SELECT rating, recorded_at
+               FROM rating_history
+               WHERE user_id = $1 AND mode = $2
+               ORDER BY recorded_at ASC"#,
+            id,
+            &category.to_string()
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| RatingPoint {
+                // Epoch milliseconds: `RatingPoint` is in `shared`, which
+                // deliberately carries no date-time dependency.
+                at: (r.recorded_at.unix_timestamp_nanos() / 1_000_000) as i64,
+                rating: r.rating,
+            })
+            .collect())
+    }
+
     #[tracing::instrument(skip(self), fields(user_id = %id))]
     pub async fn get_all_ratings_with_diff(
         &self,

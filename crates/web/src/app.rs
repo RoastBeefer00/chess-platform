@@ -12,7 +12,9 @@ use crate::pages::play::PlayPage;
 use crate::pages::profile::ProfilePage;
 use crate::pages::settings::SettingsPage;
 use crate::pages::watch::WatchPage;
-use crate::pages::{AnalysisPage, FriendsPage, HomePage, LoginPage, NotFoundPage, PuzzlesPage};
+use crate::pages::{
+    AnalysisPage, FriendsPage, HomePage, LoginPage, NotFoundPage, PuzzlesPage, StatsPage,
+};
 use crate::{components::auth::provide_current_user, pages::CreateUsernamePage};
 
 /// One sentence, reused for `<meta name="description">` and the Open Graph
@@ -108,6 +110,10 @@ pub fn App() -> impl IntoView {
                         <Route path=StaticSegment("watch") view={Lazy::<WatchPage>::new()}/>
                         <Route path=StaticSegment("friends") view={Lazy::<FriendsPage>::new()}/>
                         <Route path=(StaticSegment("u"), ParamSegment("username")) view={Lazy::<ProfilePage>::new()}/>
+                        <Route
+                            path=(StaticSegment("stats"), ParamSegment("username"), ParamSegment("category"))
+                            view={Lazy::<StatsPage>::new()}
+                        />
                         <Route path=StaticSegment("settings") view={Lazy::<SettingsPage>::new()}/>
                         <Route path=StaticSegment("create-username") view={Lazy::<CreateUsernamePage>::new()}/>
                     </ParentRoute>

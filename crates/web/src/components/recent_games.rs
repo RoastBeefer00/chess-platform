@@ -98,8 +98,10 @@ fn PlayerHalf(player: RecentGamePlayer, is_me: bool) -> impl IntoView {
     }
 }
 
+/// Public so the stats page can render the same row for a category's full
+/// history rather than growing a second, drifting copy of it.
 #[component]
-fn RecentGameRow(game: RecentGame) -> impl IntoView {
+pub fn RecentGameRow(game: RecentGame) -> impl IntoView {
     let (label, color_class) = result_badge(game.my_result);
     let href = format!("/analysis?game={}", game.id);
 
