@@ -1569,26 +1569,32 @@ pub struct ActiveGameClocks {
     pub sent_at_ms: i64,
 }
 
+/// Live-Redis client for tests, against `REDIS_URL` (devenv's local server by
+/// default). Module-level rather than inside `mod tests` so suites in other
+/// modules — `db::game_store`'s finalization tests, which need Postgres and
+/// Redis in the same test — can reach it too.
+#[cfg(test)]
+pub(crate) async fn make_redis_client_with_inboxes() -> (RedisClient, FriendsInboxes, MatchInbox) {
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let config = Config::from_url(&redis_url).expect("invalid REDIS_URL");
+    let pool = Pool::new(config.clone(), None, None, None, 2).expect("build pool");
+    pool.connect();
+    pool.wait_for_connect().await.expect("Redis connect");
+    let subscriber = fred::clients::SubscriberClient::new(config, None, None, None);
+    let friends_inboxes: FriendsInboxes = Arc::new(Mutex::new(HashMap::new()));
+    let match_inboxes: MatchInbox = Arc::new(Mutex::new(HashMap::new()));
+    let client = RedisClient::new(pool, subscriber, friends_inboxes.clone(), match_inboxes.clone()).await;
+    (client, friends_inboxes, match_inboxes)
+}
+
+#[cfg(test)]
+pub(crate) async fn make_redis_client() -> RedisClient {
+    make_redis_client_with_inboxes().await.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    async fn make_redis_client_with_inboxes() -> (RedisClient, FriendsInboxes, MatchInbox) {
-        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-        let config = Config::from_url(&redis_url).expect("invalid REDIS_URL");
-        let pool = Pool::new(config.clone(), None, None, None, 2).expect("build pool");
-        pool.connect();
-        pool.wait_for_connect().await.expect("Redis connect");
-        let subscriber = fred::clients::SubscriberClient::new(config, None, None, None);
-        let friends_inboxes: FriendsInboxes = Arc::new(Mutex::new(HashMap::new()));
-        let match_inboxes: MatchInbox = Arc::new(Mutex::new(HashMap::new()));
-        let client = RedisClient::new(pool, subscriber, friends_inboxes.clone(), match_inboxes.clone()).await;
-        (client, friends_inboxes, match_inboxes)
-    }
-
-    async fn make_redis_client() -> RedisClient {
-        make_redis_client_with_inboxes().await.0
-    }
 
     /// A throwaway clock snapshot for tests that don't assert on clocks.
     fn test_clocks() -> ActiveGameClocks {
@@ -2010,6 +2016,36 @@ mod tests {
 
         let taken_again = client.mm_take_pending_match(user).await;
         assert!(taken_again.is_none(), "double-take must not yield it twice");
+    }
+
+    /// The TTL is the entire expiry mechanism — there is no sweeper and no
+    /// `Instant` bookkeeping anywhere. If `mm_set_pending_match` ever stops
+    /// passing an expiry, the key becomes immortal and a player who never
+    /// came back to claim the match is offered it on their next session,
+    /// long after the opponent gave up. Silent, and invisible to the
+    /// round-trip test above, so assert the TTL itself.
+    #[tokio::test]
+    async fn mm_pending_match_expires_on_its_own() {
+        let client = make_redis_client().await;
+        let user = Uuid::new_v4();
+        let pending = PendingMatch { game_id: Uuid::new_v4(), side: Side::Black };
+        client.mm_set_pending_match(user, pending).await;
+
+        let key = format!("mm:pending:{user}");
+        let ttl: i64 = client.pool.ttl(&key).await.unwrap();
+        assert!(ttl > 0, "pending match must carry a TTL, got {ttl}");
+        assert!(
+            ttl <= PENDING_MATCH_TTL_SECS,
+            "TTL {ttl} exceeds the configured {PENDING_MATCH_TTL_SECS}s"
+        );
+
+        // Expiry really removes it, rather than leaving a tombstone a take
+        // could still deserialize.
+        let _: () = client.pool.expire(&key, 0, None).await.unwrap();
+        assert!(
+            client.mm_take_pending_match(user).await.is_none(),
+            "an expired pending match must not be claimable"
+        );
     }
 
     #[tokio::test]
