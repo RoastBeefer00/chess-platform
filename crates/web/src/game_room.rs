@@ -767,6 +767,16 @@ pub async fn handle_timeout(
         }
 
         // Flag fall confirmed.
+        //
+        // Detach our own JoinHandle first: `end_game` -> `abort_tasks` would
+        // otherwise abort *this* task, and we'd be cancelled at the first
+        // await below — before `finalize_game` ever reaches the DB. The room
+        // would read Finished in memory and both clients would see GameOver,
+        // but `games.status` would stay 'ongoing' and `active_games:{id}`
+        // would linger in Redis, so `find_active_game` keeps offering the
+        // dead game. Dropping a JoinHandle does not cancel the task.
+        let _ = gr.timeout_task.take();
+
         match color {
             Color::White => gr.game.white_ms_left = 0,
             Color::Black => gr.game.black_ms_left = 0,
@@ -819,6 +829,10 @@ pub async fn handle_abort_timeout(
         if already_moved {
             return;
         }
+
+        // Same self-abort hazard as `handle_timeout` — detach before
+        // `end_game` calls `abort_tasks`, or `abort_game` never commits.
+        let _ = gr.abort_task.take();
 
         gr.end_game(KnownOutcome::Draw, GameOverReason::Abort)
     };
