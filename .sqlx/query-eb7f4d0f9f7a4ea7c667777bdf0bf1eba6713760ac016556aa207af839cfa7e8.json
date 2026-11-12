@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournaments\n               SET status = CASE\n                       WHEN now() >= starts_at + make_interval(mins => duration_minutes)\n                           THEN 'finished'\n                       ELSE 'live'\n                   END,\n                   ended_at = CASE\n                       WHEN now() >= starts_at + make_interval(mins => duration_minutes)\n                           THEN starts_at + make_interval(mins => duration_minutes)\n                       ELSE NULL\n                   END\n               WHERE format = 'arena'\n                 AND status IN ('upcoming', 'live')\n                 AND now() >= starts_at\n                 AND (status = 'upcoming'\n                      OR now() >= starts_at + make_interval(mins => duration_minutes))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "eb7f4d0f9f7a4ea7c667777bdf0bf1eba6713760ac016556aa207af839cfa7e8"
+}

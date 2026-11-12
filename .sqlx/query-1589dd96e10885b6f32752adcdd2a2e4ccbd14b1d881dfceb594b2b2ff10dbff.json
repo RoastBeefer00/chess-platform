@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournament_pairings SET result = 'void' WHERE game_id = $1 AND result IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1589dd96e10885b6f32752adcdd2a2e4ccbd14b1d881dfceb594b2b2ff10dbff"
+}

@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tournaments (\n                       name, format, venue, schedule_key,\n                       time_initial_seconds, time_increment_seconds, rated,\n                       starts_at, duration_minutes\n                   ) VALUES ($1, 'arena', 'online', $2, $3, $4, TRUE, $5, $6)\n                   ON CONFLICT (schedule_key, starts_at) WHERE schedule_key IS NOT NULL\n                   DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Timestamptz",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "249396661fc194ced2c816d010ab3d1754ef41a54ddcd0d78f7f7033fff0a8c6"
+}

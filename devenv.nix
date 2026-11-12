@@ -18,6 +18,11 @@
     wasm-bindgen-cli_0_2_117
     binaryen
     libiconv
+    # `reqwest` (OAuth) links the system OpenSSL through `native-tls`, and
+    # `openssl-sys` finds it with pkg-config. Without both, a clean
+    # `cargo check --features ssr` fails in the `openssl-sys` build script.
+    openssl
+    pkg-config
   ];
 
   languages.rust = {

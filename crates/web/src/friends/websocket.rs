@@ -31,6 +31,9 @@ pub async fn friends_websocket(
     let session_id = Uuid::new_v4();
 
     let first_tab = state.add_friends_inbox(user_id, session_id, tx.clone()).await;
+    // Counts toward the site-wide "players online" figure — see
+    // `RedisClient::site_touch_online`. Refreshed by the heartbeat below.
+    state.redis_client.site_touch_online(user_id).await;
 
     let friend_ids = state.friend_store.list_friend_ids(user_id).await.unwrap_or_default();
 
@@ -79,6 +82,7 @@ pub async fn friends_websocket(
             ticker.tick().await;
             loop {
                 ticker.tick().await;
+                state.redis_client.site_touch_online(user_id).await;
                 let came_back = state.touch_friends_presence(user_id, &session).await;
                 if came_back {
                     // A reader had pruned this user while a heartbeat ran

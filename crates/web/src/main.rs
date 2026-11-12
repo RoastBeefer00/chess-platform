@@ -415,7 +415,23 @@ async fn main() {
                 move || shell(leptos_options.clone())
             },
         )
-        .layer(auth_layer);
+        .layer(auth_layer)
+        // Added *after* the auth layer, so it is not wrapped by it. The home
+        // page refreshes its "players online" figure from here every 30s
+        // per open tab; behind the auth layer each of those would load the
+        // session and the user row, which is a Postgres query per tab per
+        // refresh for as long as anyone leaves the site open. This reads
+        // one Redis key and nothing else. Still rate-limited: the path is
+        // under `/api/`.
+        .route(
+            "/api/online-count",
+            get(|axum::extract::State(state): axum::extract::State<AppState>| async move {
+                (
+                    [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+                    state.redis_client.site_online_count().await.to_string(),
+                )
+            }),
+        );
 
     // Everything below applies to the assets as well as the pages — the
     // security headers and the cache-control layers especially, since

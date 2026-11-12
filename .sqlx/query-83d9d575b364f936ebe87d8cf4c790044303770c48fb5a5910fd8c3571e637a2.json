@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tournaments (\n                   name, format, venue, organizer_id,\n                   time_initial_seconds, time_increment_seconds, rated,\n                   starts_at, duration_minutes, total_rounds\n               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n               RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Uuid",
+        "Int4",
+        "Int4",
+        "Bool",
+        "Timestamptz",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "83d9d575b364f936ebe87d8cf4c790044303770c48fb5a5910fd8c3571e637a2"
+}

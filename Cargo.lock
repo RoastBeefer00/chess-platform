@@ -4974,6 +4974,7 @@ dependencies = [
  "dotenvy",
  "fred",
  "futures",
+ "gloo-net",
  "gloo-timers",
  "js-sys",
  "leptos",

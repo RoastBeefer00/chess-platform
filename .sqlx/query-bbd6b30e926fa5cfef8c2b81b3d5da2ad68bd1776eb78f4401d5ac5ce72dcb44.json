@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournaments SET current_round = $2\n               WHERE id = $1 AND status = 'live' AND current_round = $2 - 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bbd6b30e926fa5cfef8c2b81b3d5da2ad68bd1776eb78f4401d5ac5ce72dcb44"
+}

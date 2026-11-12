@@ -6,6 +6,7 @@ mod player;
 mod puzzle;
 mod settings;
 mod stats;
+mod tournament;
 mod username;
 
 pub use friends::*;
@@ -20,4 +21,5 @@ pub use player::*;
 pub use puzzle::*;
 pub use settings::*;
 pub use stats::*;
+pub use tournament::*;
 pub use username::*;

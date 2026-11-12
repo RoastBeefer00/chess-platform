@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, round, white_player_id, black_player_id, game_id, result\n               FROM tournament_pairings\n               WHERE tournament_id = $1\n               ORDER BY created_at, id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "round",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "white_player_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "black_player_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "game_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "result",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "a92b32d4581dcc7320f3b474710ad7fd1bb5b3fe8637639e73ed63c69e6b1eca"
+}

@@ -46,6 +46,12 @@ pub enum FriendsServerMessage {
     /// previously a request produced no notification at all and you only
     /// found out by navigating to your own profile and looking.
     FriendRequestReceived { from: FriendSummary },
+    /// A friend invited us to an online tournament. Push-only and not
+    /// replayed on reconnect: the tournament page is the durable record, and
+    /// an invite is a nudge, so one missed while offline is not worth
+    /// storing. (The inviter is told when the friend is offline and can send
+    /// the link instead.)
+    TournamentInvite { tournament_id: Uuid, name: String, from: FriendSummary },
     /// How many unanswered incoming friend requests we have. Pushed on
     /// connect and again whenever the number changes, from either side —
     /// this is what the nav badge reads. Recomputed server-side rather than
@@ -134,6 +140,15 @@ mod tests {
         roundtrip(&FriendsServerMessage::ChallengeAccepted {
             challenge_id: Uuid::new_v4(),
             game_id: Uuid::new_v4(),
+        });
+    }
+
+    #[test]
+    fn server_tournament_invite_roundtrip() {
+        roundtrip(&FriendsServerMessage::TournamentInvite {
+            tournament_id: Uuid::new_v4(),
+            name: "Friday blitz".to_string(),
+            from: FriendSummary { id: Uuid::new_v4(), username: Some("alice".to_string()), avatar_url: None },
         });
     }
 

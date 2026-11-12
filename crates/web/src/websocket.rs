@@ -364,6 +364,14 @@ pub async fn game_websocket(
         // redundant PresenceUpdate broadcasts in the steady state.
         let mut prev_bucket: Option<u8> = None;
 
+        // Being connected to a game is being online. This is the only thing
+        // that counts a guest toward the site's player count while they
+        // play — they have no friends socket to heartbeat for them. Refreshed
+        // off the Ping stream below, at most once per interval.
+        const ONLINE_TOUCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+        state.redis_client.site_touch_online(user.id).await;
+        let mut last_online_touch = Instant::now();
+
         while let Some(msg) = input.next().await {
             if let Ok(msg) = msg {
                 tracing::debug!(?msg, "received message from client");
@@ -372,6 +380,14 @@ pub async fn game_websocket(
                 // contend on the mutex with actual gameplay.
                 if let GameClientMessage::Ping { client_time_ms } = &msg {
                     let client_time_ms = *client_time_ms;
+                    if last_online_touch.elapsed() >= ONLINE_TOUCH_INTERVAL {
+                        last_online_touch = Instant::now();
+                        let redis_client = state.redis_client.clone();
+                        let user_id = user.id;
+                        // Detached: a slow Redis must not delay the Pong the
+                        // client is timing.
+                        tokio::spawn(async move { redis_client.site_touch_online(user_id).await });
+                    }
                     let server_time_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map(|d| d.as_millis() as i64)
@@ -565,8 +581,14 @@ pub async fn game_websocket(
                     // would leave the user with two `status='active'` rows,
                     // which breaks the "at most one active game per user"
                     // assumption `find_active_game` is built on.
+                    //
+                    // Tournament games never rematch: the next opponent is the
+                    // tournament's to choose, and a rematch would start an
+                    // ordinary game that counts toward nothing. The client
+                    // doesn't offer the button; this is for one that asks anyway.
                     GameClientMessage::RematchOffer => {
                         if player_role == PlayerRole::Spectator
+                            || gr.tournament_id.is_some()
                             || !matches!(gr.status, shared::GameStatus::Finished(_))
                         {
                             continue;
@@ -592,6 +614,7 @@ pub async fn game_websocket(
                     }
                     GameClientMessage::RematchAccept => {
                         if player_role == PlayerRole::Spectator
+                            || gr.tournament_id.is_some()
                             || !matches!(gr.status, shared::GameStatus::Finished(_))
                         {
                             continue;

@@ -277,6 +277,20 @@ impl GameStore {
         .execute(&mut *tx)
         .await?;
 
+        // If this was a tournament game, the pairing gets its result in the
+        // same transaction as the game does — a tournament can then never
+        // show a finished game as still undecided, or the reverse. For an
+        // ordinary game this is one index miss. `result IS NULL` keeps a
+        // replayed finalize from overwriting a result an organizer has
+        // since corrected.
+        sqlx::query!(
+            "UPDATE tournament_pairings SET result = $2 WHERE game_id = $1 AND result IS NULL",
+            plan.game_id,
+            result_str,
+        )
+        .execute(&mut *tx)
+        .await?;
+
         if plan.rated {
             sqlx::query!(
                 r#"UPDATE ratings
@@ -363,6 +377,14 @@ impl GameStore {
         )
         .execute(&self.pool)
         .await?;
+        // An aborted tournament game is void: nobody scores, and the two
+        // are free to be paired again.
+        sqlx::query!(
+            "UPDATE tournament_pairings SET result = 'void' WHERE game_id = $1 AND result IS NULL",
+            plan.game_id,
+        )
+        .execute(&self.pool)
+        .await?;
         tracing::info!(game_id = %plan.game_id, "game_aborted");
         Ok(())
     }
@@ -399,6 +421,17 @@ impl GameStore {
                    termination = 'abandonment',
                    ended_at = now()
                WHERE id = ANY($1) AND status = 'active'"#,
+            ids,
+        )
+        .execute(&self.pool)
+        .await?;
+        // Same as `abort_game`, for the reaper's bulk path. Keyed off the
+        // games that really are aborted now rather than off `ids`, since the
+        // status guard above may have skipped some.
+        sqlx::query!(
+            r#"UPDATE tournament_pairings SET result = 'void'
+               WHERE result IS NULL
+                 AND game_id IN (SELECT id FROM games WHERE id = ANY($1) AND status = 'aborted')"#,
             ids,
         )
         .execute(&self.pool)

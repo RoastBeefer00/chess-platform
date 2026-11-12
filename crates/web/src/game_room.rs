@@ -110,6 +110,12 @@ pub struct GameRoom {
     pub finished_at: Option<Instant>,
     /// Cumulative score across all games in this rematch series (white, black). Draws give 0.5.
     pub session_score: (f32, f32),
+    /// The tournament this game is part of, if any. Set by
+    /// `AppState::create_tournament_game` (and restored on adoption). The
+    /// result reaches the tournament through the database, not through
+    /// this — it is here so the room can refuse a rematch and tell clients
+    /// where to send the players afterwards.
+    pub tournament_id: Option<Uuid>,
 }
 
 impl GameRoom {
@@ -140,6 +146,7 @@ impl GameRoom {
             end_reason: None,
             finished_at: None,
             session_score,
+            tournament_id: None,
         }
     }
 
@@ -227,6 +234,7 @@ impl GameRoom {
             end_reason: None,
             finished_at: None,
             session_score: (0.0, 0.0),
+            tournament_id: None,
         })
     }
 

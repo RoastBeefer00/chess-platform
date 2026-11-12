@@ -14,6 +14,7 @@ use crate::pages::settings::SettingsPage;
 use crate::pages::watch::WatchPage;
 use crate::pages::{
     AnalysisPage, FriendsPage, HomePage, LoginPage, NotFoundPage, PuzzlesPage, StatsPage,
+    TournamentPage, TournamentsPage,
 };
 use crate::{components::auth::provide_current_user, pages::CreateUsernamePage};
 
@@ -97,6 +98,14 @@ pub fn App() -> impl IntoView {
                     <Route path=StaticSegment("/") view={Lazy::<HomePage>::new()}/>
                     <Route path=StaticSegment("/analysis") view={Lazy::<AnalysisPage>::new()}/>
                     <Route path=StaticSegment("/puzzles") view={Lazy::<PuzzlesPage>::new()}/>
+                    // Public, like puzzles: anyone can watch a tournament.
+                    // Entering one is what needs an account, and the server
+                    // fns enforce that themselves.
+                    <Route path=StaticSegment("/tournaments") view={Lazy::<TournamentsPage>::new()}/>
+                    <Route
+                        path=(StaticSegment("tournament"), ParamSegment("tournament_id"))
+                        view={Lazy::<TournamentPage>::new()}
+                    />
                     // `StaticSegment("")`, not `"/"`: this is a layout route that contributes
                     // no path segment of its own. With `"/"` the generated server-side
                     // paths came out as `//watch`, `//friends`, `//u/{username}` and so

@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::components::{
     AnalyzeLink, GuestUpsell, ModalShell, NewGameButton, RematchControls, RematchState,
+    TournamentLink,
 };
 
 #[component]
@@ -19,6 +20,9 @@ pub fn GameOverModal(
     rematch_state: RwSignal<RematchState>,
     #[prop(into)] send: Callback<GameClientMessage>,
     tc_label: Signal<String>,
+    /// Set for a tournament game, which swaps rematch / new game for the
+    /// way back to the tournament.
+    tournament_id: Signal<Option<Uuid>>,
 ) -> impl IntoView {
     let is_abort = matches!(reason, Some(GameOverReason::Abort));
 
@@ -45,7 +49,9 @@ pub fn GameOverModal(
         }
     };
 
+    let in_tournament = tournament_id.get_untracked().is_some();
     let subtitle = move || match &reason {
+        Some(GameOverReason::Abort) if in_tournament => "Doesn't count toward the tournament",
         Some(GameOverReason::Abort) => "No rating change",
         Some(GameOverReason::Checkmate) => "by checkmate",
         Some(GameOverReason::Resignation) => "by resignation",
@@ -76,8 +82,13 @@ pub fn GameOverModal(
             </h2>
             <p class="text-zinc-400 text-sm mb-6">{subtitle}</p>
             <div class="flex flex-wrap items-center justify-center gap-3">
-                <RematchControls rematch_state=rematch_state send=send />
-                <NewGameButton on_new_game=on_new_game tc_label=tc_label />
+                {move || match tournament_id.get() {
+                    Some(id) => view! { <TournamentLink tournament_id=id /> }.into_any(),
+                    None => view! {
+                        <RematchControls rematch_state=rematch_state send=send />
+                        <NewGameButton on_new_game=on_new_game tc_label=tc_label />
+                    }.into_any(),
+                }}
                 <AnalyzeLink game_id=game_id />
             </div>
             // Nothing for a signed-in user; for a guest, the moment right

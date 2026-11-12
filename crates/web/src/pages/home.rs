@@ -3,8 +3,8 @@ use leptos_router::components::Redirect;
 use leptos_router::{lazy_route, LazyRoute};
 
 use crate::components::{
-    provide_my_active_game, provide_my_ratings, provide_my_recent_games, use_current_user, Landing,
-    PlayHub,
+    provide_home_tournaments, provide_my_active_game, provide_my_ratings, provide_my_recent_games,
+    provide_online_count, use_current_user, Landing, PlayHub,
 };
 
 #[derive(Clone)]
@@ -35,6 +35,8 @@ impl LazyRoute for HomePage {
         provide_my_ratings();
         provide_my_recent_games();
         provide_my_active_game();
+        provide_online_count();
+        provide_home_tournaments();
 
         view! {
             <Transition fallback=|| view! { <div class="min-h-below-nav"></div> }>

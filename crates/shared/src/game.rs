@@ -22,6 +22,9 @@ pub struct GameInfo {
     pub sent_at_ms: i64,
     pub clock_running: bool,
     pub config: GameConfig,
+    /// Set when this game is part of a tournament. The board swaps its
+    /// rematch / new-game controls for a way back to the tournament.
+    pub tournament_id: Option<Uuid>,
 }
 
 /// A finished game's move/clock history, for loading into the analysis

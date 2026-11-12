@@ -16,7 +16,9 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::auth::{AuthBackend, AuthError};
-use crate::db::{FriendStore, GameOutcomeLookup, GameStore, PuzzleStore, RatingStore, UserStore};
+use crate::db::{
+    FriendStore, GameOutcomeLookup, GameStore, PuzzleStore, RatingStore, TournamentStore, UserStore,
+};
 use crate::game_room::GameRoom;
 
 pub type GameId = Uuid;
@@ -95,6 +97,13 @@ const PENDING_MATCH_TTL_SECS: i64 = 60;
 /// forth between two people on a modal — neither takes minutes.
 const FINISHED_ROOM_GRACE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
+/// How long a tournament game waits for both players to show up before it is
+/// settled without them. A matchmaking game needs no such thing — both
+/// players asked for it seconds ago. A tournament pairs people who may have
+/// wandered off, and an unstarted game would otherwise hold its present
+/// player hostage (and out of the pairing pool) indefinitely.
+const TOURNAMENT_NO_SHOW: std::time::Duration = std::time::Duration::from_secs(45);
+
 #[derive(FromRef, Clone, Debug)]
 pub struct AppState {
     pub leptos_options: LeptosOptions,
@@ -105,10 +114,19 @@ pub struct AppState {
     pub puzzle_store: PuzzleStore,
     pub rating_store: RatingStore,
     pub friend_store: FriendStore,
+    pub tournament_store: TournamentStore,
     pub redis_client: RedisClient,
     pub match_inboxes: MatchInbox,
     pub matchmaking_refcount: MatchmakingRefcount,
     pub friends_inboxes: FriendsInboxes,
+    /// Arenas this instance is currently running a pairing loop for — see
+    /// `tournament::service::ensure_arena_runner`. A plain `std` mutex: it
+    /// is only ever held for a set lookup, never across an await.
+    pub arena_runners: Arc<std::sync::Mutex<HashSet<Uuid>>>,
+    /// The UTC hour (hours since the epoch) this instance last made sure
+    /// the scheduled tournaments exist, so the list page costs those
+    /// inserts once an hour rather than once a view.
+    pub schedule_checked_hour: Arc<std::sync::atomic::AtomicI64>,
 }
 
 impl AppState {
@@ -137,6 +155,7 @@ impl AppState {
         let puzzle_store = PuzzleStore::new(pool.clone());
         let rating_store = RatingStore::new(pool.clone());
         let friend_store = FriendStore::new(pool.clone());
+        let tournament_store = TournamentStore::new(pool.clone());
         let auth_backend = AuthBackend::new(pool, http_client).await;
         AppState {
             leptos_options,
@@ -147,14 +166,16 @@ impl AppState {
             puzzle_store,
             rating_store,
             friend_store,
+            tournament_store,
             redis_client,
             match_inboxes,
             matchmaking_refcount: Arc::new(Mutex::new(HashMap::new())),
             friends_inboxes,
+            arena_runners: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            schedule_checked_hour: Arc::new(std::sync::atomic::AtomicI64::new(-1)),
         }
     }
 
-    #[tracing::instrument(skip(self, game_config), fields(white = %white_player, black = %black_player))]
     pub async fn create_game(
         &self,
         game_config: GameConfig,
@@ -162,7 +183,83 @@ impl AppState {
         black_player: Uuid,
         session_score: (f32, f32),
     ) -> Result<GameId, AuthError> {
+        self.create_game_inner(game_config, white_player, black_player, session_score, None)
+            .await
+            .map(|(id, _)| id)
+    }
+
+    /// Starts a game that counts toward `tournament_id`.
+    ///
+    /// The caller records the pairing; this only makes the room aware of
+    /// where it belongs and arms the no-show watchdog, which settles the
+    /// game if the two players never both arrive:
+    ///
+    ///   - one of them is there: they win. The game is not rated — nobody
+    ///     should gain or lose rating over a board no move was played on.
+    ///   - neither is: it is aborted, and scores as nothing.
+    ///
+    /// Once both have connected the watchdog has nothing to do; the
+    /// ordinary first-move abort window takes over from there.
+    #[tracing::instrument(skip(self, game_config), fields(white = %white_player, black = %black_player))]
+    pub async fn create_tournament_game(
+        &self,
+        game_config: GameConfig,
+        white_player: Uuid,
+        black_player: Uuid,
+        tournament_id: Uuid,
+    ) -> Result<GameId, AuthError> {
+        let (game_id, room) = self
+            .create_game_inner(game_config, white_player, black_player, (0.0, 0.0), Some(tournament_id))
+            .await?;
+
+        let game_store = self.game_store.clone();
+        let redis_client = self.redis_client.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(TOURNAMENT_NO_SHOW).await;
+            let plan = {
+                let mut gr = room.lock().await;
+                if !matches!(gr.status, GameStatus::WaitingForOpponent) {
+                    return;
+                }
+                let white_here = gr.connected.contains_key(&gr.game.white_player);
+                let black_here = gr.connected.contains_key(&gr.game.black_player);
+                let forfeit = |gr: &mut GameRoom, winner: shakmaty::Color| {
+                    gr.end_game(
+                        shakmaty::KnownOutcome::Decisive { winner },
+                        shared::messages::GameOverReason::Timeout,
+                    )
+                    .map(|mut plan| {
+                        plan.rated = false;
+                        plan
+                    })
+                };
+                match (white_here, black_here) {
+                    (true, false) => forfeit(&mut gr, shakmaty::Color::White),
+                    (false, true) => forfeit(&mut gr, shakmaty::Color::Black),
+                    _ => gr.end_game(
+                        shakmaty::KnownOutcome::Draw,
+                        shared::messages::GameOverReason::Abort,
+                    ),
+                }
+            };
+            tracing::info!(%game_id, "tournament game settled by no-show");
+            crate::db::finalize_now(&game_store, &redis_client, plan).await;
+        });
+
+        Ok(game_id)
+    }
+
+    #[tracing::instrument(skip(self, game_config), fields(white = %white_player, black = %black_player))]
+    async fn create_game_inner(
+        &self,
+        game_config: GameConfig,
+        white_player: Uuid,
+        black_player: Uuid,
+        session_score: (f32, f32),
+        tournament_id: Option<Uuid>,
+    ) -> Result<(GameId, Arc<Mutex<GameRoom>>), AuthError> {
         let mut game = GameRoom::new(Game::new(game_config.clone(), white_player, black_player), session_score);
+        game.tournament_id = tournament_id;
         let game_id = game.game.id;
         let start_fen = {
             use shakmaty::{fen::Fen, EnPassantMode};
@@ -226,8 +323,9 @@ impl AppState {
             }
         }));
 
+        let room = Arc::new(Mutex::new(game));
         let mut games = self.games.lock().await;
-        games.insert(game_id, Arc::new(Mutex::new(game)));
+        games.insert(game_id, room.clone());
         drop(games);
 
         // Cross-instance watch-grid roster index + ownership record — see
@@ -259,7 +357,7 @@ impl AppState {
         self.broadcast_in_game(white_player, Some(game_id)).await;
         self.broadcast_in_game(black_player, Some(game_id)).await;
 
-        Ok(game_id)
+        Ok((game_id, room))
     }
 
     /// Notifies `user_id`'s online friends that `user_id` entered (or, if
@@ -379,6 +477,14 @@ impl AppState {
         let heartbeat_rated = row.rated;
         let heartbeat_fen = fen.clone();
         let mut room = room;
+        // Best-effort: a failed lookup only costs the rebuilt room its
+        // "back to the tournament" link. The result still reaches the
+        // tournament, because that is settled by game id in the database.
+        room.tournament_id = self
+            .tournament_store
+            .tournament_for_game(game_id)
+            .await
+            .unwrap_or_default();
         room.heartbeat_task = Some(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS)).await;
@@ -924,6 +1030,19 @@ pub const ACTIVE_GAME_HEARTBEAT_INTERVAL_SECS: u64 = 10;
 pub const FRIENDS_PRESENCE_TTL_SECS: i64 = 30;
 pub const FRIENDS_PRESENCE_HEARTBEAT_INTERVAL_SECS: u64 = 10;
 
+const SITE_ONLINE_KEY: &str = "site:online";
+/// How recently a user must have been seen to count as online. Three
+/// friends-socket heartbeats, the same 3:1 ratio as everything else here,
+/// plus slack — and long enough that a guest on the home page, who is only
+/// seen when the page loads, doesn't vanish from the count while still
+/// deciding what to play.
+pub const SITE_ONLINE_WINDOW_SECS: i64 = 90;
+
+/// How recently an arena entrant's page must have polled for them to be
+/// paired. The page polls every `ARENA_POLL_SECS`; three missed polls and
+/// they are presumed gone.
+pub const ARENA_LOBBY_WINDOW_SECS: i64 = 12;
+
 /// Seconds since the epoch, for scoring presence sessions.
 fn now_epoch_secs() -> i64 {
     std::time::SystemTime::now()
@@ -1142,6 +1261,101 @@ impl RedisClient {
         if let Err(e) = result {
             tracing::warn!(?e, %user_id, "friends_publish failed");
         }
+    }
+
+    // --- Site-wide "players online" ---
+    //
+    // One sorted set, `site:online`, of user id → last-seen epoch seconds.
+    // Anything that proves a signed-in user is here right now touches it:
+    // the friends socket's heartbeat (every full account, on any page), the
+    // game socket (which is what covers guests), and the home page's own
+    // count fetch. Reading is a ZCOUNT over the recent window, so a process
+    // that dies without cleaning up simply stops refreshing its users and
+    // they age out — there is no decrement to miss.
+    //
+    // Deliberately separate from `friends:online`: that one excludes guests
+    // and tracks per-tab sessions because it has to announce exact
+    // online/offline *transitions* to friends. This is a headcount, where
+    // "seen in the last minute" is both simpler and what the number means.
+
+    /// Claims the right to invite `to` to `tournament` as `from`, once per
+    /// ten minutes. Returns false if that invite was already sent, so
+    /// mashing the button (or a script) can't pile toasts onto someone.
+    pub async fn tournament_invite_claim(&self, tournament: Uuid, from: Uuid, to: Uuid) -> bool {
+        let key = format!("tournament:invite:{tournament}:{from}:{to}");
+        let result: FredResult<Option<String>> = self
+            .pool
+            .set(&key, "1", Some(Expiration::EX(600)), Some(SetOptions::NX), false)
+            .await;
+        // On a Redis error, refuse rather than allow: the safe failure for
+        // something that notifies another person.
+        matches!(result, Ok(Some(_)))
+    }
+
+    pub async fn site_touch_online(&self, user_id: Uuid) {
+        let result: FredResult<i64> = self
+            .pool
+            .zadd(SITE_ONLINE_KEY, None, None, false, false, (now_epoch_secs() as f64, user_id.to_string()))
+            .await;
+        if let Err(e) = result {
+            tracing::debug!(?e, "site_touch_online failed");
+        }
+    }
+
+    /// How many distinct users were seen within `SITE_ONLINE_WINDOW_SECS`.
+    /// Also trims everyone older, so the set stays the size of the live
+    /// audience rather than of everyone who ever visited.
+    pub async fn site_online_count(&self) -> u32 {
+        let cutoff = (now_epoch_secs() - SITE_ONLINE_WINDOW_SECS) as f64;
+        let _: FredResult<i64> = self
+            .pool
+            .zremrangebyscore(SITE_ONLINE_KEY, f64::NEG_INFINITY, cutoff)
+            .await;
+        let count: FredResult<i64> = self.pool.zcard(SITE_ONLINE_KEY).await;
+        count.unwrap_or(0).max(0) as u32
+    }
+
+    // --- Arena lobby ---
+    //
+    // `tournament:lobby:{id}`: user id → last-seen, refreshed by each
+    // entrant's tournament page as it polls. "On the page right now" is the
+    // signal that someone wants a game, and it has to be this fresh — an
+    // arena that pairs a player who closed the tab produces a game nobody
+    // turns up for. Same aging-out idiom as `site:online`.
+
+    pub async fn lobby_touch(&self, tournament_id: Uuid, user_id: Uuid) {
+        let key = format!("tournament:lobby:{tournament_id}");
+        let result: FredResult<i64> = self
+            .pool
+            .zadd(&key, None, None, false, false, (now_epoch_secs() as f64, user_id.to_string()))
+            .await;
+        if let Err(e) = result {
+            tracing::debug!(?e, "lobby_touch failed");
+        }
+        // Outlives the longest arena comfortably; just stops finished
+        // tournaments' lobbies from accumulating.
+        let _: FredResult<()> = self.pool.expire(&key, 6 * 60 * 60, None).await;
+    }
+
+    pub async fn lobby_leave(&self, tournament_id: Uuid, user_id: Uuid) {
+        let _: FredResult<i64> = self
+            .pool
+            .zrem(format!("tournament:lobby:{tournament_id}"), user_id.to_string())
+            .await;
+    }
+
+    /// Everyone seen in the lobby within `ARENA_LOBBY_WINDOW_SECS`.
+    pub async fn lobby_present(&self, tournament_id: Uuid) -> Vec<Uuid> {
+        let cutoff = (now_epoch_secs() - ARENA_LOBBY_WINDOW_SECS) as f64;
+        let members: FredResult<Vec<String>> = self
+            .pool
+            .zrangebyscore(format!("tournament:lobby:{tournament_id}"), cutoff, f64::INFINITY, false, None)
+            .await;
+        members
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|s| Uuid::parse_str(s).ok())
+            .collect()
     }
 
     // --- Matchmaking push ---
