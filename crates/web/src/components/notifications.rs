@@ -94,6 +94,20 @@ pub fn Notifications() -> impl IntoView {
         }
     });
 
+    // Like a friend request, an invite is a nudge rather than a question
+    // with a deadline: it clears itself after a while.
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        if let Some(invite) = presence.tournament_invite.get() {
+            leptos::task::spawn_local(async move {
+                gloo_timers::future::TimeoutFuture::new(30_000).await;
+                if presence.tournament_invite.get_untracked().is_some_and(|i| i == invite) {
+                    presence.tournament_invite.set(None);
+                }
+            });
+        }
+    });
+
     Effect::new(move |_| {
         if respond.value().get().is_some() {
             presence.incoming.set(None);
@@ -168,6 +182,34 @@ pub fn Notifications() -> impl IntoView {
                                 class="flex-1 px-3 py-1.5 text-sm font-medium text-zinc-300 border border-zinc-700 rounded-control hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
                             >
                                 "Decline"
+                            </button>
+                        </div>
+                    </div>
+                })}
+            </Show>
+
+            <Show when=move || presence.tournament_invite.get().is_some()>
+                {move || presence.tournament_invite.get().map(|invite| view! {
+                    <div class="surface-card border-zinc-700 shadow-xl p-4 flex flex-col gap-3">
+                        <div class="flex flex-col gap-0.5">
+                            <span class="text-sm font-semibold text-white">
+                                {invite.from_username.clone()} " invited you to a tournament"
+                            </span>
+                            <span class="text-xs text-zinc-500 truncate">{invite.tournament_name.clone()}</span>
+                        </div>
+                        <div class="flex gap-2">
+                            <a
+                                href=format!("/tournament/{}", invite.tournament_id)
+                                on:click=move |_| presence.tournament_invite.set(None)
+                                class="flex-1 px-3 py-1.5 text-sm font-semibold text-center bg-emerald-600 text-white rounded-control hover:bg-emerald-500 transition-colors cursor-pointer"
+                            >
+                                "View"
+                            </a>
+                            <button
+                                on:click=move |_| presence.tournament_invite.set(None)
+                                class="flex-1 px-3 py-1.5 text-sm font-medium text-zinc-300 border border-zinc-700 rounded-control hover:border-zinc-500 hover:text-white transition-colors cursor-pointer"
+                            >
+                                "Dismiss"
                             </button>
                         </div>
                     </div>

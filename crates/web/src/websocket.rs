@@ -364,6 +364,14 @@ pub async fn game_websocket(
         // redundant PresenceUpdate broadcasts in the steady state.
         let mut prev_bucket: Option<u8> = None;
 
+        // Being connected to a game is being online. This is the only thing
+        // that counts a guest toward the site's player count while they
+        // play — they have no friends socket to heartbeat for them. Refreshed
+        // off the Ping stream below, at most once per interval.
+        const ONLINE_TOUCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+        state.redis_client.site_touch_online(user.id).await;
+        let mut last_online_touch = Instant::now();
+
         while let Some(msg) = input.next().await {
             if let Ok(msg) = msg {
                 tracing::debug!(?msg, "received message from client");
@@ -372,19 +380,24 @@ pub async fn game_websocket(
                 // contend on the mutex with actual gameplay.
                 if let GameClientMessage::Ping { client_time_ms } = &msg {
                     let client_time_ms = *client_time_ms;
+                    if last_online_touch.elapsed() >= ONLINE_TOUCH_INTERVAL {
+                        last_online_touch = Instant::now();
+                        let redis_client = state.redis_client.clone();
+                        let user_id = user.id;
+                        // Detached: a slow Redis must not delay the Pong the
+                        // client is timing.
+                        tokio::spawn(async move { redis_client.site_touch_online(user_id).await });
+                    }
                     let server_time_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map(|d| d.as_millis() as i64)
                         .unwrap_or(0);
-                    let d = server_time_ms - client_time_ms;
-                    let new_offset = offset_est.map_or(d, |e| e.min(d));
+                    let (new_offset, rtt_est) =
+                        crate::websocket::estimate_rtt(client_time_ms, server_time_ms, offset_est);
                     offset_est = Some(new_offset);
-                    // RTT estimate: 2 * (server_recv - client_send - min_offset).
                     // Lock only on bucket transitions to preserve the fast path.
                     if let Some(side) = player_side {
                         use shared::rtt_bucket;
-                        let rtt_est = ((server_time_ms - client_time_ms - new_offset) * 2)
-                            .clamp(0, 60_000) as u32;
                         let new_bucket = rtt_bucket(rtt_est);
                         if prev_bucket != Some(new_bucket) {
                             prev_bucket = Some(new_bucket);
@@ -568,8 +581,14 @@ pub async fn game_websocket(
                     // would leave the user with two `status='active'` rows,
                     // which breaks the "at most one active game per user"
                     // assumption `find_active_game` is built on.
+                    //
+                    // Tournament games never rematch: the next opponent is the
+                    // tournament's to choose, and a rematch would start an
+                    // ordinary game that counts toward nothing. The client
+                    // doesn't offer the button; this is for one that asks anyway.
                     GameClientMessage::RematchOffer => {
                         if player_role == PlayerRole::Spectator
+                            || gr.tournament_id.is_some()
                             || !matches!(gr.status, shared::GameStatus::Finished(_))
                         {
                             continue;
@@ -595,6 +614,7 @@ pub async fn game_websocket(
                     }
                     GameClientMessage::RematchAccept => {
                         if player_role == PlayerRole::Spectator
+                            || gr.tournament_id.is_some()
                             || !matches!(gr.status, shared::GameStatus::Finished(_))
                         {
                             continue;
@@ -663,4 +683,102 @@ pub async fn game_websocket(
     });
 
     Ok(rx.into())
+}
+
+/// One Ping sample's contribution to the clock-offset and RTT estimates.
+///
+/// `offset_est` is the running `min(server_recv - client_send)` over the
+/// connection's Pings. Taking the minimum approximates the true clock offset,
+/// because the sample with the least one-way lag has the least lag inflating
+/// it. Returns the updated offset and the RTT estimate for this sample.
+///
+/// RTT is `2 * (observed delay - offset)`: the delay above the best-case
+/// one-way lag seen so far, doubled for the round trip. Clamped to
+/// `0..=60_000` — a client clock that jumps backwards mid-connection drives
+/// the offset stale and the raw figure negative or absurd, and a garbage
+/// estimate should read as "fast" or "very slow", never as a wild number.
+#[cfg(feature = "ssr")]
+pub fn estimate_rtt(client_time_ms: i64, server_time_ms: i64, offset_est: Option<i64>) -> (i64, u32) {
+    let d = server_time_ms - client_time_ms;
+    let new_offset = offset_est.map_or(d, |e| e.min(d));
+    let rtt = ((d - new_offset) * 2).clamp(0, 60_000) as u32;
+    (new_offset, rtt)
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod tests {
+    use super::estimate_rtt;
+
+    #[test]
+    fn first_sample_sets_the_offset_and_reads_zero_rtt() {
+        // With one sample there's nothing to compare against, so the whole
+        // observed delay is attributed to clock offset and the RTT reads 0.
+        // Deliberate: a single Ping genuinely carries no RTT information.
+        let (offset, rtt) = estimate_rtt(1_000, 1_250, None);
+        assert_eq!(offset, 250);
+        assert_eq!(rtt, 0);
+    }
+
+    #[test]
+    fn delay_above_the_running_minimum_becomes_rtt() {
+        // Established offset 250ms; this sample's delay is 60ms higher,
+        // so the round trip is 120ms.
+        let (offset, rtt) = estimate_rtt(2_000, 2_310, Some(250));
+        assert_eq!(offset, 250, "a slower sample must not move the minimum");
+        assert_eq!(rtt, 120);
+    }
+
+    #[test]
+    fn a_faster_sample_lowers_the_offset_and_reads_zero() {
+        // A new best-case sample redefines the baseline, and by definition
+        // sits at zero above it.
+        let (offset, rtt) = estimate_rtt(3_000, 3_180, Some(250));
+        assert_eq!(offset, 180);
+        assert_eq!(rtt, 0);
+    }
+
+    #[test]
+    fn client_clock_ahead_of_server_gives_a_negative_offset() {
+        // Offsets are signed: a client clock running ahead makes the observed
+        // delay negative, which is a valid baseline, not an error.
+        let (offset, rtt) = estimate_rtt(5_000, 4_400, None);
+        assert_eq!(offset, -600);
+        assert_eq!(rtt, 0);
+    }
+
+    #[test]
+    fn a_clock_jump_backwards_clamps_instead_of_going_negative() {
+        // The client's clock jumps forward mid-connection, so the observed
+        // delay drops below the established minimum. The min() updates, which
+        // keeps (d - offset) at 0 — never a negative cast to u32.
+        let (offset, rtt) = estimate_rtt(9_000, 8_000, Some(250));
+        assert_eq!(offset, -1_000);
+        assert_eq!(rtt, 0);
+    }
+
+    #[test]
+    fn an_absurd_delay_clamps_to_the_ceiling() {
+        // A stale offset against a wildly late sample would compute minutes
+        // of RTT; it reads as the 60s ceiling instead of a wild number.
+        let (_, rtt) = estimate_rtt(0, 500_000, Some(0));
+        assert_eq!(rtt, 60_000);
+    }
+
+    #[test]
+    fn repeated_samples_converge_on_the_lowest_delay() {
+        // Fold a run of samples the way the connection loop does: the offset
+        // only ever ratchets down, and each sample's RTT is measured against
+        // the best baseline seen so far — not the one that was current when
+        // that sample arrived.
+        let mut offset = None;
+        let mut rtts = Vec::new();
+        for (client, server) in [(0_i64, 400_i64), (100, 480), (200, 550), (300, 690)] {
+            let (o, rtt) = estimate_rtt(client, server, offset);
+            offset = Some(o);
+            rtts.push(rtt);
+        }
+        assert_eq!(offset, Some(350), "lowest delay across the run was 350ms");
+        // 400-400=0, 380-380=0, 350-350=0, 390-350=40 → doubled
+        assert_eq!(rtts, vec![0, 0, 0, 80]);
+    }
 }

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournaments SET status = 'finished', ended_at = now()\n               WHERE id = $1 AND status = 'live'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0a296889067985f40e217d710b9174c5f36058ecec516a3ad9c8442960fc94be"
+}

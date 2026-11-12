@@ -9,6 +9,8 @@ pub mod profile;
 pub mod puzzles;
 pub mod settings;
 pub mod stats;
+pub mod tournament;
+pub mod tournaments;
 pub mod watch;
 
 pub use analysis::AnalysisPage;
@@ -21,3 +23,5 @@ pub use profile::ProfilePage;
 pub use puzzles::PuzzlesPage;
 pub use settings::SettingsPage;
 pub use stats::StatsPage;
+pub use tournament::TournamentPage;
+pub use tournaments::TournamentsPage;

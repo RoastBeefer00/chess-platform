@@ -96,6 +96,25 @@ pub struct GitHubEmail {
     verified: bool,
 }
 
+/// The one address from `/user/emails` we'll accept as an identity.
+///
+/// Both flags are required, and neither is redundant. `verified` alone isn't
+/// enough — a GitHub account can hold several verified addresses, and picking
+/// any of them makes the account's identity depend on list order. `primary`
+/// alone isn't enough either: GitHub lets an unverified address be primary,
+/// and an address nobody has proven they control is exactly what we must not
+/// key an account on.
+///
+/// `None` means the account has no address meeting both conditions, which the
+/// caller turns into `AuthError::NoVerifiedPrimaryEmail` rather than falling
+/// back to a weaker pick.
+pub fn pick_primary_verified(emails: Vec<GitHubEmail>) -> Option<String> {
+    emails
+        .into_iter()
+        .find(|e| e.primary && e.verified)
+        .map(|e| e.email)
+}
+
 #[tracing::instrument(skip_all)]
 pub async fn get_github_user(
     client: &reqwest::Client,
@@ -119,15 +138,73 @@ pub async fn get_github_user(
             .error_for_status()?;
 
         let emails: Vec<GitHubEmail> = emails_response.json().await?;
-        if let Some(primary_email) = emails.into_iter().find(|e| e.primary && e.verified) {
-            Ok(GitHubUser {
+        match pick_primary_verified(emails) {
+            Some(email) => Ok(GitHubUser {
                 id: user.id,
-                email: Some(primary_email.email),
-            })
-        } else {
-            Err(AuthError::NoVerifiedPrimaryEmail)
+                email: Some(email),
+            }),
+            None => Err(AuthError::NoVerifiedPrimaryEmail),
         }
     } else {
         Ok(user)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn email(addr: &str, primary: bool, verified: bool) -> GitHubEmail {
+        GitHubEmail {
+            email: addr.to_string(),
+            primary,
+            verified,
+        }
+    }
+
+    #[test]
+    fn picks_the_primary_verified_address() {
+        let picked = pick_primary_verified(vec![
+            email("alt@example.com", false, true),
+            email("main@example.com", true, true),
+        ]);
+        assert_eq!(picked.as_deref(), Some("main@example.com"));
+    }
+
+    #[test]
+    fn rejects_primary_but_unverified() {
+        // GitHub permits this combination; keying an account on an address
+        // nobody proved they control is the thing we're guarding against.
+        let picked = pick_primary_verified(vec![email("main@example.com", true, false)]);
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn rejects_verified_but_not_primary() {
+        // Several verified addresses is normal; without `primary` the pick
+        // would depend on list order.
+        let picked = pick_primary_verified(vec![
+            email("one@example.com", false, true),
+            email("two@example.com", false, true),
+        ]);
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn empty_list_yields_none() {
+        assert_eq!(pick_primary_verified(vec![]), None);
+    }
+
+    #[test]
+    fn ignores_a_non_primary_match_before_the_real_one() {
+        // Ordering must not matter: the primary+verified entry wins even
+        // when noise sorts ahead of it.
+        let picked = pick_primary_verified(vec![
+            email("noise@example.com", false, false),
+            email("alt@example.com", false, true),
+            email("main@example.com", true, true),
+            email("later@example.com", false, true),
+        ]);
+        assert_eq!(picked.as_deref(), Some("main@example.com"));
     }
 }

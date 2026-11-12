@@ -37,6 +37,10 @@ web-sys = { version = "=0.3.94", features = ["HtmlAudioElement", "Clipboard", "N
 js-sys = { version = "=0.3.94" }
 futures = "0.3"
 gloo-timers = { version = "0.3", features = ["futures"] }
+# Plain `fetch` for the one endpoint that is not a server fn (the online
+# count — see `components/online_count.rs` for why it must not be one).
+# Already in the tree via `server_fn`'s browser client.
+gloo-net = { version = "0.6", default-features = false, features = ["http"] }
 shared = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT u.id, u.email, u.username, u.avatar_url, u.bio, u.country, u.created_at, u.is_guest, u.settings AS \"settings: Json<UserSettings>\"\n           FROM users u\n           JOIN oauth_accounts oa ON oa.user_id = u.id\n           WHERE oa.provider = $1 AND oa.provider_user_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "email",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "avatar_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "bio",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "country",
+        "type_info": "Bpchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "is_guest",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "settings: Json<UserSettings>",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "512964e79f883bf5791593c96090b09654fb30cfb9ec4636178f18171a16fcdd"
+}

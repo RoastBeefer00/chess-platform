@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.id, p.user_id, u.username AS \"username?\", p.display_name, p.seed, p.withdrawn\n               FROM tournament_players p\n               LEFT JOIN users u ON u.id = p.user_id\n               WHERE p.tournament_id = $1\n               ORDER BY p.seed",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "username?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "seed",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "withdrawn",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "cd73988a9224791af38eb4a01cef08dcfe41afa25c026d9fac0368f7b08f712e"
+}

@@ -1,5 +1,7 @@
 use leptos::prelude::*;
 
+use crate::components::OnlineCount;
+
 #[component]
 pub fn Landing() -> impl IntoView {
     view! {
@@ -27,6 +29,9 @@ pub fn Landing() -> impl IntoView {
                 >
                     "Just here to look around? Try it now, no sign-up →"
                 </a>
+                <div class="mt-8">
+                    <OnlineCount/>
+                </div>
             </div>
         </section>
     }

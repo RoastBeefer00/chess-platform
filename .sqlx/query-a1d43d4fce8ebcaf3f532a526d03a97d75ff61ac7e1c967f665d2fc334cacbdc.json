@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT g.id\n               FROM tournament_pairings p\n               JOIN games g ON g.id = p.game_id\n               WHERE p.tournament_id = $1\n                 AND g.status = 'active'\n                 AND (g.white_user_id = $2 OR g.black_user_id = $2)\n               LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a1d43d4fce8ebcaf3f532a526d03a97d75ff61ac7e1c967f665d2fc334cacbdc"
+}

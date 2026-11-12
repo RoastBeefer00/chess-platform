@@ -11,6 +11,7 @@ pub mod pages;
 pub mod puzzle;
 pub mod sound;
 pub mod theme;
+pub mod tournament;
 pub mod watch;
 pub mod websocket;
 

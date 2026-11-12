@@ -1,7 +1,10 @@
 use leptos::prelude::*;
 use shared::{RatingMode, TimeControl, TimeMode};
 
-use crate::components::{use_current_user, EloCardRow, MatchmakingModal, RecentGames, ResumeGame};
+use crate::components::{
+    use_current_user, EloCardRow, MatchmakingModal, OnlineCount, RecentGames, ResumeGame,
+    TournamentTeaser,
+};
 
 #[cfg(feature = "hydrate")]
 const RATING_MODE_STORAGE_KEY: &str = "gambit:rating_mode";
@@ -132,8 +135,12 @@ pub fn PlayHub() -> impl IntoView {
                 <ResumeGame/>
             </div>
 
+            <div class="pt-6 flex justify-end">
+                <OnlineCount/>
+            </div>
+
             // Ratings strip.
-            <div class="flex gap-3 overflow-x-auto scrollbar-none pt-6 pb-2">
+            <div class="flex gap-3 overflow-x-auto scrollbar-none pt-3 pb-2">
                 <EloCardRow/>
             </div>
 
@@ -190,6 +197,10 @@ pub fn PlayHub() -> impl IntoView {
                         </div>
                     </div>
                 }).collect_view()}
+            </div>
+
+            <div class="mt-10">
+                <TournamentTeaser/>
             </div>
 
             <div class="mt-10">

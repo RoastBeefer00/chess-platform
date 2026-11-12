@@ -56,7 +56,7 @@ pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
         },
     };
 
-    let (white_id, black_id, variant, white_ms_left, black_ms_left, clock_running, config) = {
+    let (white_id, black_id, variant, white_ms_left, black_ms_left, clock_running, config, tournament_id) = {
         let gr = game_room.lock().await;
         (
             gr.game.white_player,
@@ -66,6 +66,7 @@ pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
             gr.game.black_ms_left,
             gr.last_move_at.is_some(),
             gr.game.config.clone(),
+            gr.tournament_id,
         )
     };
 
@@ -89,5 +90,6 @@ pub async fn get_game_info(game_id: Uuid) -> Result<GameInfo, ServerFnError> {
         sent_at_ms,
         clock_running,
         config,
+        tournament_id,
     })
 }

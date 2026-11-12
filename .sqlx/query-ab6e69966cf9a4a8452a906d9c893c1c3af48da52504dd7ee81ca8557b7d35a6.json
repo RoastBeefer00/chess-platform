@@ -1,0 +1,119 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.id, t.name, t.format, t.venue, t.status,\n                      t.organizer_id, u.username AS \"organizer_username?\", t.schedule_key,\n                      t.time_initial_seconds, t.time_increment_seconds, t.rated,\n                      t.starts_at, t.duration_minutes, t.total_rounds, t.current_round,\n                      (SELECT count(*) FROM tournament_players p\n                        WHERE p.tournament_id = t.id AND NOT p.withdrawn) AS \"player_count!\",\n                      COALESCE(($2::uuid IS NOT NULL AND (\n                          t.organizer_id = $2\n                          OR EXISTS (SELECT 1 FROM tournament_players p\n                                      WHERE p.tournament_id = t.id AND p.user_id = $2)\n                      )), false) AS \"mine!\"\n               FROM tournaments t\n               LEFT JOIN users u ON u.id = t.organizer_id\n               WHERE CASE\n                   WHEN $1::uuid IS NOT NULL THEN t.id = $1\n                   ELSE (\n                       (t.status IN ('upcoming', 'live') AND t.created_at > now() - interval '30 days')\n                       OR (t.status = 'finished' AND t.ended_at > now() - interval '7 days')\n                   ) AND (\n                       t.venue = 'online'\n                       OR t.organizer_id = $2\n                       OR EXISTS (SELECT 1 FROM tournament_players p\n                                   WHERE p.tournament_id = t.id AND p.user_id = $2)\n                   )\n               END\n               ORDER BY (t.schedule_key IS NOT NULL) DESC, (t.status = 'live') DESC, (t.status = 'upcoming') DESC,\n                        CASE WHEN t.status = 'finished' THEN t.ended_at END DESC,\n                        t.starts_at ASC\n               LIMIT 100",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "format",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "venue",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "organizer_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "organizer_username?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "schedule_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "time_initial_seconds",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 9,
+        "name": "time_increment_seconds",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "rated",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "starts_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "duration_minutes",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 13,
+        "name": "total_rounds",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 14,
+        "name": "current_round",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 15,
+        "name": "player_count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 16,
+        "name": "mine!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "ab6e69966cf9a4a8452a906d9c893c1c3af48da52504dd7ee81ca8557b7d35a6"
+}

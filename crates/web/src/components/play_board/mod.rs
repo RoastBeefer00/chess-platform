@@ -9,7 +9,7 @@ mod ws_session;
 use crate::components::{
     material_advantage, AnalyzeLink, BoardPerspective, BoardUser, CapturedPieces, ChessBoard,
     Clock, ConnectionIndicator, DrawOfferState, DrawResignControls, GameOverModal,
-    MatchmakingModal, MovesPanel, NewGameButton, RematchControls, RematchState,
+    MatchmakingModal, MovesPanel, NewGameButton, RematchControls, RematchState, TournamentLink,
 };
 use crate::game::get_game_info;
 use crate::sound::{self, sfx};
@@ -55,6 +55,9 @@ fn bottom<T: Send + Sync + 'static>(
 /// Rematch / new game / analyse, shown once a game is over. Rendered twice —
 /// in the mobile bottom strip and in the desktop side column — which is why
 /// it's a component rather than two copies of the same three tags.
+///
+/// A tournament game offers neither a rematch nor a new game: the next
+/// opponent is the tournament's to pick, so the only way on is back to it.
 #[component]
 fn PostGameControls(
     rematch_state: RwSignal<RematchState>,
@@ -62,10 +65,16 @@ fn PostGameControls(
     #[prop(into)] on_new_game: Callback<()>,
     tc_label: Signal<String>,
     game_id: Uuid,
+    tournament_id: Signal<Option<Uuid>>,
 ) -> impl IntoView {
     view! {
-        <RematchControls rematch_state=rematch_state send=send size="sm" />
-        <NewGameButton on_new_game=on_new_game tc_label=tc_label size="sm" />
+        {move || match tournament_id.get() {
+            Some(id) => view! { <TournamentLink tournament_id=id size="sm" /> }.into_any(),
+            None => view! {
+                <RematchControls rematch_state=rematch_state send=send size="sm" />
+                <NewGameButton on_new_game=on_new_game tc_label=tc_label size="sm" />
+            }.into_any(),
+        }}
         <AnalyzeLink game_id=game_id size="sm" />
     }
 }
@@ -409,6 +418,10 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
             .unwrap_or_default()
     });
 
+    let tournament_id = Signal::derive(move || {
+        game_info.get().and_then(|r| r.ok()).and_then(|info| info.tournament_id)
+    });
+
     let on_new_game_cb = Callback::new(move |_: ()| {
         if let Some(config) = game_info
             .get_untracked()
@@ -505,6 +518,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                         rematch_state=rematch_state
                         send=send
                         tc_label=tc_label
+                        tournament_id=tournament_id
                     />
                 })
             }
@@ -623,6 +637,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                                 <PostGameControls
                                     rematch_state=rematch_state send=send
                                     on_new_game=on_new_game_cb tc_label=tc_label game_id=game_id
+                                    tournament_id=tournament_id
                                 />
                             </div>
                         </Show>
@@ -678,6 +693,7 @@ pub fn PlayBoard(game_id: Uuid) -> impl IntoView {
                             <PostGameControls
                                 rematch_state=rematch_state send=send
                                 on_new_game=on_new_game_cb tc_label=tc_label game_id=game_id
+                                    tournament_id=tournament_id
                             />
                         </div>
                     </Show>

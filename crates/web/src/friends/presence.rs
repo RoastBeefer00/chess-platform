@@ -20,6 +20,14 @@ pub struct IncomingFriendRequest {
     pub from_username: String,
 }
 
+/// A friend's invitation to a tournament, as shown by the app-root toast.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IncomingTournamentInvite {
+    pub tournament_id: Uuid,
+    pub tournament_name: String,
+    pub from_username: String,
+}
+
 /// An outgoing challenge this tab sent, awaiting a response.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutgoingChallenge {
@@ -60,6 +68,8 @@ pub struct FriendsPresence {
     /// Most recent incoming friend request, for the app-root toast. At most
     /// one visible at a time, same as `incoming` challenges.
     pub incoming_request: RwSignal<Option<IncomingFriendRequest>>,
+    /// Most recent tournament invite, for the app-root toast.
+    pub tournament_invite: RwSignal<Option<IncomingTournamentInvite>>,
 }
 
 /// How many consecutive failed connections before the presence socket stops
@@ -87,6 +97,7 @@ pub fn provide_friends_presence() {
         list_trigger: RwSignal::new(0),
         pending_requests: RwSignal::new(0),
         incoming_request: RwSignal::new(None),
+        tournament_invite: RwSignal::new(None),
     };
     provide_context(presence);
 
@@ -233,6 +244,13 @@ fn handle_message(presence: &FriendsPresence, msg: shared::FriendsServerMessage)
         FriendsServerMessage::FriendRequestReceived { from } => {
             presence.incoming_request.set(Some(IncomingFriendRequest {
                 from_id: from.id,
+                from_username: from.username.unwrap_or_else(|| "Anonymous".to_string()),
+            }));
+        }
+        FriendsServerMessage::TournamentInvite { tournament_id, name, from } => {
+            presence.tournament_invite.set(Some(IncomingTournamentInvite {
+                tournament_id,
+                tournament_name: name,
                 from_username: from.username.unwrap_or_else(|| "Anonymous".to_string()),
             }));
         }

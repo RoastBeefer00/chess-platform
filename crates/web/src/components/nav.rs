@@ -67,6 +67,7 @@ pub fn Nav() -> impl IntoView {
                     <a href="/analysis" class="px-3 py-1.5 rounded-control hover:text-white hover:bg-zinc-800 transition-colors">"Analysis"</a>
                     <a href="/puzzles" class="px-3 py-1.5 rounded-control hover:text-white hover:bg-zinc-800 transition-colors">"Puzzles"</a>
                     <a href="/watch" class="px-3 py-1.5 rounded-control hover:text-white hover:bg-zinc-800 transition-colors">"Watch"</a>
+                    <a href="/tournaments" class="px-3 py-1.5 rounded-control hover:text-white hover:bg-zinc-800 transition-colors">"Tournaments"</a>
                     <Transition fallback=|| ()>
                         <Show when=show_friends>
                             <a href="/friends" class="flex items-center px-3 py-1.5 rounded-control hover:text-white hover:bg-zinc-800 transition-colors">
@@ -98,6 +99,7 @@ pub fn Nav() -> impl IntoView {
                         <a href="/analysis" on:click=close_mobile class="px-3 py-3 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-control transition-colors">"Analysis"</a>
                         <a href="/puzzles" on:click=close_mobile class="px-3 py-3 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-control transition-colors">"Puzzles"</a>
                         <a href="/watch" on:click=close_mobile class="px-3 py-3 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-control transition-colors">"Watch"</a>
+                        <a href="/tournaments" on:click=close_mobile class="px-3 py-3 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-control transition-colors">"Tournaments"</a>
                         <Transition fallback=|| ()>
                             <Show when=show_friends>
                                 <a href="/friends" on:click=close_mobile class="flex items-center px-3 py-3 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-control transition-colors">

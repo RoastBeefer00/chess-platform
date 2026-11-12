@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tournament_players (tournament_id, user_id, display_name, seed)\n                   SELECT $1, $2, $3, COALESCE(MAX(seed), -1) + 1\n                   FROM tournament_players WHERE tournament_id = $1\n                   ON CONFLICT (tournament_id, user_id) DO UPDATE SET withdrawn = FALSE\n                   RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c67a7eb4002d598250817da1b7367e34abf054d6d8d02744661ad93be5c8fa7d"
+}

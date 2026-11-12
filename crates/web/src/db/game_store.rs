@@ -277,6 +277,20 @@ impl GameStore {
         .execute(&mut *tx)
         .await?;
 
+        // If this was a tournament game, the pairing gets its result in the
+        // same transaction as the game does — a tournament can then never
+        // show a finished game as still undecided, or the reverse. For an
+        // ordinary game this is one index miss. `result IS NULL` keeps a
+        // replayed finalize from overwriting a result an organizer has
+        // since corrected.
+        sqlx::query!(
+            "UPDATE tournament_pairings SET result = $2 WHERE game_id = $1 AND result IS NULL",
+            plan.game_id,
+            result_str,
+        )
+        .execute(&mut *tx)
+        .await?;
+
         if plan.rated {
             sqlx::query!(
                 r#"UPDATE ratings
@@ -363,6 +377,14 @@ impl GameStore {
         )
         .execute(&self.pool)
         .await?;
+        // An aborted tournament game is void: nobody scores, and the two
+        // are free to be paired again.
+        sqlx::query!(
+            "UPDATE tournament_pairings SET result = 'void' WHERE game_id = $1 AND result IS NULL",
+            plan.game_id,
+        )
+        .execute(&self.pool)
+        .await?;
         tracing::info!(game_id = %plan.game_id, "game_aborted");
         Ok(())
     }
@@ -399,6 +421,17 @@ impl GameStore {
                    termination = 'abandonment',
                    ended_at = now()
                WHERE id = ANY($1) AND status = 'active'"#,
+            ids,
+        )
+        .execute(&self.pool)
+        .await?;
+        // Same as `abort_game`, for the reaper's bulk path. Keyed off the
+        // games that really are aborted now rather than off `ids`, since the
+        // status guard above may have skipped some.
+        sqlx::query!(
+            r#"UPDATE tournament_pairings SET result = 'void'
+               WHERE result IS NULL
+                 AND game_id IN (SELECT id FROM games WHERE id = ANY($1) AND status = 'aborted')"#,
             ids,
         )
         .execute(&self.pool)
@@ -1850,4 +1883,199 @@ mod tests {
         let parsed = clocks_from_string_strict(Some("1000,2000 900,1900"), 2).unwrap();
         assert_eq!(parsed, vec![(1000, 2000), (900, 1900)]);
     }
+
+    // ── finalize_now routing ─────────────────────────────────────────────
+
+    /// Registers the game in Redis the way a live room does, so the
+    /// `active_game_remove` half of `finalize_now` has something to remove.
+    async fn register_active(client: &crate::state::RedisClient, game_id: Uuid, white: Uuid, black: Uuid) {
+        client
+            .active_game_upsert(
+                game_id,
+                white,
+                black,
+                "blitz",
+                true,
+                "startpos",
+                "inst-test",
+                crate::state::ActiveGameClocks {
+                    white_ms_left: 300_000,
+                    black_ms_left: 300_000,
+                    sent_at_ms: 1_700_000_000_000,
+                },
+            )
+            .await;
+    }
+
+    /// An abort is not a result. `finalize_now` routes it to `abort_game`,
+    /// which leaves `result` NULL — sending it to `finalize_game` instead
+    /// would write a decisive/draw result and, worse, move ratings for a
+    /// game that was never played.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_now_routes_abort_to_abort_game(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let redis = crate::state::make_redis_client().await;
+        let white = insert_user(&pool).await;
+        let black = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white, black, true).await;
+        register_active(&redis, game_id, white, black).await;
+
+        let plan = make_plan(game_id, white, black, true, KnownOutcome::Draw, GameOverReason::Abort);
+        finalize_now(&store, &redis, Some(plan)).await;
+
+        let row = sqlx::query!("SELECT status, result FROM games WHERE id = $1", game_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.status, "aborted");
+        assert_eq!(row.result, None, "an aborted game has no result");
+
+        // Rating rows are seeded per mode when the user is created, so their
+        // existence proves nothing — the values do. An abort must leave both
+        // players at the untouched default and write no history entry.
+        let rating = sqlx::query!(
+            "SELECT rating, games FROM ratings WHERE user_id = $1 AND mode = 'blitz'",
+            white
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rating.rating, 1500, "an abort must not move the rating");
+        assert_eq!(rating.games, 0, "an abort is not a game played");
+
+        let history = sqlx::query!(
+            "SELECT count(*) AS n FROM rating_history WHERE user_id = $1",
+            white
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(history.n, Some(0), "an abort must write no rating history");
+    }
+
+    /// Every non-Abort reason is a real result, so it goes to
+    /// `finalize_game`. Timeout is the one that mattered in practice — it
+    /// arrives from the detached clock task rather than a player action,
+    /// and it is a decisive result like any other.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_now_routes_timeout_to_finalize_game(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let redis = crate::state::make_redis_client().await;
+        let white = insert_user(&pool).await;
+        let black = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white, black, true).await;
+        register_active(&redis, game_id, white, black).await;
+
+        let plan = make_plan(
+            game_id,
+            white,
+            black,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Timeout,
+        );
+        finalize_now(&store, &redis, Some(plan)).await;
+
+        let row = sqlx::query!("SELECT status, result FROM games WHERE id = $1", game_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.status, "finished");
+        assert_eq!(row.result.as_deref(), Some("white"));
+    }
+
+    /// The Redis index entry is what `find_active_game` offers players on
+    /// reconnect. It has to go on either route — a finished game still
+    /// listed as active is the "dead game keeps being offered" bug.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_now_clears_the_active_game_entry_on_both_routes(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let redis = crate::state::make_redis_client().await;
+        let white = insert_user(&pool).await;
+        let black = insert_user(&pool).await;
+
+        for (reason, outcome) in [
+            (GameOverReason::Abort, KnownOutcome::Draw),
+            (GameOverReason::Resignation, KnownOutcome::Decisive { winner: shakmaty::Color::Black }),
+        ] {
+            let game_id = Uuid::new_v4();
+            insert_game_row(&pool, game_id, white, black, true).await;
+            register_active(&redis, game_id, white, black).await;
+            assert!(
+                redis.active_game_owner(game_id).await.is_some(),
+                "precondition: {reason:?} game is indexed as active"
+            );
+
+            finalize_now(&store, &redis, Some(make_plan(game_id, white, black, true, outcome, reason.clone()))).await;
+
+            assert!(
+                redis.active_game_owner(game_id).await.is_none(),
+                "{reason:?} must clear the active-game entry"
+            );
+        }
+    }
+
+    /// The DB write and the Redis cleanup are not atomic, and they must not
+    /// be coupled: if finalization fails (here, a plan naming a game row
+    /// that doesn't exist), the entry still has to be removed. Leaving it
+    /// behind would keep offering a game that can never be finalized — a
+    /// reconnect loop that no retry escapes.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_now_clears_redis_even_when_the_db_write_fails(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let redis = crate::state::make_redis_client().await;
+        let white = insert_user(&pool).await;
+        let black = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        // Deliberately no `insert_game_row` — nothing for the UPDATE to hit.
+        register_active(&redis, game_id, white, black).await;
+
+        let plan = make_plan(
+            game_id,
+            white,
+            black,
+            true,
+            KnownOutcome::Decisive { winner: shakmaty::Color::White },
+            GameOverReason::Checkmate,
+        );
+        finalize_now(&store, &redis, Some(plan)).await;
+
+        assert!(
+            redis.active_game_owner(game_id).await.is_none(),
+            "a failed finalization must still release the active-game entry"
+        );
+    }
+
+    /// `end_game` returns `None` when the game was already finished, which
+    /// is how double-calls (a resign racing a flag-fall) are absorbed. That
+    /// `None` reaches `finalize_now`, and it must do nothing at all — in
+    /// particular it must not clear a Redis entry belonging to whatever
+    /// game is actually live.
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_now_with_no_plan_is_a_no_op(pool: PgPool) {
+        let store = GameStore::new(pool.clone());
+        let redis = crate::state::make_redis_client().await;
+        let white = insert_user(&pool).await;
+        let black = insert_user(&pool).await;
+        let game_id = Uuid::new_v4();
+        insert_game_row(&pool, game_id, white, black, true).await;
+        register_active(&redis, game_id, white, black).await;
+
+        finalize_now(&store, &redis, None).await;
+
+        let row = sqlx::query!("SELECT status FROM games WHERE id = $1", game_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.status, "active", "no plan, no state change");
+        assert!(
+            redis.active_game_owner(game_id).await.is_some(),
+            "no plan must not evict the live game's entry"
+        );
+
+        redis.active_game_remove(game_id).await;
+    }
+
 }
